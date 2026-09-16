@@ -1,0 +1,245 @@
+"""This module holds the pass that rewrites jeff classical code as Python code."""
+
+import math
+from dataclasses import dataclass
+from collections.abc import Callable
+
+from kirin import ir, types
+from kirin.passes import Pass
+from kirin.rewrite import Walk, Chain
+from kirin.dialects import py, scf, ilist
+from kirin.dialects.py import len as py_len
+from kirin.rewrite.abc import RewriteRule, RewriteResult
+from kirin.dialects.math import stmts as math_stmts
+
+from bloqade.jeff.types import is_subtype
+from bloqade.jeff.dialects import stmts
+from bloqade.jeff.constants import const_int
+
+_BINARY: dict[
+    type[ir.Statement], Callable[[ir.SSAValue, ir.SSAValue], ir.Statement]
+] = {
+    stmts.IntAdd: py.binop.Add,
+    stmts.IntSub: py.binop.Sub,
+    stmts.IntMul: py.binop.Mult,
+    stmts.IntPow: py.binop.Pow,
+    stmts.IntShl: py.binop.LShift,
+    stmts.IntAnd: py.binop.BitAnd,
+    stmts.IntOr: py.binop.BitOr,
+    stmts.IntXor: py.binop.BitXor,
+    stmts.FloatAdd: py.binop.Add,
+    stmts.FloatSub: py.binop.Sub,
+    stmts.FloatMul: py.binop.Mult,
+    stmts.FloatPow: math_stmts.pow,
+}
+_COMPARE: dict[
+    type[ir.Statement], Callable[[ir.SSAValue, ir.SSAValue], ir.Statement]
+] = {
+    stmts.IntEq: py.cmp.Eq,
+    stmts.IntLtS: py.cmp.Lt,
+    stmts.IntLteS: py.cmp.LtE,
+    stmts.FloatEq: py.cmp.Eq,
+    stmts.FloatLt: py.cmp.Lt,
+    stmts.FloatLte: py.cmp.LtE,
+}
+_MATH_UNARY: dict[type[ir.Statement], Callable[[ir.SSAValue], ir.Statement]] = {
+    stmts.FloatSqrt: math_stmts.sqrt,
+    stmts.FloatAbs: math_stmts.fabs,
+    stmts.FloatCeil: math_stmts.ceil,
+    stmts.FloatFloor: math_stmts.floor,
+    stmts.FloatExp: math_stmts.exp,
+    stmts.FloatSin: math_stmts.sin,
+    stmts.FloatCos: math_stmts.cos,
+    stmts.FloatTan: math_stmts.tan,
+    stmts.FloatAsin: math_stmts.asin,
+    stmts.FloatAcos: math_stmts.acos,
+    stmts.FloatAtan: math_stmts.atan,
+    stmts.FloatSinh: math_stmts.sinh,
+    stmts.FloatCosh: math_stmts.cosh,
+    stmts.FloatTanh: math_stmts.tanh,
+    stmts.FloatAsinh: math_stmts.asinh,
+    stmts.FloatAtanh: math_stmts.atanh,
+    stmts.FloatIsNan: math_stmts.isnan,
+    stmts.FloatIsInf: math_stmts.isinf,
+}
+
+
+class _Replace(RewriteRule):
+    """A rewrite rule that replaces a classical statement with one Python statement."""
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Replace `node` if one Python statement computes it."""
+        new: ir.Statement
+        match node:
+            case stmts.ConstInt():
+                # A 1-bit constant that no integer arithmetic reads becomes a bool.
+                arithmetic = any(
+                    isinstance(u.stmt, stmts.IntBinary) for u in node.result.uses
+                )
+                if node.bitwidth == 1 and not arithmetic:
+                    new = py.Constant(bool(node.value))
+                else:
+                    new = py.Constant(node.value)
+            case stmts.ConstFloat():
+                new = py.Constant(node.value)
+            case stmts.IntNot():
+                unary = (
+                    py.unary.Not
+                    if is_subtype(node.value.type, types.Bool)
+                    else py.unary.Invert
+                )
+                new = unary(node.value)
+            case stmts.IntAbs():
+                new = py.builtin.Abs(node.value)
+            case stmts.IntBinary() | stmts.FloatBinary() if binary := _BINARY.get(
+                type(node)
+            ):
+                new = binary(node.lhs, node.rhs)
+            case stmts.IntCompare() | stmts.FloatCompare() if compare := _COMPARE.get(
+                type(node)
+            ):
+                new = compare(node.lhs, node.rhs)
+            case stmts.FloatAtan2():
+                new = math_stmts.atan2(node.lhs, node.rhs)
+            case stmts.FloatLog():
+                (base := py.Constant(math.e)).insert_before(node)
+                new = math_stmts.log(node.value, base.result)
+            case (
+                stmts.FloatUnary() | stmts.FloatPredicate()
+            ) if unary := _MATH_UNARY.get(type(node)):
+                new = unary(node.value)
+            case stmts.IntArrayConst() | stmts.FloatArrayConst():
+                new = py.Constant(ilist.IList(list(node.values)))
+            case stmts.IntArrayZero() | stmts.FloatArrayZero() if (
+                size := const_int(node.size)
+            ) is not None:
+                zero = 0 if isinstance(node, stmts.IntArrayZero) else 0.0
+                new = py.Constant(ilist.IList([zero] * size))
+            case stmts.IntArrayGet() | stmts.FloatArrayGet():
+                new = py.indexing.GetItem(node.array, node.index)
+            case stmts.IntArrayCreate() | stmts.FloatArrayCreate():
+                # A 1-bit element may be a measurement result.
+                # So squin infers the element type.
+                new = ilist.New(list(node.values), elem_type=types.Any)
+            case stmts.IntArrayLen() | stmts.FloatArrayLen():
+                new = py_len.Len(node.array)
+            case _:
+                return RewriteResult()
+        node.replace_by(new)
+        node.delete()
+        return RewriteResult(has_done_something=True)
+
+
+def _conditional(
+    condition: ir.SSAValue,
+    yes: ir.SSAValue,
+    no: ir.SSAValue,
+    result_type: types.TypeAttribute,
+) -> scf.IfElse:
+    """Return an `scf.if` that yields `yes` or `no` by `condition`."""
+    branches = []
+    for chosen in (yes, no):
+        block = ir.Block([scf.Yield(chosen)])
+        block.args.append_from(types.Bool, "cond")
+        branches.append(block)
+    chosen = scf.IfElse(condition, *branches)
+    chosen.results[0].type = result_type
+    return chosen
+
+
+class _Select(RewriteRule):
+    """A rewrite rule that replaces a jeff select with an `scf.if`."""
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Replace `node` if it is a select."""
+        if not isinstance(node, (stmts.IntSelect, stmts.FloatSelect)):
+            return RewriteResult()
+        node.replace_by(
+            _conditional(node.condition, node.yes, node.no, node.result.type)
+        )
+        node.delete()
+        return RewriteResult(has_done_something=True)
+
+
+class _Extremum(RewriteRule):
+    """A rewrite rule that replaces a jeff minimum or maximum with an `scf.if`."""
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Replace `node` if it is a minimum or a maximum."""
+        match node:
+            case stmts.IntMinS() | stmts.FloatMin():
+                maximum = False
+            case stmts.IntMaxS() | stmts.FloatMax():
+                maximum = True
+            case _:
+                return RewriteResult()
+        (less := py.cmp.Lt(node.lhs, node.rhs)).insert_before(node)
+        yes, no = (node.rhs, node.lhs) if maximum else (node.lhs, node.rhs)
+        node.replace_by(_conditional(less.result, yes, no, node.result.type))
+        node.delete()
+        return RewriteResult(has_done_something=True)
+
+
+class _SignedDivision(RewriteRule):
+    """A rewrite rule that divides with jeff's rounding toward zero."""
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Replace `node` if it is a signed division or remainder."""
+        if not isinstance(node, (stmts.IntDivS, stmts.IntRemS)):
+            return RewriteResult()
+        a, b = node.lhs, node.rhs
+        (zero := py.Constant(0)).insert_before(node)
+        (remainder := py.binop.Mod(a, b)).insert_before(node)
+        (nonzero := py.cmp.NotEq(remainder.result, zero.result)).insert_before(node)
+        (negative_a := py.cmp.Lt(a, zero.result)).insert_before(node)
+        (negative_b := py.cmp.Lt(b, zero.result)).insert_before(node)
+        unlike = py.cmp.NotEq(negative_a.result, negative_b.result)
+        unlike.insert_before(node)
+        (fix := py.binop.BitAnd(nonzero.result, unlike.result)).insert_before(node)
+        if isinstance(node, stmts.IntDivS):
+            (quotient := py.binop.FloorDiv(a, b)).insert_before(node)
+            node.replace_by(py.binop.Add(quotient.result, fix.result))
+        else:
+            (correction := py.binop.Mult(b, fix.result)).insert_before(node)
+            node.replace_by(py.binop.Sub(remainder.result, correction.result))
+        node.delete()
+        return RewriteResult(has_done_something=True)
+
+
+class _ArrayFill(RewriteRule):
+    """A rewrite rule that replaces one step of filling a known array with a list."""
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Replace `node` if it sets a constant index of a known array."""
+        if not isinstance(node, (stmts.IntArraySet, stmts.FloatArraySet)):
+            return RewriteResult()
+        index = const_int(node.index)
+        owner = node.array.owner
+        if isinstance(owner, py.Constant):
+            members = list(owner.value.unwrap().data)
+            constants = [py.Constant(m) for m in members]
+            for constant in constants:
+                constant.insert_before(node)
+            values: list[ir.SSAValue] = [constant.result for constant in constants]
+        elif isinstance(owner, ilist.New):
+            values = list(owner.values)
+        else:
+            return RewriteResult()
+        if index is None or not -len(values) <= index < len(values):
+            return RewriteResult()
+        values[index] = node.value
+        node.replace_by(ilist.New(values, elem_type=types.Any))
+        node.delete()
+        return RewriteResult(has_done_something=True)
+
+
+@dataclass
+class JeffToPy(Pass):
+    """A pass that rewrites jeff classical statements as kirin Python statements."""
+
+    def unsafe_run(self, mt: ir.Method) -> RewriteResult:
+        """Rewrite every classical statement of `mt` in place."""
+        rules = Chain(
+            _Replace(), _Select(), _Extremum(), _SignedDivision(), _ArrayFill()
+        )
+        return Walk(rules).rewrite(mt.code)
