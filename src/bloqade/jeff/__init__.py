@@ -17,8 +17,9 @@ from .types import (
     IntArrayType as IntArrayType,
     FloatArrayType as FloatArrayType,
 )
-from .errors import JeffImportError as JeffImportError
+from .errors import Refusal as Refusal, JeffImportError as JeffImportError
 from .dialects import kernel as kernel
+from .jeff2squin import JeffToSquin as JeffToSquin, JeffToSquinError as JeffToSquinError
 
 try:
     from .emit import EmitJeff as EmitJeff, emit_jeff as emit_jeff
