@@ -1,1 +1,1 @@
-"""This package holds the analyses that run on jeff IR."""
+"""This package holds the analyses of jeff IR and of squin kernels."""
