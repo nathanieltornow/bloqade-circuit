@@ -24,3 +24,7 @@ class Refusal(ValidationErrorGroup, Exception):
 
 class JeffToSquinError(ir.ValidationError):
     """An error that marks a jeff statement or block that squin cannot express."""
+
+
+class SquinToJeffError(ir.ValidationError):
+    """An error that marks a squin statement or block that jeff cannot express."""

@@ -190,3 +190,13 @@ class Bottom(Ref, metaclass=SingletonMeta):
 
 
 UNTRACKED = Untracked()
+
+
+def roots(ref: Ref) -> list[Root]:
+    """Return the roots that `ref` names."""
+    match ref:
+        case Whole(root) | Register(root) | Slot(root, _):
+            return [root]
+        case Members(members):
+            return [root for member in members for root in roots(member)]
+    return []
