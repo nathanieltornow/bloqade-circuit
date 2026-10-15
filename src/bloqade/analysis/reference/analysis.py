@@ -9,6 +9,7 @@ from kirin.analysis.forward import Forward, ForwardFrame
 
 from bloqade.constants import constant_int
 
+from .index import Affine
 from .lattice import (
     CARRIED,
     UNTRACKED,
@@ -31,6 +32,11 @@ KEY = "reference"
 def _inside(root: Root, code: ir.Statement) -> bool:
     """Return True if the function body `code` allocates or receives `root`."""
     return code.is_ancestor(root.call if isinstance(root, Returned) else root.owner)
+
+
+def _inside_value(symbol: object, code: ir.Statement) -> bool:
+    """Return True if the function body `code` defines the index symbol `symbol`."""
+    return isinstance(symbol, ir.SSAValue) and _inside(symbol, code)
 
 
 RegisterLength = Callable[[ir.SSAValue, tuple[Returned, ...]], int | None]
@@ -159,14 +165,20 @@ class ReferenceAnalysis(Forward[Ref], ABC):
             for r in stmt.results
         )
 
-    def index(self, ref: Ref, index: int | ir.SSAValue) -> Ref:
+    def index(self, ref: Ref, index: Affine | int | ir.SSAValue) -> Ref:
         """Return the reference of the item at `index` of the list or register `ref`.
 
         A register gives a `Slot`. If the register has a static length, a constant
         index becomes an index in the range 0 to the length minus 1. A literal list
-        gives its member at a constant index.
+        gives its member at a constant index. An SSA value that holds no constant
+        becomes the index that is that value alone.
         """
-        constant = index if isinstance(index, int) else constant_int(index)
+        if isinstance(index, ir.SSAValue):
+            constant = constant_int(index)
+            index = Affine.of(index) if constant is None else Affine(constant)
+        elif isinstance(index, int):
+            index = Affine(index)
+        constant = index.constant
         match ref:
             case Register(root):
                 if constant is None:
@@ -221,7 +233,10 @@ class ReferenceAnalysis(Forward[Ref], ABC):
         """
         code = callee.code
         params = callee.callable_region.blocks[0].args[1:]
-        arguments: dict[ir.SSAValue, ir.SSAValue] = dict(zip(params, call.args))
+        arguments: dict[ir.SSAValue, Affine] = {}
+        for param, arg in zip(params, call.args):
+            constant = constant_int(arg)
+            arguments[param] = Affine.of(arg) if constant is None else Affine(constant)
         passed: dict[ir.SSAValue, Ref] = dict(zip(params, args))
         returned: dict[Root, Root] = {}
         outputs = result.refs if isinstance(result, Positions) else (result,)
@@ -253,11 +268,10 @@ class ReferenceAnalysis(Forward[Ref], ABC):
                 case Slot(root, index):
                     if (named := root_in_caller(root)) is None:
                         return Unknown(owned)
-                    if index in arguments:
-                        return self.index(Register(named), arguments[index])
-                    if isinstance(index, ir.SSAValue) and _inside(index, code):
+                    index = index.substitute(arguments)
+                    if any(_inside_value(s, code) for s in index.symbols()):
                         return Unknown("an item at an index that the callee computes")
-                    return Slot(named, index)
+                    return self.index(Register(named), index)
                 case Members(members):
                     return type(ref)(tuple(rename(m, True) for m in members))
             return ref

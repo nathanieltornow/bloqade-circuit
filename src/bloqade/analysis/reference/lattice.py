@@ -1,5 +1,6 @@
 """This module holds the lattice of references that the reference analysis computes."""
 
+from typing import ClassVar
 from dataclasses import field, dataclass
 
 from kirin import ir, types
@@ -9,6 +10,11 @@ from kirin.lattice import (
     SimpleJoinMixin,
     SimpleMeetMixin,
 )
+
+from .index import Slice, Affine
+
+Step = Affine | Slice
+"""One step of an access path: an index into a register, or a slice of it."""
 
 
 @dataclass(frozen=True, repr=False)
@@ -84,11 +90,52 @@ def _owner(root: Root) -> str:
     return repr(root) if isinstance(root, Returned) else _name(root)
 
 
+class Place(Ref):
+    """A reference to tracked state at an access path below a root.
+
+    `root` owns the state. `path` holds the steps from the root to the state. An
+    empty path names the whole root. The path `(i,)` names item `i` of a register.
+    For example, `Slot(%qs, 2)` is the place of `qs[2]`, with the path `(2,)`.
+
+    Each subclass fixes whether the place names one item or a register, so a
+    `match` on the subclass tells the two apart.
+    """
+
+    __match_args__ = ("root", "path")
+    root: Root
+    one_item: ClassVar[bool]
+    """True if the place names one item of tracked state, such as one qubit."""
+
+    @property
+    def path(self) -> tuple[Step, ...]:
+        """Return the steps from the root to the state."""
+        raise NotImplementedError
+
+
+def _index(index: "Affine | int | ir.SSAValue") -> Affine:
+    """Return `index` as an affine index.
+
+    An integer becomes a constant index. An SSA value becomes the index that is
+    that value alone.
+    """
+    if isinstance(index, Affine):
+        return index
+    if isinstance(index, int):
+        return Affine(index)
+    return Affine.of(index)
+
+
 @dataclass(frozen=True, repr=False)
-class Whole(Ref):
-    """A reference to one item of tracked state, such as one qubit."""
+class Whole(Place):
+    """A reference to one item of tracked state that is a root, such as one qubit."""
 
     root: Root
+    one_item: ClassVar[bool] = True
+
+    @property
+    def path(self) -> tuple[Step, ...]:
+        """Return the empty path, which names the whole root."""
+        return ()
 
     def __repr__(self) -> str:
         """Return the short form, such as `Whole(%q)`."""
@@ -96,10 +143,16 @@ class Whole(Ref):
 
 
 @dataclass(frozen=True, repr=False)
-class Register(Ref):
+class Register(Place):
     """A reference to a whole register, which holds items of tracked state."""
 
     root: Root
+    one_item: ClassVar[bool] = False
+
+    @property
+    def path(self) -> tuple[Step, ...]:
+        """Return the empty path, which names the whole root."""
+        return ()
 
     def __repr__(self) -> str:
         """Return the short form, such as `Register(%qs)`."""
@@ -107,20 +160,48 @@ class Register(Ref):
 
 
 @dataclass(frozen=True, repr=False)
-class Slot(Ref):
+class Slot(Place):
     """A reference to one item of a register root.
 
-    If the register has a static length, a constant index lies in the range 0 to the
-    length minus 1.
+    The constructor accepts an integer or an SSA value as `index` and stores it as
+    an `Affine` index. If the register has a static length, a constant index lies in
+    the range 0 to the length minus 1.
     """
 
     root: Root
-    index: int | ir.SSAValue
+    index: Affine
+    one_item: ClassVar[bool] = True
+
+    def __init__(self, root: Root, index: "Affine | int | ir.SSAValue") -> None:
+        """Store `root` and `index`, with `index` converted to an `Affine` index."""
+        object.__setattr__(self, "root", root)
+        object.__setattr__(self, "index", _index(index))
+
+    @property
+    def path(self) -> tuple[Step, ...]:
+        """Return the path that holds the index alone."""
+        return (self.index,)
 
     def __repr__(self) -> str:
-        """Return the short form, such as `Slot(%qs, 2)`."""
-        at = self.index if isinstance(self.index, int) else _name(self.index)
-        return f"Slot({_owner(self.root)}, {at})"
+        """Return the short form, such as `Slot(%qs, 2)` or `Slot(%qs, %i + 1)`."""
+        return f"Slot({_owner(self.root)}, {self.index!r})"
+
+
+@dataclass(frozen=True, repr=False)
+class Closure(Ref):
+    """A function value that a kernel builds, with the references that it captures.
+
+    `code` is the statement that defines the body, such as a `func.Lambda`.
+    `captured` holds the reference of each captured value, in order.
+    """
+
+    code: ir.Statement
+    captured: tuple[Ref, ...]
+
+    def __repr__(self) -> str:
+        """Return the short form, such as `Closure(f, [Whole(%q)])`."""
+        name = getattr(self.code, "sym_name", self.code.name)
+        return f"Closure({name}, [{', '.join(map(repr, self.captured))}])"
 
 
 @dataclass(frozen=True, repr=False)
@@ -195,10 +276,12 @@ UNTRACKED = Untracked()
 def roots(ref: Ref) -> list[Root]:
     """Return the roots that `ref` names."""
     match ref:
-        case Whole(root) | Register(root) | Slot(root, _):
+        case Place(root):
             return [root]
         case Members(members):
             return [root for member in members for root in roots(member)]
+        case Closure(_, captured):
+            return [root for member in captured for root in roots(member)]
     return []
 
 

@@ -28,6 +28,7 @@ from bloqade.analysis.reference import (
     Root,
     Slot,
     Whole,
+    Affine,
     Register,
     Untracked,
     positions,
@@ -282,17 +283,21 @@ class Linearize(EmitABC[Frame, Value]):
                 insert = stmts.Insert(frame.wire(root), at, wire)
                 frame.wires[root] = frame.push(insert).result
 
-    def index(self, frame: Frame, index: int | ir.SSAValue) -> ir.SSAValue:
+    def index(self, frame: Frame, index: Affine) -> ir.SSAValue:
         """Return the jeff index of a slot at `index`.
 
-        The validation refuses a negative constant index, which only a register
-        of unknown length keeps.
+        A constant index becomes a constant. An index that is one SSA value alone
+        becomes the jeff value of that SSA value. The validation refuses a negative
+        constant index, which only a register of unknown length keeps.
         """
-        if isinstance(index, ir.SSAValue):
-            return frame.scalar(index)
-        if index < 0:
-            raise interp.InterpreterError(f"a negative index {index}")
-        return frame.push(stmts.ConstInt(value=index)).result
+        if (constant := index.constant) is not None:
+            if constant < 0:
+                raise interp.InterpreterError(f"a negative index {constant}")
+            return frame.push(stmts.ConstInt(value=constant)).result
+        match tuple(index.terms):
+            case ((ir.SSAValue() as value, 1),) if index.const == 0:
+                return frame.scalar(value)
+        raise interp.InterpreterError(f"the index {index!r} has no jeff value")
 
     def qubits(self, value: ir.SSAValue) -> Sequence[Ref]:
         """Return the references of the qubits that `value` holds."""

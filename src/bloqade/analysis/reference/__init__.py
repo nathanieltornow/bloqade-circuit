@@ -5,15 +5,24 @@ roots of one kind of tracked state, such as squin qubits or jeff wires.
 """
 
 from . import impls as impls
+from .index import (
+    Iter as Iter,
+    Slice as Slice,
+    Affine as Affine,
+    same as same,
+)
 from .lattice import (
     CARRIED as CARRIED,
     UNTRACKED as UNTRACKED,
     Ref as Ref,
     Root as Root,
     Slot as Slot,
+    Step as Step,
     Items as Items,
+    Place as Place,
     Whole as Whole,
     Bottom as Bottom,
+    Closure as Closure,
     Members as Members,
     Unknown as Unknown,
     Register as Register,

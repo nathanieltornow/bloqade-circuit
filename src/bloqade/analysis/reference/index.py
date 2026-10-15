@@ -29,12 +29,30 @@ class Iter:
     stmt: ir.Statement
     values: range | None = None
 
+    def __repr__(self) -> str:
+        """Return the name of the iteration variable, such as `%i`.
+
+        A loop names the first argument of its body. A map names its result
+        with the suffix `[*]`, such as `%ys[*]`.
+        """
+        for region in self.stmt.regions:
+            if region.blocks and region.blocks[0].args:
+                return _name(region.blocks[0].args[0])
+        if self.stmt.results:
+            return _name(self.stmt.results[0]) + "[*]"
+        return f"%{self.stmt.name}"
+
+
+def _name(value: ir.SSAValue) -> str:
+    """Return the printed name of an SSA value, such as `%n`."""
+    return f"%{value.name}" if value.name else "%?"
+
 
 Sym = ir.SSAValue | Iter
 """A symbol of an affine index: an integer SSA value or an `Iter`."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class Affine:
     """The index `const + sum(a * s for s, a in terms)`.
 
@@ -45,6 +63,23 @@ class Affine:
 
     const: int = 0
     terms: frozenset[tuple[Sym, int]] = frozenset()
+
+    def __repr__(self) -> str:
+        """Return the index as a sum, such as `2*%i + 1` or `%n - 1`."""
+        named = sorted(
+            (repr(s) if isinstance(s, Iter) else _name(s), a) for s, a in self.terms
+        )
+        parts: list[str] = []
+        for name, a in named:
+            factor = "" if abs(a) == 1 else f"{abs(a)}*"
+            sign = "-" if a < 0 else "+"
+            parts.append(f"{sign} {factor}{name}" if parts else f"{sign}{factor}{name}")
+        text = " ".join(parts).removeprefix("+")
+        if not text:
+            return str(self.const)
+        if self.const:
+            text += f" {'-' if self.const < 0 else '+'} {abs(self.const)}"
+        return text
 
     @staticmethod
     def make(const: int, coeffs: Mapping[Sym, int]) -> Affine:
@@ -132,7 +167,7 @@ def same(a: Affine, b: Affine) -> bool | None:
     return None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class Slice:
     """The items `start + j*step` of a register, for `j` from 0 to `length - 1`.
 
@@ -142,6 +177,15 @@ class Slice:
     start: Affine
     step: int
     length: Affine | None
+
+    def __repr__(self) -> str:
+        """Return the slice as `start:step:length`, such as `1:1:2`.
+
+        A slice that runs to the end of a register of unknown length prints
+        `?` as its length.
+        """
+        length = "?" if self.length is None else repr(self.length)
+        return f"{self.start!r}:{self.step}:{length}"
 
     def item(self, j: Affine) -> Affine:
         """Return the register index of item `j` of the slice."""

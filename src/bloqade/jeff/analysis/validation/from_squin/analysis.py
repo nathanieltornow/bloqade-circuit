@@ -572,7 +572,7 @@ class _Indexing(interp.MethodTable):
         match check.refs[stmt.result]:
             case Unknown(reason):
                 check.refuse(stmt, reason)
-            case Slot(_, int(index)) if index < 0:
+            case Slot(_, index) if (index.constant or 0) < 0:
                 check.refuse(stmt, "a negative index into a register of unknown length")
             case Whole() | Slot() | Members():
                 pass

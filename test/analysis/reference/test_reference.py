@@ -234,7 +234,7 @@ def test_a_returned_register_keeps_its_static_length():
     first, second = (refs[v] for v in cx.inputs)
     assert isinstance(first, Slot) and isinstance(second, Slot)
     assert first.root == second.root
-    assert first.index == second.index == 1
+    assert first.index == second.index and first.index.constant == 1
     assert repr(first) == "Slot(%qs = make_pair()[0], 1)"
 
 
