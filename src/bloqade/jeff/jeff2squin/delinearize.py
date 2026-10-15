@@ -18,7 +18,7 @@ from bloqade.jeff.gates import canonical
 from bloqade.jeff.types import WireType, QuregType, is_subtype, qureg_length
 from bloqade.squin.gate import stmts as gate_stmts
 from bloqade.jeff.dialects import stmts
-from bloqade.analysis.reference import Ref, Slot, Whole, Register
+from bloqade.analysis.reference import Ref, Place
 from bloqade.jeff.analysis.validation.to_squin.gates import (
     SINGLE,
     ROTATION,
@@ -199,6 +199,15 @@ class _Registers(RewriteRule):
 
     entries: Mapping[ir.SSAValue, Ref]
 
+    def unchanged(self, result: ir.SSAValue) -> bool:
+        """Return True if the wire analysis gives `result` the place of a register.
+
+        An insert has that place only if its wire or slice returns to the slots
+        it came from. The squin list then holds the same qubits as before.
+        """
+        ref = self.entries.get(result)
+        return isinstance(ref, Place) and not ref.one_item
+
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Rewrite `node` if it is a register statement."""
         match node:
@@ -214,7 +223,7 @@ class _Registers(RewriteRule):
                 (get := py.indexing.GetItem(node.reg, node.index)).insert_before(node)
                 return _replace(node, node.reg, get.result)
             case stmts.Insert():
-                if isinstance(self.entries.get(node.result), Register):
+                if self.unchanged(node.result):
                     return _replace(node, node.reg)
                 one = _const(1, node)
                 (stop := py.binop.Add(node.index, one)).insert_before(node)
@@ -232,6 +241,8 @@ class _Registers(RewriteRule):
                 )
                 return _replace(node, node.reg, part.result)
             case stmts.InsertSlice():
+                if self.unchanged(node.result):
+                    return _replace(node, node.reg)
                 (length := py_len.Len(node.slice_reg)).insert_before(node)
                 (stop := py.binop.Add(node.start, length.result)).insert_before(node)
                 spliced = _splice(
@@ -332,6 +343,6 @@ class _Calls(RewriteRule):
     def _input(self, node: stmts.Call, result: ir.SSAValue) -> ir.SSAValue | None:
         """Return the input of `node` that refers to the same state as `result`."""
         ref = self.entries.get(result)
-        if not isinstance(ref, Whole | Register | Slot):
+        if not isinstance(ref, Place):
             return None
         return next((v for v in node.inputs if self.entries.get(v) == ref), None)

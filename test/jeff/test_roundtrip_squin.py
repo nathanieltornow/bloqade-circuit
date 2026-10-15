@@ -2,17 +2,17 @@
 
 import math
 import tempfile
-from typing import Any
+from typing import Any, Literal
 from pathlib import Path
 
 import pytest
-from kirin import ir
+from kirin import ir, types
 from kirin.dialects import math as kmath, ilist
 from kirin.dialects.ilist import IList
 
 from bloqade import squin
 from bloqade.jeff import JeffToSquin, SquinToJeff, emit_jeff, load_jeff
-from bloqade.types import Qubit, MeasurementResult
+from bloqade.types import Qubit, QubitType, MeasurementResult
 from bloqade.squin.gate import _interface as gate
 
 from .build import validate
@@ -293,7 +293,41 @@ def sized_by_caller():
     return squin.broadcast.measure(flipped_register(3))
 
 
+@squin.kernel
+def ladder() -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(4)
+    squin.x(qs[0])
+    for i in range(3):
+        squin.cx(qs[i], qs[i + 1])
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def flip_two(qs: ilist.IList[Qubit, Literal[2]]):
+    squin.x(qs[0])
+    squin.x(qs[1])
+
+
+@squin.kernel
+def sliced_call() -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(4)
+    flip_two(qs[1:3])
+    squin.x(qs[1:3][1])
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def sliding(n: int) -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(4)
+    for i in range(3):
+        flip_two(qs[i : i + 2 : 1])
+    return squin.broadcast.measure(qs)
+
+
 DETERMINISTIC = [
+    (ladder, (), [1, 1, 1, 1]),
+    (sliced_call, (), [0, 1, 0, 0]),
+    (sliding, (0,), [1, 0, 0, 1]),
     (arithmetic, (2, 1, 1.5), [10, 5, 1, 1, 1.5, 3, -14, 0]),
     (arithmetic, (1, 2, 0.5), [11, 5, 1, 1, 0.5, 3, -4, 1]),
     (statements, (1,), 0),
@@ -369,3 +403,35 @@ def test_an_entangled_kernel_stays_correlated_after_the_trip(kernel):
     for _ in range(8):
         bits = as_python(simulate(back))
         assert len(set(bits)) == 1
+
+
+@squin.kernel
+def grid(qss: ilist.IList[ilist.IList[Qubit, Literal[2]], Literal[3]]):
+    squin.x(qss[0][1])
+    for i in range(2):
+        squin.cx(qss[i][1], qss[i + 1][0])
+    flip_two(qss[2])
+
+
+@squin.kernel
+def grid_from_rows() -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(6)
+    grid([qs[0:2], qs[2:4], qs[4:6]])
+    return squin.broadcast.measure(qs)
+
+
+def test_a_register_of_registers_comes_back_as_one_flat_register():
+    """Jeff stores the rows of `qss` one after another in one register."""
+    back = returned(grid)
+    (param,) = back.callable_region.blocks[0].args[1:]
+    assert param.type.is_subseteq(ilist.IListType[QubitType, types.Literal(6)])
+
+    @squin.kernel
+    def flat_grid() -> ilist.IList[MeasurementResult, Any]:
+        qs = squin.qalloc(6)
+        back(qs)
+        return squin.broadcast.measure(qs)
+
+    expected = [0, 1, 1, 0, 1, 1]
+    assert _plain(simulate(grid_from_rows)) == expected
+    assert _plain(simulate(flat_grid)) == expected

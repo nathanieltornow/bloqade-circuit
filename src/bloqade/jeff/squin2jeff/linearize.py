@@ -27,16 +27,19 @@ from bloqade.analysis.reference import (
     Ref,
     Iter,
     Root,
-    Slot,
+    Place,
+    Slice,
     Whole,
     Affine,
     Register,
     Untracked,
     positions,
+    typed_length,
 )
 from bloqade.analysis.reference.index import Sym
 from bloqade.jeff.dialects.stmts.call import declared_outputs
 from bloqade.squin.analysis.reference import qubit_items
+from bloqade.analysis.reference.layout import flat
 
 KEY = EMIT_KEY
 
@@ -66,14 +69,43 @@ def jeff_kind(kind: types.TypeAttribute) -> types.TypeAttribute:
         return WireType
     if kind.is_subseteq(MeasurementResultType):
         return types.Bool
-    if kind.is_subseteq(ilist.IListType[QubitType, types.Any]):
-        length = kind.vars[1] if isinstance(kind, types.Generic) else None
-        return qureg(length.data if isinstance(length, types.Literal) else None)
+    if (levels := qubit_levels(kind)) is not None and levels > 0:
+        return qureg(flat_length(kind, levels))
     if kind.is_subseteq(ilist.IListType[types.Float, types.Any]):
         return FloatArrayType
     if kind.is_subseteq(ilist.IListType):
         return IntArrayType
     return kind
+
+
+def qubit_levels(kind: types.TypeAttribute) -> int | None:
+    """Return how many list levels hold the qubits of type `kind`, or None.
+
+    A qubit has 0 levels, a list of qubits has 1, and a list of lists has 2.
+    """
+    if isinstance(kind, types.BottomType):
+        return None
+    if kind.is_subseteq(QubitType):
+        return 0
+    if isinstance(kind, types.Generic) and kind.is_subseteq(ilist.IListType):
+        inner = qubit_levels(kind.vars[0])
+        return None if inner is None else inner + 1
+    return None
+
+
+def flat_length(kind: types.TypeAttribute, levels: int) -> int | None:
+    """Return the count of qubits in a list of type `kind` with `levels` levels.
+
+    Jeff has one register of qubits. So a list of 3 lists of 2 qubits becomes one
+    register of 6 qubits. The result is None if a level has no static length.
+    """
+    total = 1
+    for level in range(levels):
+        length = typed_length(kind, level)
+        if length is None:
+            return None
+        total *= length
+    return total
 
 
 def elements(kind: types.TypeAttribute) -> types.TypeAttribute:
@@ -264,26 +296,60 @@ class Linearize(EmitABC[Frame, Value]):
         return method
 
     def take(self, frame: Frame, ref: Ref) -> ir.SSAValue:
-        """Return the wire of `ref`, and extract it from its register for a slot."""
-        match ref:
-            case Whole(root) | Register(root):
-                return frame.wire(root)
-            case Slot(root, index):
-                at = self.index(frame, index)
-                extract = frame.push(stmts.Extract(frame.wire(root), at))
-                frame.wires[root] = extract.result_reg
-                return extract.wire
-        raise interp.InterpreterError(f"{ref} names no wire")
+        """Return the wire or the register of `ref`, and take it out of its root.
+
+        A whole root hands over its own wire. One qubit below a root comes out with
+        an extract. A register below a root, such as a slice, comes out of the
+        register of the root with a slice extract.
+        """
+        if not isinstance(ref, Place):
+            raise interp.InterpreterError(f"{ref} names no wire")
+        root = ref.root
+        if not ref.path:
+            return frame.wire(root)
+        at = self.located(ref)
+        if isinstance(at, Affine):
+            extract = frame.push(stmts.Extract(frame.wire(root), self.index(frame, at)))
+            frame.wires[root] = extract.result_reg
+            return extract.wire
+        start, length = self.contiguous(frame, at)
+        part = frame.push(stmts.ExtractSlice(frame.wire(root), start, length))
+        part.result_reg.type = frame.wire(root).type
+        if (size := at.length.constant if at.length else None) is not None:
+            part.slice_reg.type = qureg(size)
+        frame.wires[root] = part.result_reg
+        return part.slice_reg
 
     def give(self, frame: Frame, ref: Ref, wire: ir.SSAValue) -> None:
-        """Make `wire` the current wire of `ref`, and insert it back for a slot."""
-        match ref:
-            case Whole(root) | Register(root):
-                frame.wires[root] = wire
-            case Slot(root, index):
-                at = self.index(frame, index)
-                insert = stmts.Insert(frame.wire(root), at, wire)
-                frame.wires[root] = frame.push(insert).result
+        """Make `wire` the current wire of `ref`, and insert it back below a root."""
+        if not isinstance(ref, Place):
+            return
+        root = ref.root
+        if not ref.path:
+            frame.wires[root] = wire
+            return
+        at = self.located(ref)
+        if isinstance(at, Affine):
+            insert = stmts.Insert(frame.wire(root), self.index(frame, at), wire)
+            frame.wires[root] = frame.push(insert).result
+            return
+        start, _ = self.contiguous(frame, at)
+        insert_slice = stmts.InsertSlice(frame.wire(root), start, wire)
+        frame.push(insert_slice).result.type = frame.wire(root).type
+        frame.wires[root] = insert_slice.result
+
+    def located(self, ref: Place) -> Affine | Slice:
+        """Return where `ref` lies in the register of its root, or raise."""
+        at = flat(ref)
+        if at is None:
+            raise interp.InterpreterError(f"{ref!r} has no place in one jeff register")
+        return at
+
+    def contiguous(self, frame: Frame, at: Slice) -> tuple[ir.SSAValue, ir.SSAValue]:
+        """Return the jeff start and length of the slice `at`, which has the step 1."""
+        if at.step != 1 or at.length is None:
+            raise interp.InterpreterError(f"the slice {at!r} has no jeff form")
+        return self.index(frame, at.start), self.index(frame, at.length)
 
     def index(self, frame: Frame, index: Affine) -> ir.SSAValue:
         """Return the jeff value of the affine index `index`.
@@ -370,7 +436,7 @@ class Linearize(EmitABC[Frame, Value]):
             measured = frame.push(stmts.MeasureNd(self.take(frame, ref)))
             self.give(frame, ref, measured.result_wire)
             bits.append(measured.bit)
-        if isinstance(self.refs[value], (Whole, Slot)):
+        if isinstance(ref := self.refs[value], Place) and ref.one_item:
             return bits[0]
         return frame.push(stmts.IntArrayCreate(tuple(bits), bitwidth=1)).result
 

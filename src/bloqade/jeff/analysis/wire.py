@@ -13,7 +13,9 @@ from bloqade.analysis.reference import (
     CARRIED,
     UNTRACKED,
     Ref,
+    Place,
     Whole,
+    Affine,
     Bottom,
     Unknown,
     Register,
@@ -22,6 +24,7 @@ from bloqade.analysis.reference import (
     ReferenceAnalysis,
     argument_of,
 )
+from bloqade.analysis.reference.index import python_slice
 
 WIRE_KEY = "jeff.reference"
 """The registry key of the rules for jeff statements."""
@@ -58,6 +61,28 @@ class WireReferenceAnalysis(ReferenceAnalysis):
         if isinstance(root, ir.ResultValue) and isinstance(root.stmt, stmts.RegAlloc):
             return constant_int(argument_of(root.stmt.size, calls))
         return qureg_length(root.type)
+
+
+def _register_place(ref: Ref) -> bool:
+    """Return True if `ref` is the place of a register."""
+    return isinstance(ref, Place) and not ref.one_item
+
+
+def _slice_of(
+    analysis: WireReferenceAnalysis,
+    register: Ref,
+    start: ir.SSAValue,
+    length: ir.SSAValue | int,
+) -> Ref:
+    """Return the place of the `length` slots of `register` from `start` on."""
+    if not _register_place(register):
+        return Unknown("a slice of a value that is not a register")
+    first = analysis.affine(start)
+    count = Affine(length) if isinstance(length, int) else analysis.affine(length)
+    made = python_slice(first, first + count, 1, analysis.length(register))
+    if made is None:
+        return Unknown("a slice that the analysis cannot name")
+    return analysis.sliced(register, made)
 
 
 @stmts.wire.dialect.register(key=WIRE_KEY)
@@ -134,11 +159,38 @@ class _Wire(interp.MethodTable):
     ) -> tuple[Ref, ...]:
         """Hand the register on if the wire returns to the slot that it came from."""
         register, wire = frame.get(stmt.reg), frame.get(stmt.wire)
-        if isinstance(register, Register) and wire == analysis.index(
-            register, stmt.index
-        ):
+        if _register_place(register) and wire == analysis.index(register, stmt.index):
             return (register,)
         return (Unknown("a register that holds a wire from another slot"),)
+
+    @interp.impl(stmts.ExtractSlice)
+    def extract_slice(
+        self,
+        analysis: WireReferenceAnalysis,
+        frame: ForwardFrame[Ref],
+        stmt: stmts.ExtractSlice,
+    ) -> tuple[Ref, ...]:
+        """Hand the register on and make the new register a slice of it."""
+        register = frame.get(stmt.reg)
+        return (register, _slice_of(analysis, register, stmt.start, stmt.length))
+
+    @interp.impl(stmts.InsertSlice)
+    def insert_slice(
+        self,
+        analysis: WireReferenceAnalysis,
+        frame: ForwardFrame[Ref],
+        stmt: stmts.InsertSlice,
+    ) -> tuple[Ref, ...]:
+        """Hand the register on if the slice returns to the slots it came from."""
+        register, part = frame.get(stmt.reg), frame.get(stmt.slice_reg)
+        if not _register_place(register):
+            return (Unknown("a register that holds a slice from another place"),)
+        length = analysis.length(part) if isinstance(part, Place) else None
+        if length is not None:
+            back = _slice_of(analysis, register, stmt.start, length)
+            if back == part:
+                return (register,)
+        return (Unknown("a register that holds a slice from another place"),)
 
 
 @stmts.gate.dialect.register(key=WIRE_KEY)

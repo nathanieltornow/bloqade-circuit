@@ -137,7 +137,7 @@ def argument_of(value: ir.SSAValue, calls: tuple[Returned, ...]) -> ir.SSAValue:
     return value
 
 
-def _typed_length(kind: types.TypeAttribute, levels: int) -> int | None:
+def typed_length(kind: types.TypeAttribute, levels: int) -> int | None:
     """Return the static length of the list `levels` levels inside the type `kind`.
 
     For example, the type `IList[IList[Qubit, 2], 3]` has the length 3 at level 0
@@ -169,7 +169,7 @@ def place_length(place: Place, register_length: RegisterLength) -> int | None:
     origin, calls = origin_of(place.root)
     if not path:
         return register_length(origin, calls)
-    return _typed_length(origin.type, len(path))
+    return typed_length(origin.type, len(path))
 
 
 def items_of(ref: Ref, register_length: RegisterLength) -> tuple[Ref, ...] | None:

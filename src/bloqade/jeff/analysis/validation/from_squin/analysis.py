@@ -34,16 +34,20 @@ from bloqade.jeff.forms import (
 from bloqade.squin.gate import stmts as gate_stmts
 from bloqade.analysis.reference import (
     Ref,
-    Slot,
+    Step,
+    Place,
     Whole,
+    Affine,
     Members,
     Unknown,
     Register,
     Untracked,
+    same,
     positions,
 )
 from bloqade.jeff.dialects.stmts.call import declared_outputs
 from bloqade.squin.analysis.reference import QubitReferenceAnalysis, qubit_items
+from bloqade.analysis.reference.layout import flat
 
 from ..base import Check
 
@@ -74,18 +78,42 @@ def _listed(kind: types.TypeAttribute) -> bool:
     return not kind.is_subseteq(types.Bottom) and kind.is_subseteq(types.Tuple)
 
 
+def _apart(x: Step, y: Step) -> bool:
+    """Return True if the steps `x` and `y` of two paths share no item.
+
+    Two indices are apart if `same` proves them different. A constant index lies
+    apart from a constant slice that skips it. Two constant slices lie apart if
+    they pick no common item.
+    """
+
+    def picked(step: Step) -> frozenset[int] | None:
+        if isinstance(step, Affine):
+            return None if step.constant is None else frozenset({step.constant})
+        if step.length is None or step.length.constant is None:
+            return None
+        if step.start.constant is None:
+            return None
+        return frozenset(
+            step.start.constant + j * step.step for j in range(step.length.constant)
+        )
+
+    if isinstance(x, Affine) and isinstance(y, Affine):
+        return same(x, y) is False
+    a, b = picked(x), picked(y)
+    return a is not None and b is not None and not a & b
+
+
 def _overlap(a: Ref, b: Ref) -> bool:
     """Return True if the references `a` and `b` name a common qubit.
 
-    Two slots at different runtime indices count as distinct.
+    Two qubits at different runtime indices count as distinct. A register place
+    overlaps every place below it, unless a step of the two paths lies apart.
     """
-    match a, b:
-        case (Register(root), Slot(slot_root, _)) | (
-            Slot(slot_root, _),
-            Register(root),
-        ):
-            return root == slot_root
-    return a == b
+    if not (isinstance(a, Place) and isinstance(b, Place)) or a.root != b.root:
+        return a == b
+    if a.one_item and b.one_item:
+        return a == b
+    return not any(_apart(x, y) for x, y in zip(a.path, b.path))
 
 
 @dataclass
@@ -168,13 +196,29 @@ class SquinToJeffAnalysis(Check[EmptyLattice]):
     def qubit(self, node: ir.Statement, ref: Ref) -> bool:
         """Return True if `ref` names one qubit that a wire can carry, else refuse."""
         match ref:
-            case Whole() | Slot():
-                return True
+            case Place() if ref.one_item:
+                if flat(ref) is not None:
+                    return True
+                self.refuse(
+                    node, "a qubit of a register of registers of unknown inner length"
+                )
             case Unknown(reason):
                 self.refuse(node, reason)
             case _:
                 self.refuse(node, "a qubit that no wire carries")
         return False
+
+    def passed(self, node: ir.Statement, ref: Ref) -> None:
+        """Refuse a register place that jeff cannot pass to a call as one register.
+
+        A slice with a step other than 1 has its qubits apart in the register.
+        Jeff has no statement that builds a register from single wires.
+        """
+        if not isinstance(ref, Place) or ref.one_item or not ref.path:
+            return
+        at = flat(ref)
+        if at is None or isinstance(at, Affine) or at.step != 1 or at.length is None:
+            self.refuse(node, "a strided slice of a register passed to a call")
 
     def items(self, node: ir.Statement, value: ir.SSAValue) -> Sequence[Ref]:
         """Return the qubits that `value` holds, or refuse and return none.
@@ -334,8 +378,10 @@ class _Func(interp.MethodTable):
             return check.accept(frame, stmt)
         for arg in stmt.inputs:
             match check.refs[arg]:
-                case Whole() | Register() | Slot():
-                    pass
+                case Place() as ref:
+                    if ref.one_item:
+                        check.qubit(stmt, ref)
+                    check.passed(stmt, ref)
                 case Unknown(reason):
                     check.refuse(stmt, reason)
                 case Members():
@@ -388,10 +434,12 @@ class _Func(interp.MethodTable):
             match ref:
                 case Whole() | Register():
                     pass
-                case Slot():
+                case Place() if ref.path and ref.one_item:
                     check.refuse(
                         stmt, "a function that returns one qubit of a register"
                     )
+                case Place() if ref.path:
+                    check.refuse(stmt, "a function that returns a part of a register")
                 case Members():
                     check.refuse(stmt, "a function that returns a list of qubits")
                 case Unknown(reason):
@@ -548,6 +596,10 @@ class _Constant(interp.MethodTable):
                 pass
             case ilist.IList(data=range()):
                 pass
+            case slice(start=start, stop=stop, step=step) if all(
+                bound is None or type(bound) is int for bound in (start, stop, step)
+            ):
+                pass
             case ilist.IList(data=list(items)) if _one_array(items):
                 pass
             case tuple(items) if all(_number_or_list(item) for item in items):
@@ -572,9 +624,9 @@ class _Indexing(interp.MethodTable):
         match check.refs[stmt.result]:
             case Unknown(reason):
                 check.refuse(stmt, reason)
-            case Slot(_, index) if (index.constant or 0) < 0:
-                check.refuse(stmt, "a negative index into a register of unknown length")
-            case Whole() | Slot() | Members():
+            case Untracked() if stmt.index.type.is_subseteq(types.Slice):
+                check.refuse(stmt, "a slice of a classical list")
+            case Place() | Members():
                 pass
             case _ if stmt.obj.type.is_subseteq(types.Tuple) and (
                 constant_int(stmt.index) is None

@@ -45,5 +45,6 @@ from .analysis import (
     origin_of as origin_of,
     argument_of as argument_of,
     place_length as place_length,
+    typed_length as typed_length,
 )
 from .integers import IndexAnalysis as IndexAnalysis

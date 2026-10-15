@@ -8,8 +8,11 @@ from bloqade.jeff.types import qureg
 from bloqade.jeff.dialects import stmts
 from bloqade.analysis.reference import (
     UNTRACKED,
+    Part,
     Slot,
+    Slice,
     Whole,
+    Affine,
     Bottom,
     Unknown,
     Register,
@@ -283,3 +286,28 @@ def test_a_bottom_type_is_not_tracked():
     assert analysis.shape(types.Bottom) is None
     assert analysis.shape(jeff.WireType) == 0
     assert analysis.shape(jeff.QuregType) == 1
+
+
+def test_a_slice_is_a_part_of_its_register_until_it_returns():
+    """An extracted slice names its slots, and a matching insert restores the register."""
+    block, (reg,) = entry(qureg(4))
+    one, two, zero = constants(block, 1, 2, 0)
+    part = add(block, stmts.ExtractSlice(reg, one, two))
+    item = add(block, stmts.Extract(part.slice_reg, one))
+    (flipped,) = gate(block, "x", item.wire)
+    inner = add(block, stmts.Insert(item.result_reg, one, flipped)).result
+    back = add(block, stmts.InsertSlice(part.result_reg, one, inner)).result
+    moved = add(block, stmts.InsertSlice(part.result_reg, zero, inner)).result
+    mt = method(
+        block,
+        (back, moved),
+        types.Generic(tuple, qureg(4), qureg(4)),
+        inputs=(qureg(4),),
+    )
+    frame, _ = WireReferenceAnalysis(jeff.kernel).run(mt)
+    refs = frame.entries
+    assert refs[part.slice_reg] == Part(reg, (Slice(Affine(1), 1, Affine(2)),))
+    assert refs[item.wire] == Slot(reg, 2)
+    assert refs[inner] == refs[part.slice_reg]
+    assert refs[back] == Register(reg)
+    assert reason(refs[moved]) == "a register that holds a slice from another place"

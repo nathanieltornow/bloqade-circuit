@@ -340,7 +340,14 @@ REFERENCE = [
 ROUNDTRIP = [
     (kernel, args) for kernel, args, _ in trip.DETERMINISTIC if kernel is not trip.logic
 ] + [
-    (kernel, ()) for kernel in (trip.bell, trip.ghz, trip.bell_list, trip.ghz_register)
+    (kernel, ())
+    for kernel in (
+        trip.bell,
+        trip.ghz,
+        trip.bell_list,
+        trip.ghz_register,
+        trip.grid_from_rows,
+    )
 ]
 
 
