@@ -1,19 +1,17 @@
 """This module holds the reference rules for kirin's own dialects."""
 
-from kirin import interp
+from kirin import types, interp
 from kirin.dialects import py, scf, func, ilist
 from kirin.analysis.forward import ForwardFrame
-
-from bloqade.constants import constant_int
+from kirin.dialects.scf.absint import Methods as ScfAbsint
 
 from .lattice import (
     UNTRACKED,
     Ref,
     Items,
     Members,
-    Unknown,
-    Register,
     Positions,
+    place,
 )
 from .analysis import KEY, ReferenceAnalysis
 
@@ -43,7 +41,7 @@ class _IList(interp.MethodTable):
     ) -> tuple[Ref, ...]:
         """Return `Items` if the list holds tracked state, and `Untracked` otherwise."""
         members = frame.get_values(stmt.values)
-        if analysis.kind(stmt.result.type) is not None or any(
+        if analysis.shape(stmt.result.type) is not None or any(
             m != UNTRACKED for m in members
         ):
             return (Items(members),)
@@ -54,8 +52,8 @@ class _IList(interp.MethodTable):
         self, analysis: ReferenceAnalysis, frame: ForwardFrame[Ref], stmt: ilist.Map
     ) -> tuple[Ref, ...]:
         """Return the result as a register root if the map produces tracked values."""
-        if analysis.kind(stmt.result.type) is Register:
-            return (Register(stmt.result),)
+        if (depth := analysis.shape(stmt.result.type)) is not None and depth > 0:
+            return (place(stmt.result, (), depth),)
         return (UNTRACKED,)
 
 
@@ -97,21 +95,22 @@ class _Indexing(interp.MethodTable):
         frame: ForwardFrame[Ref],
         stmt: py.indexing.GetItem,
     ) -> tuple[Ref, ...]:
-        """Return the reference of the item at the index."""
+        """Return the reference of the item or the slice at the index."""
         obj = frame.get(stmt.obj)
-        kind = analysis.kind(stmt.result.type)
-        if constant_int(stmt.index) is None:
-            # A register read with a slice gives a register, which has no root.
-            if isinstance(obj, Register) and kind is Register:
-                return (Unknown("a slice of a register"),)
-            # A tuple read at a runtime index is fine if the item is untracked.
-            if isinstance(obj, Positions) and kind is None:
+        shape = analysis.shape(stmt.result.type)
+        if stmt.index.type.is_subseteq(types.Slice):
+            if shape is None and not isinstance(obj, Members):
                 return (UNTRACKED,)
+            return (analysis.slice(obj, stmt.index),)
+        index = analysis.affine(stmt.index)
+        # A tuple read at a runtime index is fine if the item is untracked.
+        if index.constant is None and isinstance(obj, Positions) and shape is None:
+            return (UNTRACKED,)
         # An untracked item of a list or tuple is looked up. Any other untracked
         # read, such as a classical list, needs no reference.
-        if kind is None and not isinstance(obj, Members):
+        if shape is None and not isinstance(obj, Members):
             return (UNTRACKED,)
-        return (analysis.index(obj, stmt.index),)
+        return (analysis.index(obj, index),)
 
 
 @func.dialect.register(key=KEY)
@@ -154,3 +153,18 @@ class _Scf(interp.MethodTable):
         """Run the body until the carried references stop changing."""
         carried = frame.get_values(stmt.initializers)
         return analysis.run_loop(frame, stmt, stmt.body, carried)
+
+    @interp.impl(scf.IfElse)
+    def if_else(
+        self, analysis: ReferenceAnalysis, frame: ForwardFrame[Ref], stmt: scf.IfElse
+    ):
+        """Join the branches with kirin's rule, then leave the scope of the branches.
+
+        Kirin runs only one branch if the condition is a constant. That branch can
+        yield a place whose index the branch computes, so the result must leave the
+        scope of the statement.
+        """
+        results = ScfAbsint().if_else(analysis, frame, stmt)
+        if isinstance(results, tuple):
+            return tuple(analysis.leave(r, stmt) for r in results)
+        return results

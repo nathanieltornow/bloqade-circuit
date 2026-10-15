@@ -116,7 +116,7 @@ def test_a_wire_that_a_callee_allocates_is_rooted_at_the_call():
     call = add(block, stmts.Call(callee, (), (jeff.WireType,)))
     mt = method(block, (call.results[0],), jeff.WireType)
     (ref,) = returned(mt)
-    assert ref == Whole(Returned(call, 0, fresh))
+    assert ref == Whole(Returned(call, (0,), fresh))
     assert repr(ref) == "Whole(make()[0])"
 
 
@@ -225,7 +225,7 @@ def test_a_returned_register_keeps_its_allocated_length():
         types.Generic(tuple, jeff.WireType, jeff.QuregType, jeff.WireType),
         inputs=(jeff.WireType,),
     )
-    root = Returned(call, 0, made)
+    root = Returned(call, (0,), made)
     assert returned(mt) == (Whole(q), Register(root), Slot(root, 2))
 
 
@@ -280,6 +280,6 @@ def test_a_while_loop_that_swaps_its_wires_loses_both():
 
 def test_a_bottom_type_is_not_tracked():
     analysis = WireReferenceAnalysis(jeff.kernel)
-    assert analysis.kind(types.Bottom) is None
-    assert analysis.kind(jeff.WireType) is Whole
-    assert analysis.kind(jeff.QuregType) is Register
+    assert analysis.shape(types.Bottom) is None
+    assert analysis.shape(jeff.WireType) == 0
+    assert analysis.shape(jeff.QuregType) == 1

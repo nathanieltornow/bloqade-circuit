@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from collections.abc import Iterator
 
 import pytest
+import test_places as places
 import test_reference as ref_kernels
 from kirin import ir, interp
 from kirin.dialects import scf, func, ilist
@@ -117,7 +118,7 @@ def root_value(frame: interp.Frame, root: object) -> Any:
     if not isinstance(root, Returned):
         return frame.entries.get(root)  # type: ignore[arg-type]
     results = root.call.results
-    position = root.position
+    position, *rest = root.path
     if len(results) == 1:
         value = frame.entries.get(results[0])
         if isinstance(value, tuple) and len(value) > position:
@@ -126,6 +127,8 @@ def root_value(frame: interp.Frame, root: object) -> Any:
             return None
     else:
         value = frame.entries.get(results[position])
+    for step in rest:
+        value = value[step]
     return value
 
 
@@ -283,6 +286,25 @@ def drive_ladder():
     ladder(qs)
 
 
+@squin.kernel
+def drive_nested():
+    qs = squin.qalloc(6)
+    places.nested([qs[0:2], qs[2:4], qs[4:6]])
+
+
+@squin.kernel
+def drive_slices():
+    qs = squin.qalloc(6)
+    places.slices(qs)
+    places.ladder(qs)
+
+
+PLACES = [
+    (drive_nested, ()),
+    (drive_slices, ()),
+    (places.calls_with_indices, (2,)),
+]
+
 REFERENCE = [
     (drive_through, ()),
     (drive_elements, ()),
@@ -315,7 +337,7 @@ def _id(case) -> str:
     return f"{kernel.sym_name}{args}"
 
 
-@pytest.mark.parametrize("case", REFERENCE + ROUNDTRIP, ids=_id)
+@pytest.mark.parametrize("case", PLACES + REFERENCE + ROUNDTRIP, ids=_id)
 def test_places_name_the_simulated_qubits(case):
     kernel, args = case
     run_checked(kernel, *args)

@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 
 from kirin import ir, types, interp
 from kirin.emit import EmitABC, EmitFrame
-from kirin.dialects import func, ilist, ssacfg
+from kirin.dialects import scf, func, ilist, ssacfg
 from kirin.emit.abc import EmitTable
 from kirin.worklist import WorkList
 
@@ -25,6 +25,7 @@ from bloqade.jeff.types import (
 from bloqade.jeff.dialects import stmts, kernel as jeff_kernel
 from bloqade.analysis.reference import (
     Ref,
+    Iter,
     Root,
     Slot,
     Whole,
@@ -33,6 +34,7 @@ from bloqade.analysis.reference import (
     Untracked,
     positions,
 )
+from bloqade.analysis.reference.index import Sym
 from bloqade.jeff.dialects.stmts.call import declared_outputs
 from bloqade.squin.analysis.reference import qubit_items
 
@@ -284,20 +286,45 @@ class Linearize(EmitABC[Frame, Value]):
                 frame.wires[root] = frame.push(insert).result
 
     def index(self, frame: Frame, index: Affine) -> ir.SSAValue:
-        """Return the jeff index of a slot at `index`.
+        """Return the jeff value of the affine index `index`.
 
-        A constant index becomes a constant. An index that is one SSA value alone
-        becomes the jeff value of that SSA value. The validation refuses a negative
-        constant index, which only a register of unknown length keeps.
+        A constant index becomes a constant. Any other index becomes the sum of
+        each symbol times its coefficient, plus the constant. The validation
+        refuses a negative constant index, which only a register of unknown length
+        keeps.
         """
         if (constant := index.constant) is not None:
             if constant < 0:
                 raise interp.InterpreterError(f"a negative index {constant}")
             return frame.push(stmts.ConstInt(value=constant)).result
-        match tuple(index.terms):
-            case ((ir.SSAValue() as value, 1),) if index.const == 0:
-                return frame.scalar(value)
-        raise interp.InterpreterError(f"the index {index!r} has no jeff value")
+        total: ir.SSAValue | None = None
+        # The symbols go in the order of their printed names, so that the
+        # emitted statements stay the same from one run to the next.
+        for symbol, a in sorted(index.terms, key=lambda term: repr(term[0])):
+            term = self.symbol(frame, symbol)
+            if a != 1:
+                factor = frame.push(stmts.ConstInt(value=a)).result
+                term = frame.push(stmts.IntMul(term, factor)).result
+            total = (
+                term if total is None else frame.push(stmts.IntAdd(total, term)).result
+            )
+        assert total is not None
+        if index.const:
+            offset = frame.push(stmts.ConstInt(value=index.const)).result
+            total = frame.push(stmts.IntAdd(total, offset)).result
+        return total
+
+    def symbol(self, frame: Frame, symbol: Sym) -> ir.SSAValue:
+        """Return the jeff value of the index symbol `symbol`.
+
+        The `Iter` symbol of an `scf.for` loop is the loop variable. Any other
+        symbol is an integer SSA value with a jeff value of its own.
+        """
+        if isinstance(symbol, Iter):
+            if not isinstance(symbol.stmt, scf.For):
+                raise interp.InterpreterError(f"{symbol!r} has no jeff value")
+            return frame.scalar(symbol.stmt.body.blocks[0].args[0])
+        return frame.scalar(symbol)
 
     def qubits(self, value: ir.SSAValue) -> Sequence[Ref]:
         """Return the references of the qubits that `value` holds."""

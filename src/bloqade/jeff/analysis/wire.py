@@ -37,14 +37,14 @@ class WireReferenceAnalysis(ReferenceAnalysis):
 
     keys = (WIRE_KEY, KEY, "absint")
 
-    def kind(self, type_: types.TypeAttribute) -> type[Whole] | type[Register] | None:
-        """Return `Whole` for a wire, `Register` for a register, else None."""
+    def shape(self, type_: types.TypeAttribute) -> int | None:
+        """Return 0 for a wire, 1 for a register, else None."""
         if isinstance(type_, types.BottomType):
             return None
         if type_.is_subseteq(QuregType):
-            return Register
+            return 1
         if type_.is_subseteq(WireType):
-            return Whole
+            return 0
         return None
 
     def register_length(

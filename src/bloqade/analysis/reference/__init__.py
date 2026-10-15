@@ -15,6 +15,8 @@ from .lattice import (
     CARRIED as CARRIED,
     UNTRACKED as UNTRACKED,
     Ref as Ref,
+    Item as Item,
+    Part as Part,
     Root as Root,
     Slot as Slot,
     Step as Step,
@@ -29,14 +31,19 @@ from .lattice import (
     Returned as Returned,
     Positions as Positions,
     Untracked as Untracked,
+    child as child,
+    place as place,
     roots as roots,
     positions as positions,
 )
 from .analysis import (
     KEY as KEY,
+    OUT_OF_SCOPE as OUT_OF_SCOPE,
     RegisterLength as RegisterLength,
     ReferenceAnalysis as ReferenceAnalysis,
     items_of as items_of,
     origin_of as origin_of,
     argument_of as argument_of,
+    place_length as place_length,
 )
+from .integers import IndexAnalysis as IndexAnalysis

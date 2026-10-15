@@ -19,14 +19,17 @@ Step = Affine | Slice
 
 @dataclass(frozen=True, repr=False)
 class Returned:
-    """A root that a call allocates and returns at one position of its result.
+    """A root that a call allocates and returns at one path into its result.
 
     `call` is a statement with kirin's `StaticCall` trait. `inner` is the root
-    inside the callee that the call returns at `position`.
+    inside the callee that the call returns at `path`. The first entry of `path`
+    is the position of the output, and the call result of a single output has the
+    position 0. Each further entry picks a member of a tuple or a literal list. So
+    `(1, 0)` names member 0 of the tuple at output position 1.
     """
 
     call: ir.Statement
-    position: int
+    path: tuple[int, ...]
     inner: "Root"
 
     @property
@@ -34,14 +37,21 @@ class Returned:
         """Return the method that the call invokes, through kirin's `StaticCall`."""
         return self.call.get_present_trait(ir.StaticCall).get_callee(self.call)
 
+    @property
+    def position(self) -> int:
+        """Return the position of the output that holds the root."""
+        return self.path[0]
+
     def __repr__(self) -> str:
         """Return the call result that holds the root and its origin in the callee.
 
         The form is `%x = make()[0]`. A result that packs several outputs in a tuple
-        prints as `%pair[1] = make()[1]`. A result without a name prints as
-        `make()[0]`.
+        prints as `%pair[1] = make()[1]`. A member of a returned tuple or list adds
+        its own subscript, as in `make()[0][1]`. A result without a name prints
+        as `make()[0]`.
         """
-        origin = f"{self.callee.sym_name}()[{self.position}]"
+        steps = "".join(f"[{p}]" for p in self.path)
+        origin = f"{self.callee.sym_name}(){steps}"
         results = self.call.results
         packed = len(results) == 1
         value = results[0] if packed else results[self.position]
@@ -106,10 +116,17 @@ class Place(Ref):
     one_item: ClassVar[bool]
     """True if the place names one item of tracked state, such as one qubit."""
 
+    path: tuple[Step, ...]
+    """The steps from the root to the state. Each subclass provides it."""
+
     @property
-    def path(self) -> tuple[Step, ...]:
-        """Return the steps from the root to the state."""
-        raise NotImplementedError
+    def depth(self) -> int:
+        """Return the count of index steps from this place down to one item.
+
+        One item has the depth 0. A register of items has the depth 1, and a
+        register of registers has the depth 2.
+        """
+        return 0
 
 
 def _index(index: "Affine | int | ir.SSAValue") -> Affine:
@@ -144,10 +161,21 @@ class Whole(Place):
 
 @dataclass(frozen=True, repr=False)
 class Register(Place):
-    """A reference to a whole register, which holds items of tracked state."""
+    """A reference to a whole register, which holds items of tracked state.
+
+    `levels` is the depth of the register. A register of qubits has 1 level,
+    and a register of registers of qubits has 2. The root fixes the levels, so
+    `levels` takes no part in equality.
+    """
 
     root: Root
+    levels: int = field(default=1, compare=False, hash=False)
     one_item: ClassVar[bool] = False
+
+    @property
+    def depth(self) -> int:
+        """Return the levels of the register."""
+        return self.levels
 
     @property
     def path(self) -> tuple[Step, ...]:
@@ -185,6 +213,83 @@ class Slot(Place):
     def __repr__(self) -> str:
         """Return the short form, such as `Slot(%qs, 2)` or `Slot(%qs, %i + 1)`."""
         return f"Slot({_owner(self.root)}, {self.index!r})"
+
+
+def _path(path: tuple[Step, ...]) -> str:
+    """Return the printed form of a path, such as `(0, %i + 1)`."""
+    inner = ", ".join(map(repr, path))
+    return f"({inner},)" if len(path) == 1 else f"({inner})"
+
+
+@dataclass(frozen=True, repr=False)
+class Item(Place):
+    """A reference to one item of tracked state below a register of registers.
+
+    The path holds 2 or more steps. For example, `qss[0][1]` has the place
+    `Item(%qss, (0, 1))`. A `Slot` names an item at a path of one index.
+    """
+
+    root: Root
+    path: tuple[Step, ...]
+    one_item: ClassVar[bool] = True
+
+    def __repr__(self) -> str:
+        """Return the short form, such as `Place(%qss, (0, 1))`."""
+        return f"Place({_owner(self.root)}, {_path(self.path)})"
+
+
+@dataclass(frozen=True, repr=False)
+class Part(Place):
+    """A reference to a register that lies below a root, such as a slice or a row.
+
+    For example, `qs[1:3]` has the place `Part(%qs, (1:1:2,))`, and the row
+    `qss[0]` has the place `Part(%qss, (0,))`. A slice step can only be the last
+    step of a path, because an index into a slice becomes an index into the
+    register below it. `levels` is the depth of the register, as in `Register`.
+    """
+
+    root: Root
+    path: tuple[Step, ...]
+    levels: int = field(default=1, compare=False, hash=False)
+    one_item: ClassVar[bool] = False
+
+    @property
+    def depth(self) -> int:
+        """Return the levels of the register."""
+        return self.levels
+
+    def __repr__(self) -> str:
+        """Return the short form, such as `Place(%qs, (1:1:2,))`."""
+        return f"Place({_owner(self.root)}, {_path(self.path)})"
+
+
+def place(root: Root, path: tuple[Step, ...], depth: int) -> Place:
+    """Return the place at `path` below `root` that has the depth `depth`.
+
+    The result is the one subclass of `Place` that fits the path and the depth.
+    So two calls with equal arguments give equal places.
+    """
+    if depth > 0:
+        return Part(root, path, depth) if path else Register(root, depth)
+    match path:
+        case ():
+            return Whole(root)
+        case (Affine() as index,):
+            return Slot(root, index)
+    return Item(root, path)
+
+
+def child(parent: Place, index: Affine) -> Place:
+    """Return the place of the item at `index` of the register place `parent`.
+
+    An index into a slice becomes an index into the register below the slice.
+    """
+    path = parent.path
+    if path and isinstance(last := path[-1], Slice):
+        path = (*path[:-1], last.item(index))
+    else:
+        path = (*path, index)
+    return place(parent.root, path, parent.depth - 1)
 
 
 @dataclass(frozen=True, repr=False)

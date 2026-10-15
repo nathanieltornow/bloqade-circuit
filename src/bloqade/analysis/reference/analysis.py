@@ -1,32 +1,37 @@
 """This module holds the forward analysis that states what each value refers to."""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import field, dataclass
 from collections.abc import Callable
 
 from kirin import ir, types
+from kirin.dialects import py
 from kirin.analysis.forward import Forward, ForwardFrame
 
-from bloqade.constants import constant_int
-
-from .index import Affine
+from .index import Iter, Slice, Affine, python_slice
 from .lattice import (
     CARRIED,
     UNTRACKED,
     Ref,
     Root,
-    Slot,
-    Whole,
+    Step,
+    Place,
     Bottom,
+    Closure,
     Members,
     Unknown,
-    Register,
     Returned,
     Positions,
+    child,
+    place,
 )
+from .integers import IndexAnalysis
 
 KEY = "reference"
-"""The registry key of the rules for kirin's own dialects."""
+"""Name the registry key of the rules for kirin's own dialects."""
+
+OUT_OF_SCOPE = "an index that names a variable of a loop or a call that has ended"
+"""Give the reason of an `Unknown` whose index uses a symbol outside its scope."""
 
 
 def _inside(root: Root, code: ir.Statement) -> bool:
@@ -34,13 +39,38 @@ def _inside(root: Root, code: ir.Statement) -> bool:
     return code.is_ancestor(root.call if isinstance(root, Returned) else root.owner)
 
 
-def _inside_value(symbol: object, code: ir.Statement) -> bool:
-    """Return True if the function body `code` defines the index symbol `symbol`."""
-    return isinstance(symbol, ir.SSAValue) and _inside(symbol, code)
+def defined_inside(symbol: object, scope: ir.Statement) -> bool:
+    """Return True if the index symbol `symbol` only has a value inside `scope`.
+
+    An `Iter` symbol of `scope` or of a statement inside it has a value only during
+    one iteration. An SSA value that a statement or a block inside `scope` defines
+    has a value only inside `scope`. A result of `scope` itself lies outside.
+    """
+    if isinstance(symbol, Iter):
+        return scope.is_ancestor(symbol.stmt)
+    if isinstance(symbol, ir.ResultValue) and symbol.owner is scope:
+        return False
+    return isinstance(symbol, ir.SSAValue) and scope.is_ancestor(symbol.owner)
+
+
+def step_symbols(step: Step) -> frozenset[object]:
+    """Return the index symbols that one step of a path uses."""
+    if isinstance(step, Slice):
+        length = frozenset() if step.length is None else step.length.symbols()
+        return step.start.symbols() | length
+    return step.symbols()
+
+
+def _substitute(step: Step, mapping: dict) -> Step:
+    """Return `step` with each symbol that `mapping` holds replaced by its index."""
+    if isinstance(step, Slice):
+        length = None if step.length is None else step.length.substitute(mapping)
+        return Slice(step.start.substitute(mapping), step.step, length)
+    return step.substitute(mapping)
 
 
 RegisterLength = Callable[[ir.SSAValue, tuple[Returned, ...]], int | None]
-"""A function that returns the static length of a register root, or None.
+"""Type a function that returns the static length of a register root, or None.
 
 It takes the SSA value that allocates or receives the root, and the calls that
 lead to it, innermost first.
@@ -75,37 +105,100 @@ def argument_of(value: ir.SSAValue, calls: tuple[Returned, ...]) -> ir.SSAValue:
     return value
 
 
+def _typed_length(kind: types.TypeAttribute, levels: int) -> int | None:
+    """Return the static length of the list `levels` levels inside the type `kind`.
+
+    For example, the type `IList[IList[Qubit, 2], 3]` has the length 3 at level 0
+    and the length 2 at level 1. The result is None if the type gives no literal
+    length.
+    """
+    for _ in range(levels):
+        if not (isinstance(kind, types.Generic) and kind.vars):
+            return None
+        kind = kind.vars[0]
+    if not (isinstance(kind, types.Generic) and len(kind.vars) > 1):
+        return None
+    length = kind.vars[1]
+    if isinstance(length, types.Literal) and isinstance(length.data, int):
+        return length.data
+    return None
+
+
+def place_length(place: Place, register_length: RegisterLength) -> int | None:
+    """Return the static length of the register place `place`, or None.
+
+    A whole root gets its length from `register_length`. A slice has the length
+    that the slice gives. A row of a register of registers, such as `qss[0]`, gets
+    its length from the type of the root.
+    """
+    path = place.path
+    if path and isinstance(last := path[-1], Slice):
+        return None if last.length is None else last.length.constant
+    origin, calls = origin_of(place.root)
+    if not path:
+        return register_length(origin, calls)
+    return _typed_length(origin.type, len(path))
+
+
 def items_of(ref: Ref, register_length: RegisterLength) -> tuple[Ref, ...] | None:
     """Return the tracked items that `ref` holds, or None if they are unknown.
 
-    One item is itself. A literal list holds its members. A register of static
-    length holds one slot per index, and `register_length` gives that length.
+    One item is itself. A literal list holds its members. A register place of
+    static length holds the place of each index, and `register_length` gives the
+    length of a whole root. A register of registers holds its rows.
     """
     match ref:
-        case Whole() | Slot():
+        case Place() if ref.one_item:
             return (ref,)
         case Members(members):
             return members
-        case Register(root):
-            size = register_length(*origin_of(root))
+        case Place():
+            size = place_length(ref, register_length)
             if size is not None:
-                return tuple(Slot(root, i) for i in range(size))
+                return tuple(child(ref, Affine(i)) for i in range(size))
     return None
+
+
+def _checked(index: Affine, size: int | None) -> Affine | Unknown:
+    """Return `index` as an index into a register of length `size`, or `Unknown`.
+
+    A negative constant counts from the end, as in Python, so it needs the length.
+    An index whose bounds show that it can be negative or past the end is
+    `Unknown`. An index without bounds, such as a parameter `i`, keeps its form.
+    The analysis then assumes that the program reads inside the register. A read
+    past the end raises an error at runtime, so a program that runs never does it.
+    """
+    if (constant := index.constant) is not None:
+        if size is None:
+            if constant < 0:
+                return Unknown("a negative index into a register of unknown length")
+            return index
+        if not -size <= constant < size:
+            return Unknown("a constant index out of range")
+        return Affine(constant % size)
+    limits = index.bounds()
+    if limits is not None and limits[0] < 0:
+        return Unknown("an index that can be negative")
+    if limits is not None and size is not None and limits[1] >= size:
+        return Unknown("an index that can lie past the end of the register")
+    return index
 
 
 @dataclass
 class ReferenceAnalysis(Forward[Ref], ABC):
-    """A forward analysis that states which root each value refers to."""
+    """Compute which root each value refers to, as a forward analysis."""
 
     keys = (KEY, "absint")
     lattice = Ref
+    indices: IndexAnalysis = field(default_factory=IndexAnalysis, init=False)
+    """Map each integer value that the analysis has read to its affine index."""
 
     @abstractmethod
-    def kind(self, type_: types.TypeAttribute) -> type[Whole] | type[Register] | None:
-        """Return what a value of type `type_` refers to.
+    def shape(self, type_: types.TypeAttribute) -> int | None:
+        """Return the depth of the tracked state that a value of type `type_` holds.
 
-        The result is `Whole` for one item of tracked state, `Register` for a
-        register of items, and None for a value without tracked state.
+        The result is 0 for one item of tracked state, 1 for a register of items,
+        2 for a register of registers, and None for a value without tracked state.
         """
 
     @abstractmethod
@@ -117,6 +210,10 @@ class ReferenceAnalysis(Forward[Ref], ABC):
         If `root` lies inside a callee, `calls` lead to it, innermost first. So the
         length can come from a constant argument of a call.
         """
+
+    def affine(self, value: ir.SSAValue) -> Affine:
+        """Return the affine index of the integer SSA value `value`."""
+        return self.indices.of(value)
 
     def run(
         self, method: ir.Method, *args: Ref, **kwargs: Ref
@@ -131,12 +228,12 @@ class ReferenceAnalysis(Forward[Ref], ABC):
         if not args and not kwargs:
             params: list[Ref] = []
             for arg in method.callable_region.blocks[0].args[1:]:
-                if (kind := self.kind(arg.type)) is not None:
-                    params.append(kind(arg))
+                if (depth := self.shape(arg.type)) is not None:
+                    params.append(place(arg, (), depth))
                 elif (
                     isinstance(arg.type, types.Generic)
                     and arg.type.is_subseteq(types.Tuple)
-                    and any(self.kind(member) is not None for member in arg.type.vars)
+                    and any(self.shape(member) is not None for member in arg.type.vars)
                 ):
                     params.append(Unknown("a member of a tuple parameter"))
                 else:
@@ -161,36 +258,34 @@ class ReferenceAnalysis(Forward[Ref], ABC):
     def unknown_results(self, stmt: ir.Statement, reason: str) -> tuple[Ref, ...]:
         """Return `Unknown` for each tracked result of `stmt` and `Untracked` else."""
         return tuple(
-            Unknown(reason) if self.kind(r.type) is not None else UNTRACKED
+            Unknown(reason) if self.shape(r.type) is not None else UNTRACKED
             for r in stmt.results
         )
+
+    def length(self, ref: Place) -> int | None:
+        """Return the static length of the register place `ref`, or None."""
+        return place_length(ref, self.register_length)
 
     def index(self, ref: Ref, index: Affine | int | ir.SSAValue) -> Ref:
         """Return the reference of the item at `index` of the list or register `ref`.
 
-        A register gives a `Slot`. If the register has a static length, a constant
-        index becomes an index in the range 0 to the length minus 1. A literal list
-        gives its member at a constant index. An SSA value that holds no constant
-        becomes the index that is that value alone.
+        A register place gives the place one step below it. If the register has a
+        static length, a constant index becomes an index in the range 0 to the
+        length minus 1. An index into a slice becomes an index into the register
+        below the slice. A literal list gives its member at a constant index.
         """
         if isinstance(index, ir.SSAValue):
-            constant = constant_int(index)
-            index = Affine.of(index) if constant is None else Affine(constant)
+            index = self.affine(index)
         elif isinstance(index, int):
             index = Affine(index)
-        constant = index.constant
         match ref:
-            case Register(root):
-                if constant is None:
-                    return Slot(root, index)
-                size = self.register_length(*origin_of(root))
-                if size is None:
-                    return Slot(root, constant)
-                if not -size <= constant < size:
-                    return Unknown("a constant index out of range")
-                return Slot(root, constant % size)
+            case Place() if not ref.one_item:
+                checked = _checked(index, self.length(ref))
+                if isinstance(checked, Unknown):
+                    return checked
+                return child(ref, checked)
             case Members(members):
-                if constant is None:
+                if (constant := index.constant) is None:
                     return Unknown("a list or tuple read at a runtime index")
                 if not -len(members) <= constant < len(members):
                     return Unknown("a constant index out of range")
@@ -198,6 +293,110 @@ class ReferenceAnalysis(Forward[Ref], ABC):
             case Unknown() | Bottom():
                 return ref
         return Unknown("an index into a value that is not a register or a list")
+
+    def slice_bounds(
+        self, value: ir.SSAValue
+    ) -> tuple[Affine | None, Affine | None, int] | None:
+        """Return the start, the stop and the step of the slice value `value`.
+
+        A missing start or stop is None, and a missing step is 1. The result is None
+        if `value` is no slice, or if its step is no constant.
+        """
+        owner = value.owner
+        if isinstance(owner, py.Constant):
+            data = owner.value.unwrap()
+            if not isinstance(data, slice):
+                return None
+            bounds = (data.start, data.stop, data.step)
+            if not all(b is None or type(b) is int for b in bounds):
+                return None
+            start, stop = (None if b is None else Affine(b) for b in bounds[:2])
+            return start, stop, 1 if data.step is None else data.step
+        if not isinstance(owner, py.slice.Slice):
+            return None
+
+        def bound(arg: ir.SSAValue) -> Affine | None:
+            return None if arg.type.is_subseteq(types.NoneType) else self.affine(arg)
+
+        if owner.step.type.is_subseteq(types.NoneType):
+            step = 1
+        elif (step := self.affine(owner.step).constant) is None:
+            return None
+        return bound(owner.start), bound(owner.stop), step
+
+    def slice(self, ref: Ref, value: ir.SSAValue) -> Ref:
+        """Return the reference of the slice `value` of the list or register `ref`.
+
+        A register place gives a register place whose last step is a `Slice`. A
+        slice of a slice reads the register below it. A literal list with constant bounds
+        gives the list of the picked members.
+        """
+        bounds = self.slice_bounds(value)
+        if bounds is None:
+            return Unknown("a slice whose bounds the analysis cannot read")
+        start, stop, step = bounds
+        match ref:
+            case Place() if not ref.one_item:
+                made = python_slice(start, stop, step, self.length(ref))
+                if made is None:
+                    return Unknown("a slice that the analysis cannot name")
+                return self.sliced(ref, made)
+            case Members(members):
+                ends = [None if b is None else b.constant for b in (start, stop)]
+                if any(
+                    b is not None and e is None for b, e in zip((start, stop), ends)
+                ):
+                    return Unknown("a list read at a runtime slice")
+                return type(ref)(members[slice(*ends, step)])
+            case Unknown() | Bottom():
+                return ref
+        return Unknown("a slice of a value that is not a register or a list")
+
+    def sliced(self, ref: Place, made: Slice) -> Place:
+        """Return the slice `made` of the register place `ref`.
+
+        `made` counts its items in `ref`. If `ref` is itself a slice, the result
+        counts them in the register below it.
+        """
+        path = ref.path
+        if path and isinstance(last := path[-1], Slice):
+            path = (*path[:-1], last.then(made))
+        else:
+            path = (*path, made)
+        return place(ref.root, path, ref.depth)
+
+    def descend(self, ref: Ref, path: tuple[Step, ...]) -> Ref:
+        """Return the reference that `path` reaches from `ref`, one step at a time.
+
+        Each index step goes through `index`, so a constant index gets its range
+        check again. Each slice step counts its items in the register below.
+        """
+        for step in path:
+            if isinstance(step, Slice):
+                if not (isinstance(ref, Place) and not ref.one_item):
+                    return Unknown("a slice of a value that is not a register")
+                ref = self.sliced(ref, step)
+            else:
+                ref = self.index(ref, step)
+        return ref
+
+    def leave(self, ref: Ref, scope: ir.Statement) -> Ref:
+        """Return `ref` as it reads outside the loop, branch or call `scope`.
+
+        A place whose index uses a symbol that only has a value inside `scope`
+        becomes `Unknown`. Without this rule, two iterations of a loop would give
+        one place to two different items.
+        """
+        match ref:
+            case Place(_, path):
+                symbols = (s for step in path for s in step_symbols(step))
+                if any(defined_inside(s, scope) for s in symbols):
+                    return Unknown(OUT_OF_SCOPE)
+            case Members(members):
+                return type(ref)(tuple(self.leave(m, scope) for m in members))
+            case Closure(code, captured):
+                return Closure(code, tuple(self.leave(m, scope) for m in captured))
+        return ref
 
     def call_result(self, frame: ForwardFrame[Ref], call: ir.Statement) -> Ref:
         """Return the reference of the result of `call` in the terms of the caller.
@@ -210,75 +409,71 @@ class ReferenceAnalysis(Forward[Ref], ABC):
         callee = call.get_present_trait(ir.StaticCall).get_callee(call)
         args = frame.get_values(call.args)
         _, result = self.call(callee.code, self.method_self(callee), *args)
-        return self._returned(call, callee, args, result)
+        return self._returned(call, callee.code, call.args, args, result)
 
     def _returned(
         self,
         call: ir.Statement,
-        callee: ir.Method,
+        code: ir.Statement,
+        inputs: tuple[ir.SSAValue, ...],
         args: tuple[Ref, ...],
         result: Ref,
     ) -> Ref:
-        """Return `result` of `callee` with each root that the callee owns renamed.
+        """Return `result` of the function body `code` in the terms of the caller.
 
-        A root that the callee allocates and returns whole at position `p` becomes
-        `Returned(call, p)`, where `p` counts the members of a `Positions` result.
-        A root inside a list or a nested tuple has no position and is `Unknown`. A
-        parameter
-        of the callee is a root only when the callee is the method under analysis,
-        in a recursion, and it becomes the root of the argument at its position.
-        Every other root that the callee owns is `Unknown`. A slot at an index
-        that is a parameter of the callee takes the argument of `call` as its
-        index, and a slot at an index that the callee computes is `Unknown`.
+        A root that the callee allocates and returns whole at the path `p` becomes
+        `Returned(call, p)`. The first entry of `p` is the position of the output.
+        Each further entry picks a member of a tuple or a list. A parameter of the
+        callee is a root only when the callee is the method under analysis, in a
+        recursion, and it becomes the reference of the argument at its position.
+        The method maps every other root that the callee owns to `Unknown`.
+
+        Each index that uses a parameter of the callee takes the affine index of
+        the caller's argument `inputs` at that position. An index that still uses a
+        symbol of the callee is `Unknown`.
         """
-        code = callee.code
-        params = callee.callable_region.blocks[0].args[1:]
-        arguments: dict[ir.SSAValue, Affine] = {}
-        for param, arg in zip(params, call.args):
-            constant = constant_int(arg)
-            arguments[param] = Affine.of(arg) if constant is None else Affine(constant)
+        params = code.get_present_trait(ir.CallableStmtInterface)
+        params = params.get_callable_region(code).blocks[0].args[1:]
+        mapping: dict = {p: self.affine(a) for p, a in zip(params, inputs)}
         passed: dict[ir.SSAValue, Ref] = dict(zip(params, args))
         returned: dict[Root, Root] = {}
+
+        def collect(ref: Ref, at: tuple[int, ...]) -> None:
+            match ref:
+                case Place(root, ()) if _inside(root, code):
+                    returned.setdefault(root, Returned(call, at, root))
+                case Members(members):
+                    for k, member in enumerate(members):
+                        collect(member, (*at, k))
+
         outputs = result.refs if isinstance(result, Positions) else (result,)
         for position, ref in enumerate(outputs):
-            if isinstance(ref, (Whole, Register)) and _inside(ref.root, code):
-                returned.setdefault(ref.root, Returned(call, position, ref.root))
+            collect(ref, (position,))
 
-        def root_in_caller(root: Root) -> Root | None:
-            """Return the root as the caller names it, or None if it cannot."""
-            if not _inside(root, code):
-                return root
-            if isinstance(root, ir.SSAValue):
-                match passed.get(root):
-                    case Whole(named) | Register(named):
-                        return named
-            return returned.get(root)
-
-        def rename(ref: Ref, nested: bool) -> Ref:
-            owned = (
-                "a root returned inside a list or a nested tuple"
-                if nested
-                else "a root that the callee owns"
-            )
+        def rename(ref: Ref) -> Ref:
             match ref:
-                case Whole(root) | Register(root):
-                    if (named := root_in_caller(root)) is None:
-                        return Unknown(owned)
-                    return type(ref)(named)
-                case Slot(root, index):
-                    if (named := root_in_caller(root)) is None:
-                        return Unknown(owned)
-                    index = index.substitute(arguments)
-                    if any(_inside_value(s, code) for s in index.symbols()):
+                case Place(root, path):
+                    levels = ref.depth + sum(isinstance(s, Affine) for s in path)
+                    base: Ref = place(root, (), levels)
+                    if _inside(root, code):
+                        if isinstance(root, ir.SSAValue) and root in passed:
+                            base = passed[root]
+                        elif root in returned:
+                            base = place(returned[root], (), levels)
+                        else:
+                            return Unknown("a root that the callee owns")
+                    path = tuple(_substitute(step, mapping) for step in path)
+                    symbols = (s for step in path for s in step_symbols(step))
+                    if any(defined_inside(s, code) for s in symbols):
                         return Unknown("an item at an index that the callee computes")
-                    return self.index(Register(named), index)
+                    return self.descend(base, path)
                 case Members(members):
-                    return type(ref)(tuple(rename(m, True) for m in members))
+                    return type(ref)(tuple(rename(m) for m in members))
+                case Closure(stmt, captured):
+                    return Closure(stmt, tuple(rename(m) for m in captured))
             return ref
 
-        if isinstance(result, Positions):
-            return Positions(tuple(rename(m, False) for m in result.refs))
-        return rename(result, False)
+        return rename(result)
 
     def run_loop(
         self,
@@ -290,6 +485,8 @@ class ReferenceAnalysis(Forward[Ref], ABC):
         """Run a loop body until the references that it carries stop changing.
 
         The body gets `Untracked` for the loop index and the carried references.
+        The results leave the scope of the loop, so an index that uses the loop
+        variable becomes `Unknown`.
         """
         # A join moves a carried reference up, and each one can move up once.
         for _ in range(len(carried) + 1):
@@ -300,6 +497,6 @@ class ReferenceAnalysis(Forward[Ref], ABC):
             joined = tuple(c.join(y) for c, y in zip(carried, yielded, strict=True))
             if joined == carried:
                 frame.entries.update(inner.entries)
-                return carried
+                return tuple(self.leave(c, stmt) for c in carried)
             carried = joined
         raise AssertionError("a carried reference moved up the lattice twice")

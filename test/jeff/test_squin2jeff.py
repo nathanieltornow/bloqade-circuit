@@ -523,7 +523,7 @@ def tuple_at_runtime(n: int, k: int) -> int:
         (passes_tuple, "passed to a call"),
         (over_list, "a loop over a value that is not a range"),
         (tuple_at_runtime, "a tuple read at a runtime index"),
-        (sliced, "a slice of a register"),
+        (sliced, "a constant of type slice"),
         (escaped, "a value carried by a loop or branch"),
         (noisy, "jeff has no form for 'depolarize'"),
         (broadcast, "register of known length"),

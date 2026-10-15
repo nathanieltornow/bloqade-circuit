@@ -11,9 +11,12 @@ from bloqade import squin
 from bloqade.types import Qubit, QubitType, MeasurementResult
 from bloqade.analysis.reference import (
     UNTRACKED,
+    Part,
     Slot,
     Items,
+    Slice,
     Whole,
+    Affine,
     Bottom,
     Unknown,
     Register,
@@ -138,7 +141,9 @@ def test_parameters_allocations_and_elements():
     _, qs, i = mt.callable_region.blocks[0].args
     assert refs[qs] == Register(qs) and refs[i] == UNTRACKED
     cx = calls(mt, "cx")
-    assert [refs[v] for v in cx[0].inputs] == [Slot(qs, 1), Slot(qs, -1)]
+    first, last = (refs[v] for v in cx[0].inputs)
+    assert first == Slot(qs, 1)
+    assert reason(last) == "a negative index into a register of unknown length"
     (new,) = calls(mt, "new")
     fresh = Whole(returned(refs, new))
     assert [refs[v] for v in cx[1].inputs] == [Slot(qs, i), fresh]
@@ -167,8 +172,9 @@ def reason(ref) -> str | None:
 
 def test_unknowns_carry_their_reason():
     mt, refs = refs_of(bad_reads)
+    (qs,) = allocations(mt, refs)
     (x,) = calls(mt, "x")
-    assert reason(refs[x.inputs[0]]) == "a slice of a register"
+    assert refs[x.inputs[0]] == Part(qs, (Slice(Affine(0), 1, Affine(2)),))
     (h,) = calls(mt, "h")
     assert reason(refs[h.inputs[0]]) == "a constant index out of range"
 
@@ -322,14 +328,15 @@ def picks():
 def test_a_slot_at_a_parameter_index_takes_the_argument():
     """A slot keeps a parameter index, so the caller's constant resolves it.
 
-    A literal list has no slots, so a read at a parameter index stays unknown.
+    An affine index such as `i + 1` resolves the same way. A literal list has no
+    slots, so a read at a parameter index stays unknown.
     """
     mt, refs = refs_of(picks)
     (qs,) = allocations(mt, refs)
-    last, first, literal, computed = (refs[h.inputs[0]] for h in calls(mt, "h"))
+    last, first, literal, following = (refs[h.inputs[0]] for h in calls(mt, "h"))
     assert last == Slot(qs, 2) and first == Slot(qs, 0)
     assert reason(literal) == "a list or tuple read at a runtime index"
-    assert reason(computed) == "an item at an index that the callee computes"
+    assert following == Slot(qs, 1)
 
 
 def test_a_function_runs_in_terms_of_its_own_parameters():
@@ -353,23 +360,25 @@ def reads_nested_pair() -> Qubit:
     return inner[0]
 
 
-def test_a_root_inside_a_nested_tuple_is_unknown():
-    """`Returned` names a position of the result, and a nested tuple has none."""
+def test_a_root_inside_a_nested_tuple_has_a_path():
+    """`Returned` names the output position and then the member of the inner tuple."""
     mt, refs = refs_of(reads_nested_pair)
     (call,) = calls(mt, "nested_pair")
     ref = refs[call.result]
     assert isinstance(ref, Positions)
-    assert (
-        reason(ref.refs[0].refs[0]) == "a root returned inside a list or a nested tuple"
-    )
+    first, second = ref.refs[0].refs
+    assert first.root.path == (0, 0) and second.root.path == (0, 1)
+    assert repr(first) == "Whole(%made[0] = nested_pair()[0][0])"
     assert ref.refs[1] == UNTRACKED
+    (ret,) = statements(mt, func.Return)
+    assert refs[ret.value] == first
 
 
 def test_a_bottom_type_is_not_tracked():
     analysis = QubitReferenceAnalysis(squin.kernel)
-    assert analysis.kind(types.Bottom) is None
-    assert analysis.kind(QubitType) is Whole
-    assert analysis.kind(QUBIT_LIST) is Register
+    assert analysis.shape(types.Bottom) is None
+    assert analysis.shape(QubitType) == 0
+    assert analysis.shape(QUBIT_LIST) == 1
 
 
 def test_an_index_into_bottom_stays_bottom():
