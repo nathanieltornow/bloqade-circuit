@@ -34,7 +34,6 @@ from bloqade.jeff.forms import (
 from bloqade.squin.gate import stmts as gate_stmts
 from bloqade.analysis.reference import (
     Ref,
-    Step,
     Place,
     Whole,
     Affine,
@@ -42,7 +41,7 @@ from bloqade.analysis.reference import (
     Unknown,
     Register,
     Untracked,
-    same,
+    apart,
     positions,
 )
 from bloqade.jeff.dialects.stmts.call import declared_outputs
@@ -78,31 +77,6 @@ def _listed(kind: types.TypeAttribute) -> bool:
     return not kind.is_subseteq(types.Bottom) and kind.is_subseteq(types.Tuple)
 
 
-def _apart(x: Step, y: Step) -> bool:
-    """Return True if the steps `x` and `y` of two paths share no item.
-
-    Two indices are apart if `same` proves them different. A constant index lies
-    apart from a constant slice that skips it. Two constant slices lie apart if
-    they pick no common item.
-    """
-
-    def picked(step: Step) -> frozenset[int] | None:
-        if isinstance(step, Affine):
-            return None if step.constant is None else frozenset({step.constant})
-        if step.length is None or step.length.constant is None:
-            return None
-        if step.start.constant is None:
-            return None
-        return frozenset(
-            step.start.constant + j * step.step for j in range(step.length.constant)
-        )
-
-    if isinstance(x, Affine) and isinstance(y, Affine):
-        return same(x, y) is False
-    a, b = picked(x), picked(y)
-    return a is not None and b is not None and not a & b
-
-
 def _overlap(a: Ref, b: Ref) -> bool:
     """Return True if the references `a` and `b` name a common qubit.
 
@@ -113,7 +87,7 @@ def _overlap(a: Ref, b: Ref) -> bool:
         return a == b
     if a.one_item and b.one_item:
         return a == b
-    return not any(_apart(x, y) for x, y in zip(a.path, b.path))
+    return not any(apart(x, y) for x, y in zip(a.path, b.path))
 
 
 @dataclass

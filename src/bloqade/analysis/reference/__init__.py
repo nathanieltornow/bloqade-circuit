@@ -36,6 +36,14 @@ from .lattice import (
     roots as roots,
     positions as positions,
 )
+from .queries import (
+    apart as apart,
+    fresh as fresh,
+    family as family,
+    leaves as leaves,
+    disjoint as disjoint,
+    must_alias as must_alias,
+)
 from .analysis import (
     KEY as KEY,
     OUT_OF_SCOPE as OUT_OF_SCOPE,
