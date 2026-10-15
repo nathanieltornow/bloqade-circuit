@@ -18,6 +18,7 @@ from collections.abc import Iterator
 
 import pytest
 import test_places as places
+import test_closures as closures
 import test_reference as ref_kernels
 from kirin import ir, interp
 from kirin.dialects import scf, func, ilist
@@ -299,7 +300,18 @@ def drive_slices():
     places.ladder(qs)
 
 
+@squin.kernel
+def drive_closures():
+    qs = squin.qalloc(7)
+    closures.identity_map(qs[0:3])
+    closures.shifted_map(qs)
+    closures.constant_map(qs[4:7])
+    closures.each(qs[1:4])
+
+
 PLACES = [
+    (drive_closures, ()),
+    (closures.allocating_map, ()),
     (drive_nested, ()),
     (drive_slices, ()),
     (places.calls_with_indices, (2,)),

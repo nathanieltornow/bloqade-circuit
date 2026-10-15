@@ -9,11 +9,12 @@ from .lattice import (
     UNTRACKED,
     Ref,
     Items,
+    Closure,
     Members,
     Positions,
-    place,
+    roots,
 )
-from .analysis import KEY, ReferenceAnalysis
+from .analysis import KEY, ReferenceAnalysis, owned_by
 
 
 @py.assign.dialect.register(key=KEY)
@@ -51,10 +52,20 @@ class _IList(interp.MethodTable):
     def map_(
         self, analysis: ReferenceAnalysis, frame: ForwardFrame[Ref], stmt: ilist.Map
     ) -> tuple[Ref, ...]:
-        """Return the result as a register root if the map produces tracked values."""
-        if (depth := analysis.shape(stmt.result.type)) is not None and depth > 0:
-            return (place(stmt.result, (), depth),)
-        return (UNTRACKED,)
+        """Return the reference of the mapped list, through `map_result`."""
+        depth = analysis.shape(stmt.result.type)
+        return (analysis.map_result(frame, stmt, stmt.fn, stmt.collection, depth),)
+
+    @interp.impl(ilist.ForEach)
+    def for_each(
+        self,
+        analysis: ReferenceAnalysis,
+        frame: ForwardFrame[Ref],
+        stmt: ilist.ForEach,
+    ) -> tuple[Ref, ...]:
+        """Run the body once on the item at the `Iter` symbol, for its references."""
+        analysis.map_result(frame, stmt, stmt.fn, stmt.collection, None)
+        return ()
 
 
 @py.binop.dialect.register(key=KEY)
@@ -135,8 +146,34 @@ class _Func(interp.MethodTable):
     def call(
         self, analysis: ReferenceAnalysis, frame: ForwardFrame[Ref], stmt: func.Call
     ) -> tuple[Ref, ...]:
-        """Give each tracked result of a dynamic call `Unknown`."""
-        return analysis.unknown_results(stmt, "the result of a dynamic call")
+        """Run a closure that the kernel builds, and give any other call `Unknown`."""
+        closure = frame.get(stmt.callee)
+        if not isinstance(closure, Closure) or stmt.kwargs:
+            return analysis.unknown_results(stmt, "the result of a dynamic call")
+        args = frame.get_values(stmt.inputs)
+        result = analysis.apply(frame, closure.code, closure, args)
+        if any(owned_by(r, closure.code) for r in roots(result)):
+            return analysis.unknown_results(stmt, "a root that the closure allocates")
+        params = closure.code.body.blocks[0].args[1:]
+        mapping = {p: analysis.affine(a) for p, a in zip(params, stmt.inputs)}
+        return (analysis.in_caller_terms(stmt, closure.code, mapping, args, result),)
+
+    @interp.impl(func.Lambda)
+    def lambda_(
+        self, analysis: ReferenceAnalysis, frame: ForwardFrame[Ref], stmt: func.Lambda
+    ) -> tuple[Ref, ...]:
+        """Return a `Closure` that holds the references of the captured values."""
+        return (Closure(stmt, frame.get_values(stmt.captured)),)
+
+    @interp.impl(func.GetField)
+    def getfield(
+        self, analysis: ReferenceAnalysis, frame: ForwardFrame[Ref], stmt: func.GetField
+    ) -> tuple[Ref, ...]:
+        """Return the reference of a captured value of a closure."""
+        closure = frame.get(stmt.obj)
+        if isinstance(closure, Closure) and stmt.field < len(closure.captured):
+            return (closure.captured[stmt.field],)
+        return analysis.unknown_results(stmt, "a field of an unknown function")
 
 
 @scf.dialect.register(key=KEY)

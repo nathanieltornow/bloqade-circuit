@@ -1,5 +1,6 @@
 """This module holds the forward analysis that states what each value refers to."""
 
+import weakref
 from abc import ABC, abstractmethod
 from dataclasses import field, dataclass
 from collections.abc import Callable
@@ -15,6 +16,7 @@ from .lattice import (
     Ref,
     Root,
     Step,
+    Items,
     Place,
     Bottom,
     Closure,
@@ -22,10 +24,12 @@ from .lattice import (
     Unknown,
     Returned,
     Positions,
+    Untracked,
     child,
     place,
+    roots,
 )
-from .integers import IndexAnalysis
+from .integers import IndexAnalysis, loop_values
 
 KEY = "reference"
 """Name the registry key of the rules for kirin's own dialects."""
@@ -34,9 +38,37 @@ OUT_OF_SCOPE = "an index that names a variable of a loop or a call that has ende
 """Give the reason of an `Unknown` whose index uses a symbol outside its scope."""
 
 
-def _inside(root: Root, code: ir.Statement) -> bool:
+_CONTENTS: "weakref.WeakKeyDictionary[ir.Statement, frozenset[int]]" = (
+    weakref.WeakKeyDictionary()
+)
+"""Hold the identities of the statements and blocks inside each scope statement."""
+
+
+def encloses(scope: ir.Statement, node: ir.IRNode) -> bool:
+    """Return True if `node` is `scope` or a statement or block inside `scope`.
+
+    The walk up the parent links answers most queries. The body of a lambda that a
+    constant method holds can lack those links. So the fallback checks the
+    statements and blocks that `scope` holds.
+    """
+    current: ir.IRNode | None = node
+    while current is not None:
+        if current is scope:
+            return True
+        current = current.parent_node
+    if scope not in _CONTENTS:
+        held: set[int] = set()
+        for stmt in scope.walk():
+            held.add(id(stmt))
+            for region in stmt.regions:
+                held.update(id(block) for block in region.blocks)
+        _CONTENTS[scope] = frozenset(held)
+    return id(node) in _CONTENTS[scope]
+
+
+def owned_by(root: Root, code: ir.Statement) -> bool:
     """Return True if the function body `code` allocates or receives `root`."""
-    return code.is_ancestor(root.call if isinstance(root, Returned) else root.owner)
+    return encloses(code, root.call if isinstance(root, Returned) else root.owner)
 
 
 def defined_inside(symbol: object, scope: ir.Statement) -> bool:
@@ -47,10 +79,10 @@ def defined_inside(symbol: object, scope: ir.Statement) -> bool:
     has a value only inside `scope`. A result of `scope` itself lies outside.
     """
     if isinstance(symbol, Iter):
-        return scope.is_ancestor(symbol.stmt)
+        return encloses(scope, symbol.stmt)
     if isinstance(symbol, ir.ResultValue) and symbol.owner is scope:
         return False
-    return isinstance(symbol, ir.SSAValue) and scope.is_ancestor(symbol.owner)
+    return isinstance(symbol, ir.SSAValue) and encloses(scope, symbol.owner)
 
 
 def step_symbols(step: Step) -> frozenset[object]:
@@ -409,13 +441,139 @@ class ReferenceAnalysis(Forward[Ref], ABC):
         callee = call.get_present_trait(ir.StaticCall).get_callee(call)
         args = frame.get_values(call.args)
         _, result = self.call(callee.code, self.method_self(callee), *args)
-        return self._returned(call, callee.code, call.args, args, result)
+        params = callee.callable_region.blocks[0].args[1:]
+        mapping = {p: self.affine(a) for p, a in zip(params, call.args)}
+        return self.in_caller_terms(call, callee.code, mapping, args, result)
 
-    def _returned(
+    def function_of(
+        self, frame: ForwardFrame[Ref], fn: ir.SSAValue
+    ) -> tuple[ir.Statement, Ref] | None:
+        """Return the body of the function value `fn` and its self reference, or None.
+
+        A constant method gives its code and `Untracked`. A closure gives its
+        `func.Lambda` statement and the closure, which reads the captured values.
+        """
+        owner = fn.owner
+        if isinstance(owner, py.Constant):
+            method = owner.value.unwrap()
+            if isinstance(method, ir.Method):
+                return method.code, self.method_self(method)
+        ref = frame.get(fn)
+        if isinstance(ref, Closure):
+            return ref.code, ref
+        return None
+
+    def apply(
+        self,
+        frame: ForwardFrame[Ref],
+        code: ir.Statement,
+        self_ref: Ref,
+        args: tuple[Ref, ...],
+    ) -> Ref:
+        """Run the function body `code` on `args` and return its result.
+
+        The result is in the terms of the callee, so `in_caller_terms` must rename
+        it. A closure body belongs to the kernel under analysis, so its references
+        join the ones in `frame`. A closure that runs twice joins both runs.
+        """
+        inner, result = self.call(code, self_ref, *args)
+        if isinstance(self_ref, Closure):
+            for key, value in inner.entries.items():
+                old = frame.entries.get(key)
+                frame.entries[key] = value if old is None else old.join(value)
+        return result
+
+    def map_result(
+        self,
+        frame: ForwardFrame[Ref],
+        stmt: ir.Statement,
+        fn: ir.SSAValue,
+        collection: ir.SSAValue,
+        depth: int | None,
+    ) -> Ref:
+        """Return the reference of the list that `stmt` maps `fn` over `collection`.
+
+        `depth` is the shape of the result type. The analysis runs the body once,
+        with the item `collection[k]` at the `Iter` symbol `k` of `stmt`. A body
+        that returns its item gives `collection` itself. A body that returns the
+        place `r[c + a*k]` with `a` other than 0 gives the slice of `r` that starts
+        at `c` with the step `a`. A body that allocates gives a new root at `stmt`.
+        A literal list runs the body once for each member.
+        """
+        function = self.function_of(frame, fn)
+        if function is None:
+            return Unknown("a map of a function that the analysis cannot name")
+        code, self_ref = function
+        source = frame.get(collection)
+        if isinstance(source, Members):
+            results = []
+            for member in source.refs:
+                result = self.apply(frame, code, self_ref, (member,))
+                if any(owned_by(r, code) for r in roots(result)):
+                    return self._fresh(stmt, depth)
+                results.append(self.in_caller_terms(stmt, code, {}, (member,), result))
+            return Items(tuple(results)) if depth is not None else UNTRACKED
+        params = code.get_present_trait(ir.CallableStmtInterface)
+        params = params.get_callable_region(code).blocks[0].args[1:]
+        mapping: dict = {}
+        if isinstance(source, Place) and not source.one_item:
+            size = self.length(source)
+            k = Iter(stmt, None if size is None else range(size))
+            item = self.index(source, Affine.of(k))
+        elif isinstance(source, Untracked):
+            values = loop_values(collection)
+            size = None if values is None else len(values)
+            k = Iter(stmt, None if values is None else range(len(values)))
+            if values is not None and params:
+                mapping[params[0]] = Affine(values.start) + Affine.of(k).scale(
+                    values.step
+                )
+            item = UNTRACKED
+        else:
+            return Unknown("a map over a value that is not a register or a list")
+        result = self.apply(frame, code, self_ref, (item,))
+        if any(owned_by(r, code) for r in roots(result)):
+            return self._fresh(stmt, depth)
+        named = self.in_caller_terms(stmt, code, mapping, (item,), result)
+        if depth is None:
+            return UNTRACKED
+        if named == item and isinstance(source, Place):
+            return source
+        return self._gathered(named, k, size, depth)
+
+    def _fresh(self, stmt: ir.Statement, depth: int | None) -> Ref:
+        """Return a new register root at the result of the map `stmt`."""
+        if depth is None or depth == 0:
+            return Unknown("a map whose body allocates a value that is not a list item")
+        return place(stmt.results[0], (), depth)
+
+    def _gathered(self, named: Ref, k: Iter, size: int | None, depth: int) -> Ref:
+        """Return the list of the items that the place `named` names at each `k`.
+
+        `named` must use `k` in the last step of its path only, as `c + a*k` with
+        `a` other than 0. The list then is the slice of `size` items that starts
+        at `c` with the step `a`.
+        """
+        if not isinstance(named, Place) or named.depth + 1 != depth:
+            if isinstance(named, Unknown):
+                return named
+            return Unknown("a map whose items the analysis cannot name")
+        path = named.path
+        uses = [n for n, step in enumerate(path) if k in step_symbols(step)]
+        if not uses:
+            return Unknown("a map whose items are all one place")
+        last = path[-1]
+        if uses != [len(path) - 1] or isinstance(last, Slice) or size is None:
+            return Unknown("a map whose items do not form a slice")
+        a = dict(last.terms)[k]
+        start = last - Affine.of(k).scale(a)
+        return place(named.root, (*path[:-1], Slice(start, a, Affine(size))), depth)
+
+    def in_caller_terms(
         self,
         call: ir.Statement,
         code: ir.Statement,
-        inputs: tuple[ir.SSAValue, ...],
+        mapping: dict,
         args: tuple[Ref, ...],
         result: Ref,
     ) -> Ref:
@@ -428,19 +586,18 @@ class ReferenceAnalysis(Forward[Ref], ABC):
         recursion, and it becomes the reference of the argument at its position.
         The method maps every other root that the callee owns to `Unknown`.
 
-        Each index that uses a parameter of the callee takes the affine index of
-        the caller's argument `inputs` at that position. An index that still uses a
-        symbol of the callee is `Unknown`.
+        `mapping` maps each integer parameter of the callee to the affine index of
+        the caller's argument. An index that still uses a symbol of the callee
+        becomes `Unknown`.
         """
         params = code.get_present_trait(ir.CallableStmtInterface)
         params = params.get_callable_region(code).blocks[0].args[1:]
-        mapping: dict = {p: self.affine(a) for p, a in zip(params, inputs)}
         passed: dict[ir.SSAValue, Ref] = dict(zip(params, args))
         returned: dict[Root, Root] = {}
 
         def collect(ref: Ref, at: tuple[int, ...]) -> None:
             match ref:
-                case Place(root, ()) if _inside(root, code):
+                case Place(root, ()) if owned_by(root, code):
                     returned.setdefault(root, Returned(call, at, root))
                 case Members(members):
                     for k, member in enumerate(members):
@@ -455,7 +612,7 @@ class ReferenceAnalysis(Forward[Ref], ABC):
                 case Place(root, path):
                     levels = ref.depth + sum(isinstance(s, Affine) for s in path)
                     base: Ref = place(root, (), levels)
-                    if _inside(root, code):
+                    if owned_by(root, code):
                         if isinstance(root, ir.SSAValue) and root in passed:
                             base = passed[root]
                         elif root in returned:
