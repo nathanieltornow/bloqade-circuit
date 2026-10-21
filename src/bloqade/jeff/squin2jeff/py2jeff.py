@@ -40,11 +40,11 @@ class _Constant(interp.MethodTable):
     ) -> interp.StatementResult[Value]:
         """Emit a number, a bit, a list or a tuple, and give a range no value.
 
-        A slice has no value either, because the reference analysis already
-        turned each read of a slice into a place.
+        A slice and a `None` bound of a slice have no value either, because the
+        reference analysis already turned each read of a slice into a place.
         """
         match stmt.value.unwrap():
-            case ilist.IList(data=range()) | slice():
+            case ilist.IList(data=range()) | slice() | None:
                 return (None,)
         return (_constant(frame, stmt.value.unwrap(), stmt.result.type),)
 

@@ -564,9 +564,17 @@ class _Constant(interp.MethodTable):
         frame: ForwardFrame[EmptyLattice],
         stmt: py.Constant,
     ) -> interp.StatementResult[EmptyLattice]:
-        """Accept a number, a bit and a range, and refuse any other constant."""
+        """Accept a number, a bit, a range or a slice bound, and refuse other constants.
+
+        A slice that kirin does not fold, such as `qs[0:i]`, reads `None` as a
+        constant for each bound that it leaves out.
+        """
         match stmt.value.unwrap():
             case bool() | int() | float():
+                pass
+            case None if all(
+                isinstance(use.stmt, py.slice.Slice) for use in stmt.result.uses
+            ):
                 pass
             case ilist.IList(data=range()):
                 pass

@@ -435,3 +435,39 @@ def test_a_register_of_registers_comes_back_as_one_flat_register():
     expected = [0, 1, 1, 0, 1, 1]
     assert _plain(simulate(grid_from_rows)) == expected
     assert _plain(simulate(flat_grid)) == expected
+
+
+@squin.kernel
+def sliced_in_a_loop() -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(4)
+    for i in range(1, 3):
+        squin.x(qs[0:3][i])
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def growing_slice() -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(4)
+    for i in range(1, 4):
+        squin.x(qs[0:i][i - 1])
+    return squin.broadcast.measure(qs)
+
+
+# kirin 0.22 has no type inference rule for `py.slice.Slice`. A slice that
+# constant folding leaves in place gets the type `Bottom` for its bounds.
+SLICE_BOUND_BOTTOM = (
+    "kirin types the bounds of an unfolded slice as Bottom. "
+    "The kirin branch fix/slice-typeinfer-none holds the fix."
+)
+
+SLICED_IN_A_LOOP = [
+    (sliced_in_a_loop, [0, 1, 1, 0]),
+    (growing_slice, [1, 1, 1, 0]),
+]
+
+
+@pytest.mark.xfail(reason=SLICE_BOUND_BOTTOM, strict=True)
+@pytest.mark.parametrize("kernel, expected", SLICED_IN_A_LOOP)
+def test_a_slice_in_a_loop_body_survives_the_trip(kernel, expected):
+    assert _plain(simulate(kernel)) == expected
+    assert _plain(simulate(returned(kernel))) == expected
