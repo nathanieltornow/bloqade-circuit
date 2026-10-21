@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from kirin import ir, types
 from kirin.dialects import py
+from typing_extensions import Self
 from kirin.analysis.forward import Forward, ForwardFrame
 
 from .index import Iter, Slice, Affine, python_slice
@@ -243,12 +244,49 @@ def _is_none(value: ir.SSAValue) -> bool:
 
 @dataclass
 class ReferenceAnalysis(Forward[Ref], ABC):
-    """Compute which root each value refers to, as a forward analysis."""
+    """Compute which root each value refers to, as a forward analysis.
+
+    `run` returns the frame of the analyzed method, which holds its own values
+    only. `calls` holds the frame of each body that a call runs.
+    """
 
     keys = (KEY, "absint")
     lattice = Ref
     indices: IndexAnalysis = field(default_factory=IndexAnalysis, init=False)
     """Map each integer value that the analysis has read to its affine index."""
+
+    calls: dict[ir.Statement, ForwardFrame[Ref]] = field(
+        default_factory=dict, init=False
+    )
+    """Map each call statement that the last run reached to the frame of its body.
+
+    A call statement is a `func.Invoke`, a `func.Call` of a closure, or a map
+    or a for-each that runs a function. The frame holds the reference of each
+    value inside the body, for the arguments of that call statement. A
+    parameter of the callee holds the reference of the caller's argument. For
+    example, if the caller passes `qs[1:3]` to the parameter `ps`, then `ps[0]`
+    in the callee is `Slot(%qs, 1)` with the caller's root `%qs`. An index can
+    still use an integer parameter of the callee as a symbol.
+
+    If a call statement runs more than once, its frame joins the references of
+    all runs. A call statement inside a callee runs once for each call of that
+    callee, so its frame joins the references of all these calls too.
+    """
+
+    def initialize(self) -> Self:
+        """Clear `calls` and the state of the interpreter before a run."""
+        self.calls = {}
+        return super().initialize()
+
+    def record_call(self, call: ir.Statement, inner: ForwardFrame[Ref]) -> None:
+        """Join the frame `inner` of a run of the body of `call` into `calls`."""
+        old = self.calls.get(call)
+        if old is None:
+            self.calls[call] = inner
+            return
+        for key, value in inner.entries.items():
+            known = old.entries.get(key)
+            old.entries[key] = value if known is None else known.join(value)
 
     @abstractmethod
     def shape(self, type_: types.TypeAttribute) -> int | None:
@@ -470,7 +508,8 @@ class ReferenceAnalysis(Forward[Ref], ABC):
         """
         callee = call.get_present_trait(ir.StaticCall).get_callee(call)
         args = frame.get_values(call.args)
-        _, result = self.call(callee.code, self.method_self(callee), *args)
+        inner, result = self.call(callee.code, self.method_self(callee), *args)
+        self.record_call(call, inner)
         params = callee.callable_region.blocks[0].args[1:]
         mapping = {p: self.affine(a) for p, a in zip(params, call.args)}
         return self.in_caller_terms(call, callee.code, mapping, args, result)
@@ -496,17 +535,20 @@ class ReferenceAnalysis(Forward[Ref], ABC):
     def apply(
         self,
         frame: ForwardFrame[Ref],
+        call: ir.Statement,
         code: ir.Statement,
         self_ref: Ref,
         args: tuple[Ref, ...],
     ) -> Ref:
-        """Run the function body `code` on `args` and return its result.
+        """Run the function body `code` on `args` for the statement `call`.
 
         The result is in the terms of the callee, so `in_caller_terms` must rename
-        it. A closure body belongs to the kernel under analysis, so its references
-        join the ones in `frame`. A closure that runs twice joins both runs.
+        it. `calls` keeps the frame of the body under `call`. A closure body
+        belongs to the kernel under analysis, so its references also join the
+        ones in `frame`. A closure that runs twice joins both runs.
         """
         inner, result = self.call(code, self_ref, *args)
+        self.record_call(call, inner)
         if isinstance(self_ref, Closure):
             for key, value in inner.entries.items():
                 old = frame.entries.get(key)
@@ -538,7 +580,7 @@ class ReferenceAnalysis(Forward[Ref], ABC):
         if isinstance(source, Members):
             results = []
             for member in source.refs:
-                result = self.apply(frame, code, self_ref, (member,))
+                result = self.apply(frame, stmt, code, self_ref, (member,))
                 if any(owned_by(r, code) for r in roots(result)):
                     return self._fresh(stmt, code, result, depth)
                 results.append(self.in_caller_terms(stmt, code, {}, (member,), result))
@@ -561,7 +603,7 @@ class ReferenceAnalysis(Forward[Ref], ABC):
             item = UNTRACKED
         else:
             return Unknown("a map over a value that is not a register or a list")
-        result = self.apply(frame, code, self_ref, (item,))
+        result = self.apply(frame, stmt, code, self_ref, (item,))
         if any(owned_by(r, code) for r in roots(result)):
             return self._fresh(stmt, code, result, depth)
         named = self.in_caller_terms(stmt, code, mapping, (item,), result)

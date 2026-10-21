@@ -1,7 +1,7 @@
 """Test reference tracking through allocations, calls, indexing, and loops."""
 
 import math
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from kirin import types
@@ -344,6 +344,49 @@ def test_a_function_runs_in_terms_of_its_own_parameters():
     _, result = QubitReferenceAnalysis(mt.dialects).run(mt)
     qs, i = mt.callable_region.blocks[0].args[1:]
     assert result == Slot(qs, i)
+
+
+@squin.kernel
+def flip_pair(ps: ilist.IList[Qubit, Literal[2]]):
+    squin.x(ps[0])
+    squin.x(ps[1])
+
+
+@squin.kernel
+def flips_two_pairs():
+    qs = squin.qalloc(4)
+    flip_pair(qs[1:3])
+    flip_pair(qs[0:2])
+
+
+def test_calls_hold_the_places_inside_each_callee_per_call_site():
+    """Each call keeps the frame of its callee, with the caller's roots."""
+    mt = flips_two_pairs.similar()
+    analysis = QubitReferenceAnalysis(mt.dialects)
+    frame, _ = analysis.run(mt)
+    (qs,) = allocations(mt, frame.entries)
+    middle, front = calls(mt, "flip_pair")
+    callee = middle.callee.callable_region
+    (ps,) = callee.blocks[0].args[1:]
+    first, second = (s.inputs[0] for s in callee.walk() if isinstance(s, func.Invoke))
+    inner = analysis.calls[middle].entries
+    assert inner[ps] == Part(qs, (Slice(Affine(1), 1, Affine(2)),))
+    assert (inner[first], inner[second]) == (Slot(qs, 1), Slot(qs, 2))
+    inner = analysis.calls[front].entries
+    assert (inner[first], inner[second]) == (Slot(qs, 0), Slot(qs, 1))
+    assert all(value not in frame.entries for value in (ps, first, second))
+
+
+def test_a_call_keeps_the_parameter_symbols_of_its_callee():
+    """`pick(qs, -1)` reads `qs[i]` at the symbol `i` of the callee."""
+    mt = picks.similar()
+    analysis = QubitReferenceAnalysis(mt.dialects)
+    frame, _ = analysis.run(mt)
+    (qs,) = allocations(mt, frame.entries)
+    call = calls(mt, "pick")[0]
+    _, i = call.callee.callable_region.blocks[0].args[1:]
+    (read,) = statements(call.callee, py.GetItem)
+    assert analysis.calls[call].entries[read.result] == Slot(qs, i)
 
 
 @squin.kernel

@@ -151,7 +151,7 @@ class _Func(interp.MethodTable):
         if not isinstance(closure, Closure) or stmt.kwargs:
             return analysis.unknown_results(stmt, "the result of a dynamic call")
         args = frame.get_values(stmt.inputs)
-        result = analysis.apply(frame, closure.code, closure, args)
+        result = analysis.apply(frame, stmt, closure.code, closure, args)
         if any(owned_by(r, closure.code) for r in roots(result)):
             return analysis.unknown_results(stmt, "a root that the closure allocates")
         params = closure.code.body.blocks[0].args[1:]
