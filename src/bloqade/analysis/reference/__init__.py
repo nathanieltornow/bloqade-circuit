@@ -9,6 +9,7 @@ from .index import (
     Iter as Iter,
     Slice as Slice,
     Affine as Affine,
+    Renamed as Renamed,
     same as same,
 )
 from .lattice import (
@@ -43,6 +44,7 @@ from .queries import (
     leaves as leaves,
     disjoint as disjoint,
     must_alias as must_alias,
+    disjoint_across_iterations as disjoint_across_iterations,
 )
 from .analysis import (
     KEY as KEY,

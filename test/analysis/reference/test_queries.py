@@ -19,6 +19,7 @@ from bloqade.analysis.reference import (
     leaves,
     disjoint,
     must_alias,
+    disjoint_across_iterations,
 )
 from bloqade.squin.analysis.per_qubit import (
     Qubit as QubitKey,
@@ -78,6 +79,61 @@ def test_must_alias_needs_one_root_and_equal_paths():
     assert must_alias(middle, Part(qs, (Slice(Affine(1), 1, Affine(2)),)))
     assert family(fresh) and not family(qs)
     assert not must_alias(Whole(fresh), Whole(fresh))
+
+
+@squin.kernel
+def chained(qs: ilist.IList[Qubit, Literal[10]], n: int):
+    for i in range(3):
+        squin.cx(qs[i], qs[i + 1])
+        squin.cx(qs[2 * i], qs[2 * i + 1])
+        squin.cx(qs[n], qs[n + 1])
+        k = i * i
+        squin.cx(qs[k], qs[k + 1])
+    squin.cx(qs[0], qs[1])
+    squin.cx(qs[0], qs[0])
+
+
+def operand_pairs():
+    """Return the loop of `chained` and the places of the operands of each `cx`."""
+    mt = chained.similar()
+    frame, _ = QubitReferenceAnalysis(mt.dialects).run(mt)
+    (loop,) = (s for s in mt.callable_region.walk() if isinstance(s, scf.For))
+    pairs = [
+        (frame.entries[s.args[0]], frame.entries[s.args[1]])
+        for s in mt.callable_region.walk()
+        if isinstance(s, func.Invoke) and s.callee.sym_name == "cx"
+    ]
+    return loop, pairs
+
+
+def test_disjoint_across_iterations_compares_two_iterations():
+    loop, (shifted, even_odd, outer, squared, fixed, twice) = operand_pairs()
+    # `qs[i + 1]` of iteration 0 is `qs[i]` of iteration 1.
+    assert disjoint(*shifted)
+    assert not disjoint_across_iterations(shifted[0], shifted[1], loop)
+    assert disjoint_across_iterations(even_odd[0], even_odd[1], loop)
+    # `n` comes from outside the loop, so it has one value in all iterations.
+    assert disjoint_across_iterations(outer[0], outer[1], loop)
+    # `k` is a value of the loop body, so it changes with the iteration.
+    assert disjoint(*squared)
+    assert not disjoint_across_iterations(squared[0], squared[1], loop)
+
+
+def test_disjoint_across_iterations_without_loop_symbols_is_disjoint():
+    loop, (*_, fixed, twice) = operand_pairs()
+    assert disjoint(*fixed)
+    assert disjoint_across_iterations(fixed[0], fixed[1], loop)
+    assert not disjoint(*twice)
+    assert not disjoint_across_iterations(twice[0], twice[1], loop)
+    _, qs, ps, _, fresh = parts()
+    middle = Part(qs, (Slice(Affine(1), 1, Affine(2)),))
+    for a, b in [
+        (Slot(qs, 0), middle),
+        (Slot(qs, 2), middle),
+        (Whole(fresh), Register(qs)),
+        (Register(qs), Register(ps)),
+    ]:
+        assert disjoint_across_iterations(a, b, loop) == disjoint(a, b)
 
 
 def test_leaves_lists_the_qubits_of_a_reference():

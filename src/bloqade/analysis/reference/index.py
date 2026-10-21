@@ -48,8 +48,36 @@ def _name(value: ir.SSAValue) -> str:
     return f"%{value.name}" if value.name else "%?"
 
 
-Sym = ir.SSAValue | Iter
-"""A symbol of an affine index: an integer SSA value or an `Iter`."""
+@dataclass(frozen=True)
+class Renamed:
+    """A copy of the symbol `sym` whose value is independent of the value of `sym`.
+
+    The copy has the range of `sym`, and `same` treats the two as different
+    symbols. A query renames the symbols of a loop body in one of two indices.
+    Then the two indices can stand for two different iterations of the loop.
+    """
+
+    sym: Sym
+
+    def __repr__(self) -> str:
+        """Return the name of `sym` with a prime, such as `%i'`."""
+        return _symbol_name(self.sym) + "'"
+
+
+Sym = ir.SSAValue | Iter | Renamed
+"""A symbol of an affine index: an integer SSA value, an `Iter` or a copy."""
+
+
+def _symbol_name(sym: Sym) -> str:
+    """Return the printed name of a symbol, such as `%n`, `%i` or `%i'`."""
+    return _name(sym) if isinstance(sym, ir.SSAValue) else repr(sym)
+
+
+def _values(sym: Sym) -> range | None:
+    """Return the constant range of the symbol `sym`, or None if it has none."""
+    if isinstance(sym, Renamed):
+        return _values(sym.sym)
+    return sym.values if isinstance(sym, Iter) else None
 
 
 @dataclass(frozen=True, repr=False)
@@ -66,9 +94,7 @@ class Affine:
 
     def __repr__(self) -> str:
         """Return the index as a sum, such as `2*%i + 1` or `%n - 1`."""
-        named = sorted(
-            (repr(s) if isinstance(s, Iter) else _name(s), a) for s, a in self.terms
-        )
+        named = sorted((_symbol_name(s), a) for s, a in self.terms)
         parts: list[str] = []
         for name, a in named:
             factor = "" if abs(a) == 1 else f"{abs(a)}*"
@@ -135,9 +161,9 @@ class Affine:
         """
         lo = hi = self.const
         for s, a in self.terms:
-            if not (isinstance(s, Iter) and s.values):
+            if not (values := _values(s)):
                 return None
-            ends = (a * s.values[0], a * s.values[-1])
+            ends = (a * values[0], a * values[-1])
             lo, hi = lo + min(ends), hi + max(ends)
         return lo, hi
 
@@ -152,7 +178,13 @@ def same(a: Affine, b: Affine) -> bool | None:
 
     The result is True if `a` equals `b` for every value of the symbols. The result
     is False if `a` equals `b` for no value of the symbols. Otherwise the result is
-    None. A shared `Iter` symbol stands for one iteration in both indices.
+    None.
+
+    A symbol has one value in both indices, so the check compares the indices at
+    one moment. A shared `Iter` symbol stands for one iteration in both indices.
+    So `same(i, i + 1)` is False, although item `i + 1` of iteration 0 is item `i`
+    of iteration 1. To compare two iterations, rename the symbols of one index
+    with `Renamed`.
     """
     d = a - b
     if d.constant is not None:
