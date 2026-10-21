@@ -78,6 +78,27 @@ def jeff_kind(kind: types.TypeAttribute) -> types.TypeAttribute:
     return kind
 
 
+def _position(symbol: Sym) -> tuple[int, ...]:
+    """Return where the index symbol `symbol` comes from in its kernel.
+
+    The result lists the index of each enclosing statement in its block, from
+    the outermost block in. The index of the result or the block argument comes
+    last.
+    """
+    if isinstance(symbol, Iter):
+        stmt, tail = symbol.stmt, ()
+    elif isinstance(symbol, ir.ResultValue):
+        stmt, tail = symbol.owner, (symbol.index,)
+    else:
+        assert isinstance(symbol, ir.BlockArgument)
+        stmt, tail = symbol.owner.parent_stmt, (-1, symbol.index)
+    path: list[int] = []
+    while stmt is not None and (block := stmt.parent_block) is not None:
+        path.append(next(i for i, s in enumerate(block.stmts) if s is stmt))
+        stmt = block.parent_stmt
+    return (*reversed(path), *tail)
+
+
 def qubit_levels(kind: types.TypeAttribute) -> int | None:
     """Return how many list levels hold the qubits of type `kind`, or None.
 
@@ -365,8 +386,10 @@ class Linearize(EmitABC[Frame, Value]):
             return frame.push(stmts.ConstInt(value=constant)).result
         total: ir.SSAValue | None = None
         # The symbols go in the order of their printed names, so that the
-        # emitted statements stay the same from one run to the next.
-        for symbol, a in sorted(index.terms, key=lambda term: repr(term[0])):
+        # emitted statements stay the same from one run to the next. Unnamed
+        # values all print as `%?`, so their place in the kernel breaks the tie.
+        terms = sorted(index.terms, key=lambda t: (repr(t[0]), _position(t[0])))
+        for symbol, a in terms:
             term = self.symbol(frame, symbol)
             if a != 1:
                 factor = frame.push(stmts.ConstInt(value=a)).result

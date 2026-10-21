@@ -14,6 +14,7 @@ from bloqade.analysis.reference import (
     UNTRACKED,
     Ref,
     Place,
+    Slice,
     Whole,
     Affine,
     Bottom,
@@ -24,7 +25,6 @@ from bloqade.analysis.reference import (
     ReferenceAnalysis,
     argument_of,
 )
-from bloqade.analysis.reference.index import python_slice
 
 WIRE_KEY = "jeff.reference"
 """The registry key of the rules for jeff statements."""
@@ -74,15 +74,30 @@ def _slice_of(
     start: ir.SSAValue,
     length: ir.SSAValue | int,
 ) -> Ref:
-    """Return the place of the `length` slots of `register` from `start` on."""
+    """Return the place of the `length` slots of `register` from `start` on.
+
+    A jeff slice takes its start and its length as they are. Python clamps the
+    bounds of a slice, and jeff does not. So the start and the length must both
+    have bounds of 0 or more. If the register has a static length, the slice must
+    also end inside the register. Otherwise the result is `Unknown`.
+    """
     if not _register_place(register):
         return Unknown("a slice of a value that is not a register")
     first = analysis.affine(start)
     count = Affine(length) if isinstance(length, int) else analysis.affine(length)
-    made = python_slice(first, first + count, 1, analysis.length(register))
-    if made is None:
+    size = analysis.length(register)
+    first_limits, count_limits = first.bounds(), count.bounds()
+    end = (first + count).bounds()
+    if (
+        first_limits is None
+        or count_limits is None
+        or end is None
+        or first_limits[0] < 0
+        or count_limits[0] < 0
+        or (size is not None and end[1] > size)
+    ):
         return Unknown("a slice that the analysis cannot name")
-    return analysis.sliced(register, made)
+    return analysis.sliced(register, Slice(first, 1, count))
 
 
 @stmts.wire.dialect.register(key=WIRE_KEY)

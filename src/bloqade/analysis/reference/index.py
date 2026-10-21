@@ -191,9 +191,23 @@ class Slice:
         """Return the register index of item `j` of the slice."""
         return self.start + j.scale(self.step)
 
-    def then(self, inner: Slice) -> Slice:
-        """Return the slice `inner` of this slice as a slice of the register."""
-        return Slice(self.item(inner.start), self.step * inner.step, inner.length)
+    def then(self, inner: Slice) -> Slice | None:
+        """Return the slice `inner` of this slice as a slice of the register.
+
+        If `inner` runs to the end of this slice, its length comes from the length
+        of this slice. For example, `(0:1:%i)[1:]` has the length `%i - 1`. The
+        result is None if that length is not affine or can be negative.
+        """
+        length = inner.length
+        if length is None and self.length is not None:
+            span = self.length - inner.start
+            if (n := span.constant) is not None:
+                length = Affine(max(0, -(-n // inner.step)))
+            elif inner.step != 1 or (limits := span.bounds()) is None or limits[0] < 0:
+                return None
+            else:
+                length = span
+        return Slice(self.item(inner.start), self.step * inner.step, length)
 
 
 def python_slice(
@@ -204,6 +218,7 @@ def python_slice(
     Python counts a negative bound from the end and clamps a bound past the end. If
     every bound and `size` are constants, the result follows those rules exactly.
     A bound with symbols must lie in the range 0 to `size`, or the result is None.
+    If `size` is None, a stop gives None, because Python clamps it to the size.
     The result is also None for a zero step, and for a negative step with symbols.
     """
     if step == 0:
@@ -226,6 +241,10 @@ def python_slice(
         )
 
     if not in_range(start) or (stop is not None and not in_range(stop)):
+        return None
+    # Python clamps a stop past the end, and a read past the end raises no error.
+    # So without the size, the length of `x[1:3]` can be 2, 1 or 0.
+    if stop is not None and size is None:
         return None
     if stop is None:
         if size is None:

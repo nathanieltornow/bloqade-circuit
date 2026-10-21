@@ -143,3 +143,51 @@ def test_a_kernel_without_operations_has_depth_zero():
         return 1
 
     assert circuit_depth(empty) == 0
+
+
+@squin.kernel
+def each_twice():
+    qs = squin.qalloc(3)
+    ilist.for_each(squin.h, qs)
+    ilist.for_each(squin.h, qs)
+
+
+def test_depth_stops_on_a_for_each_over_qubits():
+    stopped = circuit_depth(each_twice)
+    assert isinstance(stopped, Unknown)
+    assert stopped.reason == "a 'for_each' statement that touches qubits"
+
+
+@squin.kernel
+def nested_slices():
+    qs = squin.qalloc(4)
+    for i in range(1, 3):
+        squin.broadcast.h(qs[0:i][1:])
+
+
+def test_depth_reads_a_slice_of_a_slice_in_a_loop():
+    # Only `i = 2` gives a qubit: `qs[0:2][1:]` is `[qs[1]]`.
+    assert circuit_depth(nested_slices) == 1
+
+
+@squin.kernel
+def new_and_passed():
+    qs = squin.qalloc(2)
+
+    def pair(q: Qubit) -> ilist.IList[Qubit, Literal[2]]:
+        return [q, squin.qubit.new()]
+
+    rs = ilist.map(pair, qs)
+    squin.cx(rs[0][0], qs[0])
+
+
+def test_a_map_that_returns_new_and_passed_qubits_is_unknown():
+    mt = new_and_passed.similar()
+    frame, _ = QubitReferenceAnalysis(mt.dialects).run(mt)
+    ((control, target),) = [
+        node.inputs
+        for node in mt.callable_region.walk()
+        if isinstance(node, func.Invoke) and node.callee.sym_name == "cx"
+    ]
+    assert isinstance(frame.entries[control], Unknown)
+    assert not disjoint(frame.entries[control], frame.entries[target])

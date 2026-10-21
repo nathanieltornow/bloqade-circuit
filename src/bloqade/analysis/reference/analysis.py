@@ -1,6 +1,5 @@
 """This module holds the forward analysis that states what each value refers to."""
 
-import weakref
 from abc import ABC, abstractmethod
 from dataclasses import field, dataclass
 from collections.abc import Callable
@@ -38,32 +37,25 @@ OUT_OF_SCOPE = "an index that names a variable of a loop or a call that has ende
 """Give the reason of an `Unknown` whose index uses a symbol outside its scope."""
 
 
-_CONTENTS: "weakref.WeakKeyDictionary[ir.Statement, frozenset[int]]" = (
-    weakref.WeakKeyDictionary()
-)
-"""Hold the identities of the statements and blocks inside each scope statement."""
-
-
 def encloses(scope: ir.Statement, node: ir.IRNode) -> bool:
     """Return True if `node` is `scope` or a statement or block inside `scope`.
 
     The walk up the parent links answers most queries. The body of a lambda that a
-    constant method holds can lack those links. So the fallback checks the
-    statements and blocks that `scope` holds.
+    constant method holds can lack those links. So the fallback walks the
+    statements and blocks that `scope` holds. The fallback keeps no cache,
+    because a rewrite can change the statements of `scope` between two queries.
     """
     current: ir.IRNode | None = node
     while current is not None:
         if current is scope:
             return True
         current = current.parent_node
-    if scope not in _CONTENTS:
-        held: set[int] = set()
-        for stmt in scope.walk():
-            held.add(id(stmt))
-            for region in stmt.regions:
-                held.update(id(block) for block in region.blocks)
-        _CONTENTS[scope] = frozenset(held)
-    return id(node) in _CONTENTS[scope]
+    for stmt in scope.walk():
+        if stmt is node or any(
+            block is node for region in stmt.regions for block in region.blocks
+        ):
+            return True
+    return False
 
 
 def owned_by(root: Root, code: ir.Statement) -> bool:
@@ -216,6 +208,39 @@ def _checked(index: Affine, size: int | None) -> Affine | Unknown:
     return index
 
 
+def _only_owned(ref: Ref, code: ir.Statement) -> bool:
+    """Return True if every qubit that `ref` holds has a root that `code` owns.
+
+    An `Unknown` member gives False, because it can hold a qubit of the caller.
+    """
+    match ref:
+        case Place(root):
+            return owned_by(root, code)
+        case Members(members):
+            return all(_only_owned(member, code) for member in members)
+        case Untracked() | Bottom():
+            return True
+    return False
+
+
+def _is_none(value: ir.SSAValue) -> bool:
+    """Return True if `value` is the `None` of a missing slice bound or step.
+
+    The check reads a constant `None` first. A value of the type `NoneType` also
+    counts. A value of the type `Bottom` counts as a bound, because `Bottom` is a
+    subtype of every type. Kirin gives that type to a value that type inference
+    did not reach, such as a constant inside some loop bodies.
+    """
+    owner = value.owner
+    if isinstance(owner, ir.Statement) and owner.has_trait(ir.ConstantLike):
+        attribute = owner.attributes.get("value")
+        if isinstance(attribute, ir.Data):
+            return attribute.unwrap() is None
+    if isinstance(value.type, types.BottomType):
+        return False
+    return value.type.is_subseteq(types.NoneType)
+
+
 @dataclass
 class ReferenceAnalysis(Forward[Ref], ABC):
     """Compute which root each value refers to, as a forward analysis."""
@@ -348,9 +373,9 @@ class ReferenceAnalysis(Forward[Ref], ABC):
             return None
 
         def bound(arg: ir.SSAValue) -> Affine | None:
-            return None if arg.type.is_subseteq(types.NoneType) else self.affine(arg)
+            return None if _is_none(arg) else self.affine(arg)
 
-        if owner.step.type.is_subseteq(types.NoneType):
+        if _is_none(owner.step):
             step = 1
         elif (step := self.affine(owner.step).constant) is None:
             return None
@@ -384,15 +409,20 @@ class ReferenceAnalysis(Forward[Ref], ABC):
                 return ref
         return Unknown("a slice of a value that is not a register or a list")
 
-    def sliced(self, ref: Place, made: Slice) -> Place:
+    def sliced(self, ref: Place, made: Slice) -> Place | Unknown:
         """Return the slice `made` of the register place `ref`.
 
         `made` counts its items in `ref`. If `ref` is itself a slice, the result
-        counts them in the register below it.
+        counts them in the register below it. The result is `Unknown` if the
+        analysis cannot name the length of that combined slice.
         """
         path = ref.path
         if path and isinstance(last := path[-1], Slice):
-            path = (*path[:-1], last.then(made))
+            if (combined := last.then(made)) is None:
+                return Unknown(
+                    "a slice of a slice whose length the analysis cannot name"
+                )
+            path = (*path[:-1], combined)
         else:
             path = (*path, made)
         return place(ref.root, path, ref.depth)
@@ -510,7 +540,7 @@ class ReferenceAnalysis(Forward[Ref], ABC):
             for member in source.refs:
                 result = self.apply(frame, code, self_ref, (member,))
                 if any(owned_by(r, code) for r in roots(result)):
-                    return self._fresh(stmt, depth)
+                    return self._fresh(stmt, code, result, depth)
                 results.append(self.in_caller_terms(stmt, code, {}, (member,), result))
             return Items(tuple(results)) if depth is not None else UNTRACKED
         params = code.get_present_trait(ir.CallableStmtInterface)
@@ -533,7 +563,7 @@ class ReferenceAnalysis(Forward[Ref], ABC):
             return Unknown("a map over a value that is not a register or a list")
         result = self.apply(frame, code, self_ref, (item,))
         if any(owned_by(r, code) for r in roots(result)):
-            return self._fresh(stmt, depth)
+            return self._fresh(stmt, code, result, depth)
         named = self.in_caller_terms(stmt, code, mapping, (item,), result)
         if depth is None:
             return UNTRACKED
@@ -541,10 +571,20 @@ class ReferenceAnalysis(Forward[Ref], ABC):
             return source
         return self._gathered(named, k, size, depth)
 
-    def _fresh(self, stmt: ir.Statement, depth: int | None) -> Ref:
-        """Return a new register root at the result of the map `stmt`."""
+    def _fresh(
+        self, stmt: ir.Statement, code: ir.Statement, result: Ref, depth: int | None
+    ) -> Ref:
+        """Return a new register root at the result of the map `stmt`.
+
+        `result` is the value that the body `code` returns. The new root is sound
+        only if every qubit in `result` is one that the body allocates. A body that
+        returns `[q, squin.qubit.new()]` also returns the item `q` of the caller.
+        So that result is `Unknown`, and a new root would hide the alias with `q`.
+        """
         if depth is None or depth == 0:
             return Unknown("a map whose body allocates a value that is not a list item")
+        if not _only_owned(result, code):
+            return Unknown("a map whose body returns new qubits with other qubits")
         return place(stmt.results[0], (), depth)
 
     def _gathered(self, named: Ref, k: Iter, size: int | None, depth: int) -> Ref:

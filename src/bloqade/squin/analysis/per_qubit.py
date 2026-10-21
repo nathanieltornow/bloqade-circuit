@@ -22,7 +22,7 @@ from dataclasses import field, dataclass
 from collections.abc import Mapping
 
 from kirin import ir
-from kirin.dialects import scf, func, ilist
+from kirin.dialects import py, scf, func, ilist
 from kirin.dialects.ilist import stmts as ilist_stmts
 
 from bloqade.qubit import stmts as qubit_stmts, qalloc
@@ -232,6 +232,9 @@ class PerQubit(ABC, Generic[S]):
             case _ if type(stmt) in GATES:
                 form = GATES[type(stmt)]
                 self._gate(act, stmt, stmt.args[form.angles :], state)
+            case ilist.Map() | ilist.ForEach() | func.Call():
+                if self._applies_to_qubits(act, stmt):
+                    raise _Stop(f"a '{stmt.name}' statement that touches qubits")
             case _ if stmt.regions and _touches(stmt):
                 raise _Stop(f"a '{stmt.name}' statement whose body touches qubits")
 
@@ -396,6 +399,26 @@ class PerQubit(ABC, Generic[S]):
                     out += part
                 return out
         return None
+
+    def _applies_to_qubits(self, act: _Activation, stmt: ir.Statement) -> bool:
+        """Return True if the map, the for-each or the call `stmt` can touch a qubit.
+
+        These statements take their function as a value and hold no body. So the
+        walk checks the operands. An operand that refers to tracked state, such as
+        a list of qubits or a closure that captures one, touches a qubit. A
+        constant method whose body touches a qubit does too.
+        """
+        for arg in stmt.args:
+            if not isinstance(act.refs.get(arg), Untracked):
+                return True
+            owner = arg.owner
+            if isinstance(owner, py.Constant):
+                method = owner.value.unwrap()
+                if isinstance(method, ir.Method) and (
+                    is_library(method) or _touches(method.code)
+                ):
+                    return True
+        return False
 
     def _kind(self, stmt: ir.Statement) -> type | None:
         """Return the qubit statement type that `stmt` is or wraps, or None."""

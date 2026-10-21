@@ -163,3 +163,30 @@ def test_a_place_that_leaves_its_loop_is_unknown():
     assert reason(analysis.leave(inside, first)) == OUT_OF_SCOPE
     outside = Slot(qs, 2)
     assert analysis.leave(outside, first) == outside
+
+
+@squin.kernel
+def nested_slices(qs: ilist.IList[Qubit, Literal[4]]):
+    for i in range(1, 3):
+        squin.broadcast.h(qs[0:i][1:])
+
+
+def test_slice_bounds_with_the_bottom_type_keep_their_values():
+    # Type inference leaves the bounds in this loop body with the type `Bottom`.
+    mt, refs, _ = refs_of(nested_slices)
+    loop = next(node for node in mt.callable_region.walk() if isinstance(node, scf.For))
+    i = Affine.of(Iter(loop, range(1, 3)))
+    (operand,) = gate_operands(mt, "h")[0]
+    assert refs[operand] == Part(operand_root(mt), (Slice(Affine(1), 1, i - 1),))
+
+
+def operand_root(mt):
+    return mt.callable_region.blocks[0].args[1]
+
+
+def test_flat_gives_a_whole_register_all_of_its_qubits():
+    from bloqade.analysis.reference import Register
+    from bloqade.analysis.reference.layout import flat
+
+    mt, _, _ = refs_of(nested_slices)
+    assert flat(Register(operand_root(mt))) == Slice(Affine(0), 1, Affine(4))

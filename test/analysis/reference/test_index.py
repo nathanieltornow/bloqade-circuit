@@ -61,3 +61,22 @@ def test_a_slice_of_a_slice_reads_the_register():
     inner = python_slice(Affine(1), None, 1, 4)
     assert inner is not None
     assert outer.then(inner).item(Affine(0)) == Affine(3)
+
+
+def test_a_stop_without_a_size_gives_no_slice():
+    # Python clamps the stop to the size, so `x[1:3]` can hold 0, 1 or 2 items.
+    assert python_slice(Affine(1), Affine(3), 1, None) is None
+    assert python_slice(Affine(1), None, 1, None) == Slice(Affine(1), 1, None)
+
+
+def test_a_slice_to_the_end_of_a_slice_keeps_the_outer_length():
+    # `j` runs over `range(1, 3)`, so `j - 1` is never negative.
+    j = Affine.of(Iter(py.Constant(1), range(1, 3)))
+    outer = Slice(Affine(0), 1, j)
+    assert outer.then(Slice(Affine(1), 1, None)) == Slice(Affine(1), 1, j - 1)
+    # `i` can be 0, and then `i - 1` is negative.
+    assert Slice(Affine(0), 1, i).then(Slice(Affine(1), 1, None)) is None
+    assert Slice(Affine(2), 1, Affine(5)).then(Slice(Affine(1), 2, None)) == Slice(
+        Affine(3), 2, Affine(2)
+    )
+    assert outer.then(Slice(Affine(1), 2, None)) is None

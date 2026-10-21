@@ -54,4 +54,9 @@ def flat(ref: Place) -> Affine | Slice | None:
         base = base + step.scale(spans[level])
     if ref.one_item:
         return base
+    if not path:
+        # A whole root spans its own length times the span of one item.
+        origin, _ = origin_of(ref.root)
+        length = typed_length(origin.type, 0)
+        return None if length is None else Slice(base, 1, Affine(length * spans[0]))
     return Slice(base, 1, Affine(spans[len(path) - 1]))
