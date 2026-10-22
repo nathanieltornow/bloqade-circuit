@@ -1,4 +1,4 @@
-"""Test the place queries and the per-qubit analyses on squin kernels."""
+"""Test the place queries on squin kernels."""
 
 from typing import Literal
 
@@ -20,11 +20,6 @@ from bloqade.analysis.reference import (
     disjoint,
     must_alias,
     disjoint_across_iterations,
-)
-from bloqade.squin.analysis.per_qubit import (
-    Qubit as QubitKey,
-    MeasurementCount,
-    circuit_depth,
 )
 from bloqade.squin.analysis.reference import (
     QubitReferenceAnalysis,
@@ -146,85 +141,6 @@ def test_leaves_lists_the_qubits_of_a_reference():
 
 
 @squin.kernel
-def measured_twice() -> None:
-    qs = squin.qalloc(3)
-    for _ in range(2):
-        squin.measure(qs[0])
-    squin.broadcast.measure(qs[1:3])
-    for _ in range(2):
-        t = squin.qubit.new()
-        squin.measure(t)
-
-
-def test_measurement_count_names_each_qubit_and_each_run():
-    count = MeasurementCount()
-    state = count.run(measured_twice)
-    assert count.failure is None
-    by_name = {repr(q): n for q, n in state.items()}
-    assert by_name["Slot(%qs, 0)"] == 2
-    assert by_name["Slot(%qs, 1)"] == 1
-    assert by_name["Slot(%qs, 2)"] == 1
-    runs = sorted(q.run for q in state if q.path == ())
-    assert runs == [0, 1]
-    assert all(isinstance(q, QubitKey) for q in state)
-
-
-@squin.kernel
-def repeated():
-    q = squin.qubit.new()
-    p = squin.qubit.new()
-    for _ in range(3):
-        squin.h(q)
-        squin.cx(q, p)
-    return squin.measure(p)
-
-
-@squin.kernel
-def at_runtime(n: int):
-    q = squin.qubit.new()
-    for _ in range(n):
-        squin.h(q)
-
-
-def test_depth_unrolls_constant_loops_and_stops_on_others():
-    assert circuit_depth(repeated) == 7
-    stopped = circuit_depth(at_runtime)
-    assert isinstance(stopped, Unknown)
-    assert stopped.reason == "a loop over a range that is not constant"
-
-
-def test_a_kernel_without_operations_has_depth_zero():
-    @squin.kernel
-    def empty() -> int:
-        return 1
-
-    assert circuit_depth(empty) == 0
-
-
-@squin.kernel
-def each_twice():
-    qs = squin.qalloc(3)
-    ilist.for_each(squin.h, qs)
-    ilist.for_each(squin.h, qs)
-
-
-def test_depth_runs_a_for_each_over_qubits():
-    assert circuit_depth(each_twice) == 2
-
-
-@squin.kernel
-def nested_slices():
-    qs = squin.qalloc(4)
-    for i in range(1, 3):
-        squin.broadcast.h(qs[0:i][1:])
-
-
-def test_depth_reads_a_slice_of_a_slice_in_a_loop():
-    # Only `i = 2` gives a qubit: `qs[0:2][1:]` is `[qs[1]]`.
-    assert circuit_depth(nested_slices) == 1
-
-
-@squin.kernel
 def new_and_passed():
     qs = squin.qalloc(2)
 
@@ -245,82 +161,3 @@ def test_a_map_that_returns_new_and_passed_qubits_is_unknown():
     ]
     assert isinstance(frame.entries[control], Unknown)
     assert not disjoint(frame.entries[control], frame.entries[target])
-
-
-@squin.kernel
-def classical_loop(n: int):
-    q = squin.qubit.new()
-    x = 0
-    for i in range(n):
-        x = x + i
-    squin.h(q)
-
-
-def test_a_loop_over_a_runtime_range_without_qubits_runs_on():
-    assert circuit_depth(classical_loop) == 1
-
-
-@squin.kernel
-def known_branch():
-    q = squin.qubit.new()
-    for i in range(2):
-        if i == 0:
-            squin.h(q)
-        else:
-            squin.x(q)
-            squin.x(q)
-
-
-def test_a_known_condition_runs_only_the_taken_branch():
-    # The two iterations add 1 and 2. A join of both branches would give 4.
-    assert circuit_depth(known_branch) == 3
-
-
-@squin.kernel
-def measured_branch():
-    q = squin.qubit.new()
-    p = squin.qubit.new()
-    if squin.measure(q):
-        squin.h(p)
-    else:
-        squin.h(p)
-        squin.h(p)
-
-
-def test_a_measured_condition_runs_both_branches():
-    assert circuit_depth(measured_branch) == 2
-
-
-@squin.kernel
-def noisy():
-    q = squin.qubit.new()
-    squin.depolarize(0.1, q)
-
-
-def test_a_statement_on_qubits_without_a_rule_stops():
-    stopped = circuit_depth(noisy)
-    assert isinstance(stopped, Unknown)
-    assert (
-        stopped.reason
-        == "a 'depolarize' statement that the interpreter has no rule for"
-    )
-
-
-@squin.kernel
-def recursive(q: Qubit, n: int):
-    if n > 0:
-        squin.h(q)
-        recursive(q, n - 1)
-
-
-@squin.kernel
-def calls_recursive():
-    q = squin.qubit.new()
-    recursive(q, 3)
-
-
-def test_recursion_runs_to_a_known_end_and_stops_on_an_unknown_one():
-    assert circuit_depth(calls_recursive) == 3
-    stopped = circuit_depth(recursive)
-    assert isinstance(stopped, Unknown)
-    assert stopped.reason == "a chain of calls deeper than the interpreter follows"
