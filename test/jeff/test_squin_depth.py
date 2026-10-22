@@ -1,8 +1,8 @@
-"""Test that the squin depth from places equals the jeff depth after the conversion.
+"""Test that the squin depth from the per-qubit interpreter equals the jeff depth.
 
 The jeff depth analysis lives in `bloqade.jeff.analysis.depth`. The test skips if
-that package is absent. The squin walk runs each constant loop once per value, so
-it also names a loop index into a register. There the jeff analysis gives
+that package is absent. The squin interpreter runs each constant loop once per
+value, so it also names a loop index into a register. There the jeff analysis gives
 `Unknown`, and the test compares only the kernels with a jeff depth.
 """
 
