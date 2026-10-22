@@ -14,9 +14,9 @@ qubit:
     b = squin.qubit.new()          squin.reset(a)
     squin.x(b)                     squin.x(a)
 
-The pass reads the places of `QubitReferenceAnalysis`. It only reuses single
-qubits whose lifetimes it can bound in one block. See
-`bloqade.squin.analysis.lifetime` for the rules.
+The pass reads the effects of `QubitEffects`, which rest on the places of
+`QubitReferenceAnalysis`. It only reuses single qubits whose lifetimes it can
+bound in one block. See `bloqade.squin.analysis.lifetime` for the rules.
 """
 
 from dataclasses import field, dataclass
@@ -29,25 +29,28 @@ from kirin.dialects import func
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade import squin
-from bloqade.analysis.reference import Ref
-from bloqade.squin.analysis.lifetime import value_of, block_lifetimes
-from bloqade.squin.analysis.reference import QubitReferenceAnalysis
+from bloqade.squin.analysis.lifetime import (
+    Effect,
+    QubitEffects,
+    value_of,
+    block_lifetimes,
+)
 
 
 @dataclass
 class ReuseInBlock(RewriteRule):
     """Hand each dead qubit of a block to the next allocation of that block.
 
-    `refs` holds the place of each value, from `QubitReferenceAnalysis`. `reused`
+    `effects` holds the effect of each statement, from `QubitEffects`. `reused`
     counts the allocations that the rule removed.
     """
 
-    refs: Mapping[ir.SSAValue, Ref]
+    effects: Mapping[ir.Statement, Effect]
     reused: int = field(default=0, init=False)
 
     def rewrite_Block(self, node: ir.Block) -> RewriteResult:
         """Replace each allocation of `node` that can take a dead qubit."""
-        lives = block_lifetimes(node, self.refs)
+        lives = block_lifetimes(node, self.effects)
         stmts = list(node.stmts)
         # `defined` maps each result of the block to the index of its statement.
         defined: dict[ir.SSAValue, int] = {
@@ -100,8 +103,9 @@ class ReuseQubits(Pass):
 
     def unsafe_run(self, mt: ir.Method) -> RewriteResult:
         """Reuse the dead qubits of each block of `mt` in place."""
-        frame, _ = QubitReferenceAnalysis(mt.dialects).run(mt)
-        rule = ReuseInBlock(frame.entries)
+        effects = QubitEffects(mt.dialects)
+        effects.run(mt)
+        rule = ReuseInBlock(effects.effects)
         result = Walk(rule).rewrite(mt.code)
         self.reused = rule.reused
         return result
