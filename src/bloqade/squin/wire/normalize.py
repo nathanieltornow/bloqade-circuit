@@ -153,9 +153,7 @@ class MapToLoop(RewriteRule):
         appended.result.type = listed
         block.stmts.append(appended)
         block.stmts.append(scf.Yield(appended.result))
-        # Kirin's type rule for an empty `ilist.new` ignores `elem_type` and gives
-        # the element type `Any`. A constant list keeps its element type.
-        empty = _put(py.Constant(ilist.IList([], elem=element)), node)
+        empty = _put(ilist.New(values=(), elem_type=element), node)
         loop = _put(scf.For(iterable, ir.Region(block), empty.result), node)
         node.result.replace_by(loop.results[0])
         node.delete()
