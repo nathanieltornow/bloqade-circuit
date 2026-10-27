@@ -68,6 +68,7 @@ def jeff_kind(kind: types.TypeAttribute) -> types.TypeAttribute:
     if kind.is_subseteq(QubitType):
         return WireType
     if kind.is_subseteq(MeasurementResultType):
+        # Jeff measures to one bit, so the conversion assumes that no qubit is lost.
         return types.Bool
     if (levels := qubit_levels(kind)) is not None and levels > 0:
         return qureg(flat_length(kind, levels))
