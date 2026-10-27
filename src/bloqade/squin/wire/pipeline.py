@@ -26,7 +26,7 @@ from bloqade.analysis.reference import (
     roots,
     disjoint,
 )
-from bloqade.squin.analysis.lifetime import Effect, QubitEffects
+from bloqade.squin.analysis.effects import Effect, QubitEffects
 from bloqade.squin.analysis.reference import QubitReferenceAnalysis
 
 from .to_wire import ToWire

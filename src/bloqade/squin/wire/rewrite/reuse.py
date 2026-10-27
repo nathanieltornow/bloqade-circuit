@@ -5,8 +5,8 @@ In wire squin, the last use of a qubit is the statement that defines the wire th
 qubit dies as early as possible. `ReuseFreed` then turns a `Free` and a later
 `Alloc` into one `reset`, so the kernel needs one qubit fewer.
 
-These two rules replace a lifetime analysis. The def-use chain of the wire already
-holds the lifetime.
+The def-use chain of the wire holds the lifetime of the qubit, so the rules need
+no analysis.
 """
 
 from kirin import ir

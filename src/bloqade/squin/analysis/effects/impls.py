@@ -2,8 +2,7 @@
 
 Every statement without a rule uses the roots of its operands, through
 `QubitEffects.eval_fallback`. So a new gate or noise statement needs no rule here.
-Write a rule for any statement that allocates a qubit, returns a qubit, or runs a
-body.
+Write a rule for any statement that allocates a qubit or runs a body.
 """
 
 from kirin import interp
@@ -45,7 +44,7 @@ class _Qubit(interp.MethodTable):
 
 @func.dialect.register(key=KEY)
 class _Func(interp.MethodTable):
-    """Record the allocations, the calls and the returns of the `func` dialect."""
+    """Record the allocations and the calls of the `func` dialect."""
 
     @interp.impl(func.Invoke)
     def invoke(
@@ -64,19 +63,6 @@ class _Func(interp.MethodTable):
         else:
             analysis.record(stmt, analysis.operand_uses(stmt))
         return analysis.results(stmt)
-
-    @interp.impl(func.Return)
-    def return_(
-        self,
-        analysis: QubitEffects,
-        frame: ForwardFrame[EmptyLattice],
-        stmt: func.Return,
-    ) -> interp.ReturnValue[EmptyLattice]:
-        """Record that the returned roots leave the function."""
-        effect = analysis.operand_uses(stmt)
-        effect.escapes = True
-        analysis.record(stmt, effect)
-        return interp.ReturnValue(EmptyLattice.top())
 
 
 @scf.dialect.register(key=KEY)

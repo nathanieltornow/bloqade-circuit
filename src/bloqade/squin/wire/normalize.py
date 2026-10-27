@@ -28,7 +28,7 @@ from kirin.dialects.ilist import stmts as ilist_stmts
 
 from bloqade.types import QubitType
 from bloqade.analysis.reference import Ref
-from bloqade.squin.analysis.lifetime import holds_qubits
+from bloqade.squin.analysis.effects import holds_qubits
 from bloqade.squin.analysis.reference import qubit_items
 
 

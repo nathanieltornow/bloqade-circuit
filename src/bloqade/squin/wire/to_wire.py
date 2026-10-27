@@ -47,7 +47,7 @@ from bloqade.analysis.reference import (
     disjoint,
     positions,
 )
-from bloqade.squin.analysis.lifetime import Effect, holds_qubits
+from bloqade.squin.analysis.effects import Effect, holds_qubits
 from bloqade.analysis.reference.index import Sym
 from bloqade.squin.analysis.reference import qubit_items
 from bloqade.analysis.reference.layout import flat
