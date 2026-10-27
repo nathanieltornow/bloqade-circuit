@@ -4,8 +4,10 @@ from dataclasses import field, dataclass
 from collections.abc import Mapping, Callable
 
 from kirin import ir
+from kirin.passes import TypeInfer
 from kirin.rewrite import (
     Walk,
+    Chain,
     Inline,
     Fixpoint,
     DeadCodeElimination,
@@ -29,6 +31,13 @@ from bloqade.squin.analysis.reference import QubitReferenceAnalysis
 
 from .to_wire import ToWire
 from .from_wire import FromWire
+from .normalize import (
+    MapToLoop,
+    Concatenate,
+    IndexInLoop,
+    IndexInBranch,
+    QubitIteration,
+)
 from .validation import WireValidation
 
 LIBRARY = ("bloqade.squin.stdlib", "bloqade.qubit.stdlib")
@@ -134,36 +143,53 @@ class SquinToWire:
         return result
 
     def prepare(self, kernel: ir.Method) -> None:
-        """Copy `kernel`, inline the calls that cannot borrow, and analyze the copy.
+        """Copy `kernel`, normalize the copy, and analyze it.
 
-        The method inlines every library call and every call that `borrowable`
-        rejects. It repeats the analysis until no call needs inlining, because an
-        inlined body can hold new calls. Then it prepares each kernel that a kept
-        call reaches.
+        The method inlines every library call and runs the rules of
+        `bloqade.squin.wire.normalize`. After each analysis, it joins concatenated
+        registers and inlines each call that `borrowable` rejects. An inlined body
+        can hold new calls and new patterns, so the method repeats both steps until
+        nothing changes. Then it prepares each kernel that a kept call reaches.
         """
         if kernel in self.prepared:
             return
         copy = kernel.similar()
         self.prepared[kernel] = copy
-        Fixpoint(Walk(InlineCalls(lambda call: is_library(call.callee)))).rewrite(
-            copy.code
-        )
+        self.normalize(copy)
         while True:
             frame, _ = QubitReferenceAnalysis(copy.dialects).run(copy)
             rejected = InlineCalls(
                 lambda call: not self.borrowable(call, frame.entries)
             )
-            if not Walk(rejected).rewrite(copy.code).has_done_something:
+            rules = Chain(Concatenate(frame.entries), rejected)
+            if not Walk(rules).rewrite(copy.code).has_done_something:
                 break
-            Fixpoint(Walk(InlineCalls(lambda call: is_library(call.callee)))).rewrite(
-                copy.code
-            )
+            self.normalize(copy)
         effects = QubitEffects(copy.dialects, refs=frame.entries)
         effects.run(copy)
         self.refs.update(frame.entries)
         self.effects.update(effects.effects)
         for callee in rejected.kept:
             self.prepare(callee)
+
+    @staticmethod
+    def normalize(copy: ir.Method) -> None:
+        """Inline the library calls of `copy`, run the structural rules, and infer types.
+
+        An inlined body keeps the types of its callee, and some of them are `Any`.
+        `QubitEffects` must treat a value of type `Any` as a value that may hide a
+        qubit. Kirin's type inference gives such a value its precise type.
+        """
+        rules = Chain(
+            InlineCalls(lambda call: is_library(call.callee)),
+            QubitIteration(),
+            MapToLoop(),
+            IndexInBranch(),
+            IndexInLoop(),
+        )
+        Fixpoint(Walk(rules)).rewrite(copy.code)
+        Fixpoint(Walk(DeadCodeElimination())).rewrite(copy.code)
+        TypeInfer(copy.dialects)(copy)
 
     def borrowable(self, call: func.Invoke, refs: Mapping[ir.SSAValue, Ref]) -> bool:
         """Return True if `call` can stay a call that borrows its qubit arguments."""

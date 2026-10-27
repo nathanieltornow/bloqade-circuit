@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 from kirin import ir, types, interp
-from kirin.dialects import func, ilist
+from kirin.dialects import scf, func, ilist
 
 from bloqade import squin
 from bloqade.types import Qubit, MeasurementResult
@@ -132,6 +132,53 @@ def two_ancillas() -> ilist.IList[MeasurementResult, Any]:
     return [first, second]
 
 
+@squin.kernel
+def loop_over_qubits() -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(3)
+    for q in qs:
+        squin.x(q)
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def picked_in_a_branch(flag: bool) -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(2)
+    q = qs[0]
+    if flag:
+        q = qs[1]
+    squin.x(q)
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def carried_by_a_loop(n: int) -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(2)
+    q = qs[0]
+    for _ in range(n):
+        squin.x(q)
+        q = qs[1]
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def concatenated() -> ilist.IList[MeasurementResult, Any]:
+    a = squin.qalloc(2)
+    b = squin.qalloc(2)
+    squin.broadcast.x(a + b)
+    return squin.broadcast.measure([a[0], b[1]])
+
+
+@squin.kernel
+def for_each_qubit() -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(2)
+
+    def flip_one(q: Qubit):
+        squin.x(q)
+
+    ilist.for_each(flip_one, qs)
+    return squin.broadcast.measure(qs)
+
+
 CASES = [
     (ladder, (), [1, 1, 1, 1]),
     (measured_branch, (), [1, 0, 1]),
@@ -142,6 +189,13 @@ CASES = [
     (through_calls, (), [0, 1, 1, 0]),
     (cancelling, (), [0, 0]),
     (two_ancillas, (), [1, 0]),
+    (loop_over_qubits, (), [1, 1, 1]),
+    (picked_in_a_branch, (True,), [0, 1]),
+    (picked_in_a_branch, (False,), [1, 0]),
+    (carried_by_a_loop, (1,), [1, 0]),
+    (carried_by_a_loop, (3,), [1, 0]),
+    (concatenated, (), [1, 1]),
+    (for_each_qubit, (), [1, 1]),
 ]
 
 
@@ -255,6 +309,8 @@ def mapped() -> ilist.IList[MeasurementResult, Any]:
     return ilist.map(measure_one, qs)
 
 
-def test_a_map_over_qubits_is_refused():
-    with pytest.raises(interp.InterpreterError, match="holds qubits"):
-        SquinToWire().emit(mapped)
+def test_a_map_over_qubits_becomes_a_loop():
+    wired = SquinToWire().emit(mapped)
+    assert not any(isinstance(n, ilist.Map) for n in wired.callable_region.walk())
+    assert any(isinstance(n, scf.For) for n in wired.callable_region.walk())
+    assert simulate(WireToSquin().emit(wired)) == [0, 0]

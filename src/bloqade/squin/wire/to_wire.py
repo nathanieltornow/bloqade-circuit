@@ -353,13 +353,24 @@ class ToWire(EmitABC[Frame, Value]):
             term = self.symbol(frame, symbol)
             if a != 1:
                 factor = frame.push(py.Constant(a)).result
-                term = frame.push(py.Mult(term, factor)).result
-            total = term if total is None else frame.push(py.Add(total, term)).result
+                term = self.integer(frame, py.Mult(term, factor))
+            total = term if total is None else self.integer(frame, py.Add(total, term))
         assert total is not None
         if index.const:
             offset = frame.push(py.Constant(index.const)).result
-            total = frame.push(py.Add(total, offset)).result
+            total = self.integer(frame, py.Add(total, offset))
         return total
+
+    @staticmethod
+    def integer(frame: Frame, stmt: ir.Statement) -> ir.SSAValue:
+        """Push the integer arithmetic `stmt` and return its result, typed `int`.
+
+        A new `py.binop` statement has the result type `~T` until type inference
+        runs, and kirin's `verify_type` rejects `~T` as an index.
+        """
+        frame.push(stmt)
+        stmt.results[0].type = types.Int
+        return stmt.results[0]
 
     def symbol(self, frame: Frame, symbol: Sym) -> ir.SSAValue:
         """Return the wire squin integer of the index symbol `symbol`.
