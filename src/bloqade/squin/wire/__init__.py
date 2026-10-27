@@ -11,6 +11,7 @@ from .stmts import (
     Free as Free,
     Alloc as Alloc,
     Borrow as Borrow,
+    Length as Length,
     Release as Release,
     FreeRegister as FreeRegister,
     AllocRegister as AllocRegister,
@@ -33,4 +34,11 @@ from .traits import (
 )
 from ._dialect import dialect as dialect
 from .pipeline import SquinToWire as SquinToWire, WireToSquin as WireToSquin
-from .validation import LinearityValidation as LinearityValidation
+from .validation import (
+    Slots as Slots,
+    BorrowCheck as BorrowCheck,
+    WireValidation as WireValidation,
+    BorrowValidation as BorrowValidation,
+    LinearityValidation as LinearityValidation,
+    StructureValidation as StructureValidation,
+)

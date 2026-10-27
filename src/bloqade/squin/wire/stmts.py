@@ -2,7 +2,7 @@
 
 `Alloc` and `Free` start and end the life of one qubit. `AllocRegister` and
 `FreeRegister` do the same for a list of qubits. `Borrow` and `Release` take one
-qubit out of a register and put it back.
+qubit out of a register and put it back. `Length` reads the size of a register.
 """
 
 from kirin import ir, types
@@ -71,3 +71,14 @@ class Release(ir.Statement):
     index: ir.SSAValue = info.argument(types.Int)
     wire: ir.SSAValue = info.argument(WireType)
     register_out: ir.ResultValue = info.result(RegisterType)
+
+
+@statement(dialect=dialect)
+class Length(ir.Statement):
+    """Return `register` and the count of qubits that it holds."""
+
+    name = "length"
+    traits = frozenset({Threads((("register", "register_out"),))})
+    register: ir.SSAValue = info.argument(RegisterType)
+    register_out: ir.ResultValue = info.result(RegisterType)
+    result: ir.ResultValue = info.result(types.Int)

@@ -4,16 +4,17 @@ import math
 from typing import Any
 
 import pytest
-from kirin import ir, interp
-from kirin.dialects import ilist
+from kirin import ir, types, interp
+from kirin.dialects import func, ilist
 
 from bloqade import squin
 from bloqade.types import Qubit, MeasurementResult
 from bloqade.pyqrack import DynamicMemorySimulator
 from bloqade.squin.wire import (
+    WireType,
     SquinToWire,
     WireToSquin,
-    LinearityValidation,
+    WireValidation,
     stmts as wire_stmts,
 )
 from bloqade.squin.wire.rewrite import Simplify, ReuseQubits
@@ -43,7 +44,7 @@ def trip(kernel: ir.Method, *, optimize: bool) -> ir.Method:
     if optimize:
         Simplify(wired.dialects)(wired)
         ReuseQubits(wired.dialects)(wired)
-        LinearityValidation().check(wired)
+        WireValidation().check(wired)
     return WireToSquin().emit(wired)
 
 
@@ -192,13 +193,56 @@ def test_assume_disjoint_trusts_two_places_that_may_alias():
 
 
 @squin.kernel
-def qubit_parameter(q: Qubit):
-    squin.x(q)
+def kick(q: Qubit, k: int) -> int:
+    for _ in range(k):
+        squin.x(q)
+    return k + 1
 
 
-def test_a_kernel_with_a_qubit_parameter_is_refused():
-    with pytest.raises(interp.InterpreterError, match="borrowing call"):
-        SquinToWire().emit(qubit_parameter)
+@squin.kernel
+def fresh_pair() -> tuple[Qubit, Qubit]:
+    a = squin.qubit.new()
+    b = squin.qubit.new()
+    squin.x(b)
+    return a, b
+
+
+@squin.kernel
+def flip_all(qs: ilist.IList[Qubit, Any]):
+    for i in range(len(qs)):
+        squin.x(qs[i])
+
+
+@squin.kernel
+def calls() -> tuple[ilist.IList[MeasurementResult, Any], int]:
+    qs = squin.qalloc(3)
+    pair = fresh_pair()
+    a = pair[0]
+    b = pair[1]
+    total = kick(qs[1], 3)
+    flip_all(qs)
+    squin.cx(b, a)
+    return squin.broadcast.measure([qs[0], qs[1], qs[2], a, b]), total
+
+
+def test_a_call_with_qubit_arguments_stays_a_borrowing_call():
+    wired = SquinToWire().emit(calls)
+    callees = [
+        node.callee
+        for node in wired.callable_region.walk()
+        if isinstance(node, func.Invoke)
+    ]
+    assert sorted(c.sym_name for c in callees) == ["flip_all", "fresh_pair", "kick"]
+    kick_signature = next(c for c in callees if c.sym_name == "kick").code.signature
+    assert kick_signature.inputs == (WireType, types.Int)
+    assert kick_signature.output == types.Generic(tuple, types.Int, WireType)
+
+
+def test_a_borrowing_call_gives_the_same_result_after_the_trip():
+    expected = [[1, 0, 1, 1, 1], 4]
+    assert simulate(calls) == expected
+    assert simulate(trip(calls, optimize=False)) == expected
+    assert simulate(trip(calls, optimize=True)) == expected
 
 
 @squin.kernel

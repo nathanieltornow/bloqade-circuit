@@ -9,21 +9,49 @@ makes no difference.
 
 The rules for loops and branches run after the other rules. They remove the
 carried wires from the initializers, the block arguments and the yields.
+
+A borrowing call returns the wires of its qubit arguments after its ordinary
+outputs. The call rule reads each returned wire as the argument that went in. The
+signature rule turns each wire parameter back into a qubit parameter and drops the
+returned wires from the return statement.
 """
 
-from dataclasses import dataclass
+from dataclasses import field, dataclass
 
-from kirin import ir
-from kirin.rewrite import Walk, Fixpoint, DeadCodeElimination
+from kirin import ir, types
+from kirin.rewrite import Walk, Chain, Fixpoint, DeadCodeElimination
 from kirin.dialects import py, scf, func, ilist
+from kirin.dialects.py import len as py_len
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
+from bloqade import squin
 from bloqade.qubit import stmts as qubit_stmts, qalloc
 from bloqade.types import QubitType
 
 from . import stmts
-from .types import is_linear
+from .group import kernel as wire_kernel
+from .types import RegisterType, is_linear
 from .traits import Twin
+from .to_wire import packed_type, output_types
+
+
+def squin_type(kind: types.TypeAttribute) -> types.TypeAttribute:
+    """Return the reference squin type of the wire squin type `kind`."""
+    if kind.is_subseteq(RegisterType):
+        return ilist.IListType[QubitType, types.Any]
+    if is_linear(kind):
+        return QubitType
+    return kind
+
+
+def _kept_outputs(signature: func.Signature) -> tuple[types.TypeAttribute, ...]:
+    """Return the ordinary output types of a wire function with `signature`.
+
+    The wire function returns one wire for each linear parameter after them.
+    """
+    borrowed = sum(is_linear(kind) for kind in signature.inputs)
+    outputs = output_types(signature.output)
+    return tuple(squin_type(kind) for kind in outputs[: len(outputs) - borrowed])
 
 
 def _put(stmt: ir.Statement, before: ir.Statement) -> ir.Statement:
@@ -51,6 +79,9 @@ class FromWireStatements(RewriteRule):
             node.wire.replace_by(item.result)
             node.register_out.replace_by(node.register)
         elif isinstance(node, stmts.Release):
+            node.register_out.replace_by(node.register)
+        elif isinstance(node, stmts.Length):
+            node.result.replace_by(_put(py_len.Len(node.register), node).result)
             node.register_out.replace_by(node.register)
         elif not isinstance(node, (stmts.Free, stmts.FreeRegister)):
             return RewriteResult()
@@ -162,11 +193,125 @@ class FromWireRegions(RewriteRule):
 
 
 @dataclass
+class FromWireCalls(RewriteRule):
+    """Replace each call of a wire function with a call of its squin kernel.
+
+    `convert` returns the squin kernel of a wire method. A returned wire of a
+    borrowed argument becomes the argument itself.
+    """
+
+    convert: "FromWire"
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Rewrite `node` if it calls a wire squin method."""
+        if not isinstance(node, func.Invoke) or node.callee.dialects is not wire_kernel:
+            return RewriteResult()
+        signature = node.callee.code.signature
+        squin_kernel = self.convert.kernel_of(node.callee)
+        call = _put(func.Invoke(node.inputs, callee=squin_kernel), node)
+        kept = _kept_outputs(signature)
+        call.result.type = packed_type(kept)
+        borrowed = [a for a, k in zip(node.inputs, signature.inputs) if is_linear(k)]
+        total = len(kept) + len(borrowed)
+
+        def output(k: int, before: ir.Statement) -> ir.SSAValue:
+            if k >= len(kept):
+                return borrowed[k - len(kept)]
+            if len(kept) == 1:
+                return call.result
+            at = _put(py.Constant(k), before)
+            item = _put(py.GetItem(call.result, at.result), before)
+            item.result.type = kept[k]
+            return item.result
+
+        if total == 1:
+            node.result.replace_by(output(0, node))
+        elif total > 1:
+            for use in list(node.result.uses):
+                item = use.stmt
+                assert isinstance(item, py.GetItem)
+                index = item.index.owner
+                assert isinstance(index, py.Constant)
+                item.result.replace_by(output(index.value.unwrap(), item))
+                item.delete()
+        node.delete()
+        return RewriteResult(has_done_something=True)
+
+
+class FromWireSignature(RewriteRule):
+    """Give a wire function the signature of its squin kernel.
+
+    Each wire or register parameter becomes a qubit or a list of qubits. The return
+    statement drops the wires that the function hands back.
+    """
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Rewrite `node` if it is a function with linear parameters or outputs."""
+        if not isinstance(node, func.Function):
+            return RewriteResult()
+        signature = node.signature
+        outputs = output_types(signature.output)
+        if not any(is_linear(k) for k in (*signature.inputs, *outputs)):
+            return RewriteResult()
+        kept = _kept_outputs(signature)
+        block = node.body.blocks[0]
+        returned = block.last_stmt
+        assert isinstance(returned, func.Return)
+        if len(outputs) == 1:
+            values = [returned.value]
+        elif isinstance(made := returned.value.owner, py.tuple.New):
+            values = list(made.args)
+        else:
+            values = []
+        values = values[: len(kept)]
+        if not values:
+            value = _put(func.ConstantNone(), returned).result
+        elif len(values) == 1:
+            value = values[0]
+        else:
+            value = _put(py.tuple.New(tuple(values)), returned).result
+        _put(func.Return(value), returned)
+        returned.delete()
+        inputs = tuple(squin_type(k) for k in signature.inputs)
+        for arg in block.args[1:]:
+            arg.type = squin_type(arg.type)
+        output = packed_type(kept)
+        block.args[0].type = types.MethodType[list(inputs), output]
+        node.signature = func.Signature(inputs=inputs, output=output)
+        return RewriteResult(has_done_something=True)
+
+
+@dataclass
 class FromWire:
-    """Rewrite a wire squin method in place into reference squin."""
+    """Convert wire squin methods into squin kernels, one copy per method."""
+
+    kernels: dict[ir.Method, ir.Method] = field(default_factory=dict)
+    """Map each wire method to its squin kernel."""
+    pending: list[ir.Method] = field(default_factory=list)
+    """Hold the wire methods whose squin kernels still need the rewrite."""
+
+    def kernel_of(self, method: ir.Method) -> ir.Method:
+        """Return the squin kernel of the wire method `method`, made on first request.
+
+        The kernel starts as a copy, and `convert` rewrites it later. So a call in
+        a recursive kernel can name the kernel before its rewrite.
+        """
+        if method not in self.kernels:
+            self.kernels[method] = method.similar(squin.kernel)
+            self.pending.append(method)
+        return self.kernels[method]
+
+    def convert(self, method: ir.Method) -> ir.Method:
+        """Return the squin kernel of `method` and of every wire method that it calls."""
+        result = self.kernel_of(method)
+        while self.pending:
+            self.rewrite(self.kernels[self.pending.pop()])
+        return result
 
     def rewrite(self, method: ir.Method) -> RewriteResult:
-        """Run the statement rules, then the region rules, then dead code elimination."""
-        result = Fixpoint(Walk(FromWireStatements())).rewrite(method.code)
-        result = Fixpoint(Walk(FromWireRegions())).rewrite(method.code).join(result)
+        """Run the statement rules, then the region and signature rules, then DCE."""
+        statements = Walk(Chain(FromWireStatements(), FromWireCalls(self)))
+        result = Fixpoint(statements).rewrite(method.code)
+        regions = Walk(Chain(FromWireRegions(), FromWireSignature()))
+        result = Fixpoint(regions).rewrite(method.code).join(result)
         return Fixpoint(Walk(DeadCodeElimination())).rewrite(method.code).join(result)

@@ -1,11 +1,9 @@
-"""Test the rewrite rules and the linearity validation of wire squin."""
+"""Test the rewrite rules of wire squin."""
 
 from typing import Any
 
-import pytest
 from kirin import ir
-from kirin.dialects import scf, ilist
-from kirin.ir.exception import ValidationErrorGroup
+from kirin.dialects import ilist
 
 from bloqade import squin
 from bloqade.types import MeasurementResult
@@ -13,7 +11,7 @@ from bloqade.squin.gate import stmts as gate_stmts
 from bloqade.squin.wire import (
     TWINS,
     SquinToWire,
-    LinearityValidation,
+    WireValidation,
     stmts as wire_stmts,
 )
 from bloqade.squin.noise import stmts as noise_stmts
@@ -29,7 +27,7 @@ def simplified(kernel: ir.Method) -> ir.Method:
     """Return the wire squin method of `kernel` after the pass `Simplify`."""
     wired = SquinToWire().emit(kernel)
     Simplify(wired.dialects)(wired)
-    LinearityValidation().check(wired)
+    WireValidation().check(wired)
     return wired
 
 
@@ -98,32 +96,3 @@ def h_in_a_branch(flag: bool) -> MeasurementResult:
 def test_a_gate_in_a_branch_keeps_its_partner_outside():
     wired = simplified(h_in_a_branch)
     assert count(wired, TWINS[gate_stmts.H]) == 2
-
-
-@squin.kernel
-def ladder() -> ilist.IList[MeasurementResult, Any]:
-    qs = squin.qalloc(3)
-    for i in range(2):
-        squin.cx(qs[i], qs[i + 1])
-    return squin.broadcast.measure(qs)
-
-
-def test_a_wire_with_two_uses_breaks_linearity():
-    wired = SquinToWire().emit(ladder)
-    alloc = next(
-        node
-        for node in wired.callable_region.walk()
-        if isinstance(node, wire_stmts.AllocRegister)
-    )
-    wire_stmts.FreeRegister(alloc.result).insert_after(alloc)
-    with pytest.raises(ValidationErrorGroup, match="linearity"):
-        LinearityValidation().check(wired)
-
-
-def test_a_loop_body_that_reads_an_outer_wire_breaks_linearity():
-    wired = SquinToWire().emit(ladder)
-    loop = next(n for n in wired.callable_region.walk() if isinstance(n, scf.For))
-    carried = loop.body.blocks[0].args[1]
-    carried.replace_by(loop.initializers[0])
-    _, errors = LinearityValidation().run(wired)
-    assert any("crosses into the body" in str(error) for error in errors)

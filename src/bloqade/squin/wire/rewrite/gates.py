@@ -97,6 +97,7 @@ class MergeRotations(RewriteRule):
         if previous is None or node.get_present_trait(Twin).source not in ROTATIONS:
             return RewriteResult()
         total = py.Add(previous.angle, node.angle)
+        total.result.type = previous.angle.type.join(node.angle.type)
         total.insert_before(node)
         merged = type(node)(angle=total.result, qubit=previous.qubit)
         merged.insert_before(node)

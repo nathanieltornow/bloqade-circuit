@@ -15,6 +15,11 @@ A loop carries the wires of the roots that `QubitEffects` records for it, as
 extra initializers. A branch reads those wires from outside and yields the new
 wires. Every root that a body allocates and keeps to itself gets a `Free` at the
 end of the body.
+
+A call borrows its qubit arguments, as in Guppy and in MQT's QCO dialect. The
+wire callee takes a wire or a register for each qubit parameter. It returns its
+ordinary results first, then the wire or register of each qubit parameter in
+parameter order. A returned qubit that the callee allocates comes back as a wire.
 """
 
 from typing import TypeVar
@@ -26,6 +31,7 @@ from kirin.emit import EmitABC, EmitFrame
 from kirin.dialects import py, scf, func, ilist, ssacfg
 from kirin.emit.abc import EmitTable
 from kirin.worklist import WorkList
+from kirin.dialects.py import len as py_len
 
 from bloqade.qubit import stmts as qubit_stmts, qalloc
 from bloqade.squin.gate import _dialect as gate_dialect
@@ -39,6 +45,7 @@ from bloqade.analysis.reference import (
     Untracked,
     roots,
     disjoint,
+    positions,
 )
 from bloqade.squin.analysis.lifetime import Effect, holds_qubits
 from bloqade.analysis.reference.index import Sym
@@ -48,7 +55,7 @@ from bloqade.analysis.reference.layout import flat
 from . import stmts
 from .group import kernel
 from .twins import TWINS
-from .types import RegisterType
+from .types import WireType, RegisterType
 from .traits import Twin
 
 KEY = "emit.squin.wire"
@@ -105,6 +112,89 @@ class Frame(EmitFrame[Value]):
         return self.wires[root]
 
 
+def linear_type(ref: Ref) -> types.TypeAttribute | None:
+    """Return the wire squin type of a value with the place `ref`, or None.
+
+    One qubit becomes a `Wire`, and a whole register becomes a `Register`. A value
+    without qubits gives None.
+    """
+    if isinstance(ref, Untracked):
+        return None
+    if isinstance(ref, Place) and ref.one_item:
+        return WireType
+    if isinstance(ref, Place) and not ref.path:
+        return RegisterType
+    raise interp.InterpreterError(f"a call boundary cannot pass {ref!r}")
+
+
+def output_types(output: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:
+    """Return the type of each output of a function whose output type is `output`.
+
+    `None` gives no output. A tuple gives one output per member, and any other type
+    gives one output.
+    """
+    if output.is_subseteq(types.NoneType):
+        return ()
+    if isinstance(output, types.Generic) and output.is_subseteq(types.Tuple):
+        return tuple(output.vars)
+    return (output,)
+
+
+def packed_type(outputs: Sequence[types.TypeAttribute]) -> types.TypeAttribute:
+    """Return the output type of a function with the output types `outputs`."""
+    if not outputs:
+        return types.NoneType
+    if len(outputs) == 1:
+        return outputs[0]
+    return types.Generic(tuple, *outputs)
+
+
+@dataclass(frozen=True)
+class Layout:
+    """Describe the outputs of the wire squin function of one kernel.
+
+    `positions` counts the ordinary outputs of the kernel. `packed` is True if the
+    kernel returns a tuple. `borrowed` holds the qubit parameters, whose wires
+    follow the ordinary outputs in parameter order.
+    """
+
+    positions: int
+    packed: bool
+    borrowed: tuple[ir.BlockArgument, ...]
+
+    @property
+    def total(self) -> int:
+        """Return the count of outputs of the wire squin function."""
+        return self.positions + len(self.borrowed)
+
+
+def pack(frame: Frame, values: Sequence[ir.SSAValue]) -> ir.SSAValue:
+    """Return one value that holds `values`, as a function returns them.
+
+    No value gives `None`, one value gives itself, and more values give a tuple.
+    """
+    if not values:
+        return frame.push(func.ConstantNone()).result
+    if len(values) == 1:
+        return values[0]
+    return frame.push(py.tuple.New(tuple(values))).result
+
+
+def unpack(
+    frame: Frame, value: ir.SSAValue, kinds: Sequence[types.TypeAttribute]
+) -> list[ir.SSAValue]:
+    """Return one value for each output of `value`, the inverse of `pack`."""
+    if len(kinds) <= 1:
+        return [value][: len(kinds)]
+    items: list[ir.SSAValue] = []
+    for k, kind in enumerate(kinds):
+        at = frame.push(py.Constant(k)).result
+        item = frame.push(py.GetItem(value, at))
+        item.result.type = kind
+        items.append(item.result)
+    return items
+
+
 @dataclass
 class ToWire(EmitABC[Frame, Value]):
     """Build the wire squin method of one reference squin kernel.
@@ -119,9 +209,13 @@ class ToWire(EmitABC[Frame, Value]):
     dialects: ir.DialectGroup
     refs: Mapping[ir.SSAValue, Ref]
     effects: Mapping[ir.Statement, Effect]
+    kernels: Mapping[ir.Method, ir.Method] = field(default_factory=dict)
+    """Map each kernel that a call reaches to its prepared copy."""
     assume_disjoint: bool = False
-    method: ir.Method | None = field(default=None, init=False)
-    """The wire squin method that the last run built."""
+    functions: dict[ir.Statement, ir.Method] = field(default_factory=dict, init=False)
+    """Map the code of each prepared kernel to its wire squin method."""
+    layouts: dict[ir.Statement, Layout] = field(default_factory=dict, init=False)
+    """Map the code of each prepared kernel to the layout of its outputs."""
 
     def initialize_frame(
         self, node: ir.Statement, *, has_parent_access: bool = False
@@ -133,7 +227,48 @@ class ToWire(EmitABC[Frame, Value]):
         """Clear the state of the previous run."""
         self.callables = EmitTable(prefix="")
         self.callable_to_emit = WorkList()
-        self.method = None
+        self.functions = {}
+        self.layouts = {}
+
+    def declare(self, code: func.Function) -> ir.Method:
+        """Return the wire squin method of the kernel code `code`, made on first request.
+
+        The method has the signature of `Layout` and an empty body.
+        """
+        if code in self.functions:
+            return self.functions[code]
+        entry = code.body.blocks[0]
+        params = entry.args[1:]
+        borrowed = tuple(p for p in params if linear_type(self.refs[p]) is not None)
+        inputs = [linear_type(self.refs[p]) or p.type for p in params]
+        originals = output_types(code.signature.output)
+        returned = entry.last_stmt
+        if not isinstance(returned, func.Return):
+            raise interp.InterpreterError(f"'{code.sym_name}' does not end in a return")
+        refs = positions(self.refs[returned.value], len(originals))
+        outputs = [linear_type(r) or t for r, t in zip(refs, originals, strict=True)]
+        outputs += [linear_type(self.refs[p]) or p.type for p in borrowed]
+        output = packed_type(outputs)
+        block = ir.Block()
+        block.args.append_from(types.MethodType[inputs, output], entry.args[0].name)
+        for param, kind in zip(params, inputs, strict=True):
+            block.args.append_from(kind, param.name)
+        made = func.Function(
+            sym_name=code.sym_name,
+            signature=func.Signature(inputs=tuple(inputs), output=output),
+            slots=code.slots,
+            body=ir.Region(block),
+        )
+        method = ir.Method(
+            dialects=kernel,
+            code=made,
+            sym_name=code.sym_name,
+            arg_names=list(code.slots),
+        )
+        packed = code.signature.output.is_subseteq(types.Tuple) and bool(originals)
+        self.layouts[code] = Layout(len(originals), packed, borrowed)
+        self.functions[code] = method
+        return method
 
     def eval_fallback(self, frame: Frame, node: ir.Statement) -> tuple[Value, ...]:
         """Copy a classical statement, and drop a statement that only builds qubit values.
@@ -172,11 +307,11 @@ class ToWire(EmitABC[Frame, Value]):
     def take(self, frame: Frame, ref: Ref) -> ir.SSAValue:
         """Return the wire of the qubit at `ref`, and take it out of its root.
 
-        A whole root hands over its own wire. A qubit of a register comes out with
-        `Borrow`.
+        A whole root hands over its own wire or register. A qubit of a register
+        comes out with `Borrow`.
         """
-        if not (isinstance(ref, Place) and ref.one_item):
-            raise interp.InterpreterError(f"{ref!r} names no single qubit")
+        if not isinstance(ref, Place) or not (ref.one_item or not ref.path):
+            raise interp.InterpreterError(f"{ref!r} names no qubit and no register")
         if not ref.path:
             return frame.wire(ref.root)
         borrow = frame.push(
@@ -329,69 +464,143 @@ class _SsaCfg(ssacfg.Concrete):
 
 @func.dialect.register(key=KEY)
 class _Func(interp.MethodTable):
-    """Emit functions, returns and the calls of `qalloc`."""
+    """Emit functions, returns and borrowing calls."""
 
     @interp.impl(func.Function)
     def function(
         self, emit: ToWire, frame: Frame, stmt: func.Function
     ) -> interp.StatementResult[Value]:
-        """Build the wire squin function of `stmt` with the same signature.
-
-        Each parameter must be classical. A kernel with qubit parameters needs the
-        borrowing calls of the design, which this emitter does not build.
-        """
-        block = ir.Block()
-        args: list[Value] = []
-        for param in stmt.body.blocks[0].args:
-            if param.index > 0 and not isinstance(
-                emit.refs.get(param, Untracked()), Untracked
-            ):
-                raise interp.InterpreterError(
-                    f"the qubit parameter '{param.name}' needs a borrowing call"
-                )
-            args.append(block.args.append_from(param.type, param.name))
+        """Fill the body of the wire squin method of the kernel code `stmt`."""
+        method = emit.declare(stmt)
+        block = method.callable_region.blocks[0]
         frame.body = block
+        args: list[Value] = [block.args[0]]
+        for param, arg in zip(stmt.body.blocks[0].args[1:], block.args[1:]):
+            ref = emit.refs[param]
+            if isinstance(ref, Untracked):
+                args.append(arg)
+                continue
+            (root,) = roots(ref)
+            frame.wires[root] = arg
+            args.append(None)
         emit.frame_call(frame, stmt, *args)
-        made = func.Function(
-            sym_name=stmt.sym_name,
-            signature=stmt.signature,
-            slots=stmt.slots,
-            body=ir.Region(block),
-        )
-        emit.method = ir.Method(
-            dialects=kernel,
-            code=made,
-            sym_name=stmt.sym_name,
-            arg_names=list(stmt.slots),
-        )
         return ()
 
     @interp.impl(func.Invoke)
     def invoke(
         self, emit: ToWire, frame: Frame, stmt: func.Invoke
     ) -> interp.StatementResult[Value]:
-        """Emit a call of `qalloc` as one register allocation.
+        """Emit a call of `qalloc` as an allocation, and any other call as a borrowing call.
 
-        The pipeline inlines every other kernel before the conversion.
+        The call takes each qubit argument out of its root, and puts the returned
+        wire back. Each returned qubit that the callee allocates becomes a new root
+        of the caller.
         """
-        if stmt.callee is not qalloc:
+        if stmt.callee is qalloc:
+            (root,) = roots(emit.refs[stmt.result])
+            size = frame.scalar(stmt.inputs[0])
+            frame.wires[root] = frame.push(stmts.AllocRegister(size)).result
+            return (None,)
+        prepared = emit.kernels.get(stmt.callee)
+        if prepared is None:
             raise interp.InterpreterError(
-                f"the call of '{stmt.callee.sym_name}' needs a borrowing call"
+                f"'{stmt.callee.sym_name}' has no prepared copy"
             )
-        (root,) = roots(emit.refs[stmt.result])
-        size = frame.scalar(stmt.inputs[0])
-        frame.wires[root] = frame.push(stmts.AllocRegister(size)).result
-        return (None,)
+        code = prepared.code
+        assert isinstance(code, func.Function)
+        if code not in emit.functions:
+            emit.callable_to_emit.append(code)
+        callee = emit.declare(code)
+        layout = emit.layouts[code]
+        passed = [emit.refs[arg] for arg in stmt.inputs]
+        emit.check_apart([ref for ref in passed if not isinstance(ref, Untracked)])
+        inputs = [
+            frame.scalar(arg) if isinstance(ref, Untracked) else emit.take(frame, ref)
+            for arg, ref in zip(stmt.inputs, passed, strict=True)
+        ]
+        call = frame.push(func.Invoke(tuple(inputs), callee=callee))
+        call.result.type = callee.return_type
+        outs = unpack(frame, call.result, output_types(callee.return_type))
+        given = [ref for ref in passed if not isinstance(ref, Untracked)]
+        for ref, wire in zip(given, outs[layout.positions :], strict=True):
+            emit.give(frame, ref, wire)
+        results: list[Value] = []
+        refs = positions(emit.refs[stmt.result], layout.positions)
+        for ref, value in zip(refs, outs[: layout.positions], strict=True):
+            if isinstance(ref, Untracked):
+                results.append(value)
+                continue
+            (root,) = roots(ref)
+            frame.wires[root] = value
+            results.append(None)
+        if not layout.packed:
+            return (results[0] if results else None,)
+        members = [
+            value if value is not None else frame.push(func.ConstantNone()).result
+            for value in results
+        ]
+        return (frame.push(py.tuple.New(tuple(members))).result,)
 
     @interp.impl(func.Return)
     def return_(
         self, emit: ToWire, frame: Frame, stmt: func.Return
     ) -> interp.ReturnValue[Value]:
-        """Free every wire of the function and return its classical result."""
-        value = frame.scalar(stmt.value)
-        emit.free(frame, ())
-        frame.push(func.Return(value))
+        """Return the ordinary outputs, then the wire of each borrowed parameter.
+
+        The function frees every other wire.
+        """
+        code = stmt.parent_stmt
+        assert isinstance(code, func.Function)
+        layout = emit.layouts[code]
+        if layout.positions == 0:
+            values: list[ir.SSAValue] = []
+        elif not layout.packed:
+            values = [stmt.value]
+        elif isinstance(made := stmt.value.owner, py.tuple.New):
+            values = list(made.args)
+        else:
+            raise interp.InterpreterError(f"'{code.sym_name}' returns an opaque tuple")
+        outs: list[ir.SSAValue] = []
+        kept: list[Root] = []
+        for value in values:
+            ref = emit.refs[value]
+            if isinstance(ref, Untracked):
+                outs.append(frame.scalar(value))
+                continue
+            (root,) = roots(ref)
+            outs.append(frame.wire(root))
+            kept.append(root)
+        for param in layout.borrowed:
+            (root,) = roots(emit.refs[param])
+            outs.append(frame.wire(root))
+            kept.append(root)
+        emit.free(frame, kept)
+        frame.push(func.Return(pack(frame, outs)))
         return interp.ReturnValue(None)
+
+
+@py_len.dialect.register(key=KEY)
+class _Len(interp.MethodTable):
+    """Emit the length of a list of qubits."""
+
+    @interp.impl(py_len.Len)
+    def len_(
+        self, emit: ToWire, frame: Frame, stmt: py_len.Len
+    ) -> interp.StatementResult[Value]:
+        """Emit a constant for a list of known length, and `Length` for a register.
+
+        A classical list keeps its `len` statement.
+        """
+        ref = emit.refs.get(stmt.value, Untracked())
+        if isinstance(ref, Untracked):
+            return emit.eval_fallback(frame, stmt)
+        if (items := qubit_items(ref)) is not None:
+            return (frame.push(py.Constant(len(items))).result,)
+        if not (isinstance(ref, Place) and not ref.path):
+            raise interp.InterpreterError(f"the length of {ref!r} has no wire form")
+        length = frame.push(stmts.Length(frame.wire(ref.root)))
+        frame.wires[ref.root] = length.register_out
+        return (length.result,)
 
 
 @qubit_stmts.dialect.register(key=KEY)
