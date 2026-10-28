@@ -73,3 +73,16 @@ def qubit_items(ref: Ref) -> tuple[Ref, ...] | None:
     length holds one slot per index.
     """
     return items_of(ref, qubit_register_length)
+
+
+def holds_qubits(kind: types.TypeAttribute) -> bool:
+    """Return True if the type `kind` holds qubits, such as `IList[Qubit, 3]`."""
+    if isinstance(kind, types.BottomType):
+        return False
+    if kind.is_subseteq(QubitType):
+        return True
+    if isinstance(kind, types.Generic):
+        # The second variable of an `IList` is its length, which holds no qubit.
+        members = kind.vars[:1] if kind.is_subseteq(ilist.IListType) else kind.vars
+        return any(holds_qubits(member) for member in members)
+    return False

@@ -390,6 +390,15 @@ def roots(ref: Ref) -> list[Root]:
     return []
 
 
+def places_in(ref: Ref | None) -> list[Place]:
+    """Return the places that `ref` holds, including the members of lists and tuples."""
+    if isinstance(ref, Place):
+        return [ref]
+    if isinstance(ref, Members):
+        return [place for member in ref.refs for place in places_in(member)]
+    return []
+
+
 def positions(ref: Ref, count: int) -> tuple[Ref, ...]:
     """Return the reference at each of the `count` positions of a returned value.
 

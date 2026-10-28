@@ -18,8 +18,10 @@ The promotion then runs in three steps, each a kirin rewrite rule:
 3. `MaterializeStart` and `MaterializeEnd` turn the remaining ends of each chain
    into `Alloc`, `Free` and wire parameters.
 
-The reference analysis gives the place of each reference, and `QubitEffects`
-gives the places that each loop and branch touches.
+`SlotAnalysis` gives the place of each reference and the places that each loop
+and branch touches. The rules find the accesses of a slot through the trait
+`ReferenceAccess`, as MLIR's `mem2reg` finds loads and stores through its
+interfaces.
 """
 
 from dataclasses import dataclass
@@ -43,28 +45,49 @@ from bloqade.analysis.reference import (
     Returned,
     disjoint,
     origin_of,
-)
-from bloqade.squin.analysis.effects import (
-    Effect,
-    QubitEffects,
     places_in,
-    holds_qubits,
 )
-from bloqade.squin.analysis.reference import (
-    QubitReferenceAnalysis,
-    qubit_register_length,
-)
+from bloqade.squin.analysis.reference import holds_qubits, qubit_register_length
 from bloqade.analysis.reference.layout import flat
 from bloqade.analysis.reference.analysis import encloses
 
 from . import stmts
 from .index import index_value
 from .lower import Layout
+from .slots import SlotAnalysis
 from .types import WireType, RegisterType
+from .traits import ReferenceAccess
 from .reference_check import same_place
 
-TAKE = (stmts.Unwrap, stmts.UnwrapRegister)
-PUT = (stmts.Wrap, stmts.WrapRegister)
+
+@dataclass(frozen=True)
+class Facts:
+    """Hold what `SlotAnalysis` found in one form of a lowered kernel.
+
+    `refs` holds the place of each value. `touched` maps each loop and branch to
+    the places that its body accesses, and `blocked` holds the loops and branches
+    that touch a reference without the `ReferenceAccess` trait.
+    """
+
+    refs: Mapping[ir.SSAValue, Ref]
+    touched: Mapping[ir.Statement, set[Place]]
+    blocked: set[ir.Statement]
+    accessed: Mapping[Root, set[Place]]
+
+
+def analyze(method: ir.Method) -> Facts:
+    """Run `SlotAnalysis` on the current form of `method`."""
+    analysis = SlotAnalysis(method.dialects)
+    frame, _ = analysis.run(method)
+    return Facts(frame.entries, analysis.touched, analysis.blocked, analysis.accessed)
+
+
+def accessing(node: ir.Statement, takes: bool) -> ReferenceAccess | None:
+    """Return the trait of `node` if it takes out, or puts back, as `takes` says."""
+    access = node.get_trait(ReferenceAccess)
+    if access is None or access.takes is not takes or node.parent_block is None:
+        return None
+    return access
 
 
 def _put(stmt: ir.Statement, before: ir.Statement) -> ir.Statement:
@@ -223,20 +246,19 @@ class Boundaries(RewriteRule):
     `Walk` visits only the statements that existed before it started.
     """
 
-    effects: Mapping[ir.Statement, Effect]
+    facts: Facts
     policy: SlotPolicy
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Rebuild `node` if it is a loop or a branch that touches slots."""
         if not isinstance(node, (scf.For, scf.IfElse)) or node.parent_block is None:
             return RewriteResult()
-        effect = self.effects.get(node)
-        if effect is None or effect.opaque:
+        if node in self.facts.blocked:
             return RewriteResult()
         carried = sorted(
             {
                 place
-                for place in effect.places
+                for place in self.facts.touched.get(node, set())
                 if self.policy.slot(place) and _defined_outside(place.root, node)
             },
             key=repr,
@@ -322,34 +344,34 @@ class Boundaries(RewriteRule):
 class Scan:
     """Decide, for one slot, which statements of a block touch it.
 
-    `refs` holds the places of the kernel, and `effects` holds the effect of each
-    statement.
+    `facts` holds what `SlotAnalysis` found in the kernel.
     """
 
-    refs: Mapping[ir.SSAValue, Ref]
-    effects: Mapping[ir.Statement, Effect]
+    facts: Facts
 
     def place(self, value: ir.SSAValue) -> Place | None:
         """Return the place of the reference `value`, or None."""
-        ref = self.refs.get(value)
+        ref = self.facts.refs.get(value)
         return ref if isinstance(ref, Place) else None
 
     def touches(self, stmt: ir.Statement, slot: Place) -> bool:
         """Return True if `stmt` may touch the qubit of `slot`.
 
-        A pure statement only builds values. A statement with a body touches the
-        places of its effect. Any other statement touches the places of its
+        A pure statement only builds values. A loop or a branch touches the places
+        that its body accesses. Any other statement touches the places of its
         operands.
         """
         if stmt.has_trait(ir.Pure):
             return False
         if stmt.regions:
-            effect = self.effects.get(stmt)
-            if effect is None or effect.opaque:
+            if stmt in self.facts.blocked or not isinstance(
+                stmt, (scf.For, scf.IfElse)
+            ):
                 return True
-            return any(not disjoint(slot, place) for place in effect.places)
+            touched = self.facts.touched.get(stmt, set())
+            return any(not disjoint(slot, place) for place in touched)
         for value in stmt.args:
-            ref = self.refs.get(value)
+            ref = self.facts.refs.get(value)
             if ref is None:
                 continue
             if any(not disjoint(slot, place) for place in places_in(ref)):
@@ -370,17 +392,17 @@ class Forward(RewriteRule):
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Forward the wire of an earlier `Wrap` to `node`, if `node` is an `Unwrap`."""
-        if not isinstance(node, TAKE) or node.parent_block is None:
+        if (access := accessing(node, takes=True)) is None:
             return RewriteResult()
-        slot = self.policy.slot(self.scan.place(node.args[0]))
+        slot = self.policy.slot(self.scan.place(access.reference(node)))
         if slot is None:
             return RewriteResult()
         stmt = node.prev_stmt
         while stmt is not None:
-            if isinstance(stmt, PUT):
-                other = self.scan.place(stmt.args[0])
+            if (put := accessing(stmt, takes=False)) is not None:
+                other = self.scan.place(put.reference(stmt))
                 if other is not None and same_place(slot, other):
-                    node.results[0].replace_by(stmt.args[1])
+                    access.value(node).replace_by(put.value(stmt))
                     node.delete()
                     stmt.delete()
                     return RewriteResult(has_done_something=True)
@@ -430,9 +452,9 @@ class MaterializeStart(RewriteRule):
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Rewrite `node` if it is the first access to its slot in its block."""
-        if not isinstance(node, TAKE) or node.parent_block is None:
+        if (access := accessing(node, takes=True)) is None:
             return RewriteResult()
-        slot = self.policy.slot(self.scan.place(node.args[0]))
+        slot = self.policy.slot(self.scan.place(access.reference(node)))
         if slot is None or not _first(node, self.scan, slot):
             return RewriteResult()
         block = node.parent_block
@@ -446,10 +468,10 @@ class MaterializeStart(RewriteRule):
             else:
                 assert isinstance(made, func.Invoke)
                 fresh = _put(stmts.AllocRegister(made.inputs[0]), node).result
-            node.results[0].replace_by(fresh)
+            access.value(node).replace_by(fresh)
         elif self.parameter(root, block) and len(root.uses) == 1:
             root.type = linear_type(slot)
-            node.results[0].replace_by(root)
+            access.value(node).replace_by(root)
         else:
             return RewriteResult()
         node.delete()
@@ -475,17 +497,17 @@ class MaterializeEnd(RewriteRule):
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Rewrite `node` if it is the last access to a local slot in its block."""
-        if not isinstance(node, PUT) or node.parent_block is None:
+        if (access := accessing(node, takes=False)) is None:
             return RewriteResult()
-        slot = self.policy.slot(self.scan.place(node.args[0]))
+        slot = self.policy.slot(self.scan.place(access.reference(node)))
         if slot is None or not _local(slot.root, node.parent_block):
             return RewriteResult()
         if not _last(node, self.scan, slot):
             return RewriteResult()
         if slot.one_item:
-            _put(stmts.Free(node.args[1]), node)
+            _put(stmts.Free(access.value(node)), node)
         else:
-            _put(stmts.FreeRegister(node.args[1]), node)
+            _put(stmts.FreeRegister(access.value(node)), node)
         node.delete()
         return RewriteResult(has_done_something=True)
 
@@ -550,38 +572,29 @@ class DeadAllocations(RewriteRule):
         return RewriteResult(has_done_something=True)
 
 
-def analyze(method: ir.Method) -> tuple[Mapping[ir.SSAValue, Ref], QubitEffects]:
-    """Return the places and the effects of the current form of `method`."""
-    frame, _ = QubitReferenceAnalysis(method.dialects).run(method)
-    effects = QubitEffects(method.dialects, refs=frame.entries)
-    effects.run(method)
-    return frame.entries, effects
-
-
 def promote(method: ir.Method, layout: Layout | None = None) -> RewriteResult:
     """Promote the slots of the lowered `method` in place.
 
-    If `layout` is given, the function gets the signature of its wire function.
+    Each step that rebuilds statements reruns `SlotAnalysis`, so the next step
+    reads facts about the current form. If `layout` is given, the function gets the
+    signature of its wire function.
     """
-    refs, effects = analyze(method)
-    policy = SlotPolicy(effects.accessed)
-    result = Walk(RegisterAccesses(refs, policy)).rewrite(method.code)
-    refs, effects = analyze(method)
-    policy = SlotPolicy(effects.accessed)
-    result = Walk(Boundaries(effects.effects, policy)).rewrite(method.code).join(result)
-    refs, effects = analyze(method)
-    policy = SlotPolicy(effects.accessed)
-    scan = Scan(refs, effects.effects)
-    result = Fixpoint(Walk(Forward(scan, policy))).rewrite(method.code).join(result)
+    facts = analyze(method)
+    accesses = RegisterAccesses(facts.refs, SlotPolicy(facts.accessed))
+    result = Walk(accesses).rewrite(method.code)
+    facts = analyze(method)
+    boundaries = Boundaries(facts, SlotPolicy(facts.accessed))
+    result = Walk(boundaries).rewrite(method.code).join(result)
+    facts = analyze(method)
+    forward = Forward(Scan(facts), SlotPolicy(facts.accessed))
+    result = Fixpoint(Walk(forward)).rewrite(method.code).join(result)
     # The reads `qs[i]` of the promoted accesses are dead now, and loops still
     # carry the references that kirin's lowering added. A parameter becomes a wire
-    # parameter only when its last use is the `Unwrap` that takes it out.
+    # parameter only when its last use is the access that takes it out.
     tidy = Chain(DeadCodeElimination(), DropInvariantReferences())
     result = Fixpoint(Walk(tidy)).rewrite(method.code).join(result)
-    # `DropInvariantReferences` rebuilds loops, so the effects need a fresh run.
-    refs, effects = analyze(method)
-    policy = SlotPolicy(effects.accessed)
-    scan = Scan(refs, effects.effects)
+    facts = analyze(method)
+    scan, policy = Scan(facts), SlotPolicy(facts.accessed)
     ends = Chain(MaterializeStart(scan, policy), MaterializeEnd(scan, policy))
     result = Fixpoint(Walk(ends)).rewrite(method.code).join(result)
     cleanup = Chain(DeadCodeElimination(), DropInvariantReferences(), DeadAllocations())

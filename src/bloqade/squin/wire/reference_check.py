@@ -27,8 +27,14 @@ from kirin.dialects import scf, func
 from kirin.validation import ValidationPass
 from kirin.analysis.forward import ForwardFrame
 
-from bloqade.analysis.reference import Ref, Place, Untracked, disjoint, must_alias
-from bloqade.squin.analysis.effects import places_in
+from bloqade.analysis.reference import (
+    Ref,
+    Place,
+    Untracked,
+    disjoint,
+    places_in,
+    must_alias,
+)
 from bloqade.squin.analysis.reference import QubitReferenceAnalysis
 
 from . import stmts

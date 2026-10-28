@@ -204,8 +204,9 @@ class SquinToWire:
         """Inline the library calls of `copy`, run the structural rules, and infer types.
 
         An inlined body keeps the types of its callee, and some of them are `Any`.
-        `QubitEffects` must treat a value of type `Any` as a value that may hide a
-        qubit. Kirin's type inference gives such a value its precise type.
+        The reference analysis reads the type of a value to decide whether it holds
+        qubits, so a qubit of type `Any` would go untracked. Kirin's type inference
+        gives such a value its precise type.
         """
         rules = Chain(
             InlineCalls(lambda call: is_library(call.callee)),

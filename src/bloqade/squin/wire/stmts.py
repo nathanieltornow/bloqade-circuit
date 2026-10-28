@@ -20,7 +20,7 @@ from kirin.dialects import ilist
 from bloqade.types import QubitType
 
 from .types import WireType, RegisterType
-from .traits import Threads
+from .traits import Threads, ReferenceAccess
 from ._dialect import dialect
 
 
@@ -107,6 +107,7 @@ class Unwrap(ir.Statement):
     """
 
     name = "unwrap"
+    traits = frozenset({ReferenceAccess(takes=True)})
     qubit: ir.SSAValue = info.argument(QubitType)
     wire: ir.ResultValue = info.result(WireType)
 
@@ -116,6 +117,7 @@ class Wrap(ir.Statement):
     """Put the qubit that `wire` carries back into the reference `qubit`."""
 
     name = "wrap"
+    traits = frozenset({ReferenceAccess(takes=False)})
     qubit: ir.SSAValue = info.argument(QubitType)
     wire: ir.SSAValue = info.argument(WireType)
 
@@ -125,6 +127,7 @@ class UnwrapRegister(ir.Statement):
     """Take every qubit of the register that `qubits` names out as one register."""
 
     name = "unwrap_register"
+    traits = frozenset({ReferenceAccess(takes=True)})
     qubits: ir.SSAValue = info.argument(QubitListType)
     register: ir.ResultValue = info.result(RegisterType)
 
@@ -134,6 +137,7 @@ class WrapRegister(ir.Statement):
     """Put the qubits of `register` back into the reference list `qubits`."""
 
     name = "wrap_register"
+    traits = frozenset({ReferenceAccess(takes=False)})
     qubits: ir.SSAValue = info.argument(QubitListType)
     register: ir.SSAValue = info.argument(RegisterType)
 

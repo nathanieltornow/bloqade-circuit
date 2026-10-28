@@ -35,6 +35,7 @@ from .lattice import (
     child as child,
     place as place,
     roots as roots,
+    places_in as places_in,
     positions as positions,
 )
 from .queries import (
