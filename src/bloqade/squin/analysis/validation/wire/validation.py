@@ -4,7 +4,7 @@ The suite runs five kirin validation passes. `StructureValidation` runs kirin's
 own `verify` and `verify_type`. `LinearityValidation` checks the use rule below.
 `BorrowValidation` checks that each `Borrow` has a matching `Release`.
 `PositionValidation` checks the order of wires across control flow and calls.
-`ReferenceValidation`, in `reference_check`, checks how wires leave and enter
+`ReferenceValidation`, in `references`, checks how wires leave and enter
 qubit references.
 
 The use rule:
