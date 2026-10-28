@@ -6,7 +6,6 @@ from kirin.dialects import py, scf, func
 from test_roundtrip import ladder, simulate
 
 from bloqade import squin
-from bloqade.qubit import qalloc
 from bloqade.squin.wire import WireConversionError, stmts, twins
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
@@ -118,7 +117,7 @@ def test_each_iteration_owns_its_local_allocation():
 
 
 @squin.kernel
-def partially_blocked_loop(n: int, i: int):
+def blocked_loop(n: int, i: int):
     a = squin.qalloc(2)
     b = squin.qalloc(1)
     for _ in range(n):
@@ -127,22 +126,11 @@ def partially_blocked_loop(n: int, i: int):
     return squin.broadcast.measure(a), squin.broadcast.measure(b)
 
 
-@pytest.mark.parametrize("n", [0, 1, 2])
-def test_a_pinned_allocation_keeps_an_independent_allocation_promotable(n):
-    method = SquinToWire(partial=True).emit(partially_blocked_loop)
-    allocations = [
-        node for node in method.code.walk() if isinstance(node, stmts.AllocRegister)
-    ]
-    references = [
-        node
-        for node in method.code.walk()
-        if isinstance(node, func.Invoke) and node.callee is qalloc
-    ]
-    assert len(allocations) == len(references) == 1
-    assert allocations[0].size.owner.value.unwrap() == 1
-    loop = next(node for node in method.code.walk() if isinstance(node, scf.For))
-    assert allocations[0].result in loop.initializers
-    assert simulate(WireToSquin().emit(method), n, 1) == [[0, 0], [n % 2]]
+def test_one_blocked_allocation_causes_the_whole_conversion_to_fail():
+    before = snapshot(blocked_loop)
+    with pytest.raises(WireConversionError, match="may name one qubit"):
+        SquinToWire().emit(blocked_loop)
+    assert snapshot(blocked_loop) == before
 
 
 def test_a_pure_observer_of_a_reference_blocks_its_promotion():

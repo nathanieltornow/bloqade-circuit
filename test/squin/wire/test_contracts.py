@@ -43,7 +43,6 @@ def test_one_converter_recovers_after_failure_and_produces_deterministic_output(
     first = converter.emit(calls)
     second = converter.emit(calls)
     assert first.code.print_str() == second.code.print_str()
-    assert converter.report == []
     assert simulate(WireToSquin().emit(second)) == [[1, 0, 1, 1, 1], 4]
 
 

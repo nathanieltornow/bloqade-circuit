@@ -123,7 +123,6 @@ def paired_noise(n: int, m: int):
 def test_runtime_broadcasts_promote_completely_and_preserve_results(kernel, bit, n):
     converter = SquinToWire()
     wired = converter.emit(kernel)
-    assert converter.report == []
     assert remaining(wired) == []
     assert any(isinstance(node, scf.For) for node in wired.callable_region.walk())
     WireValidation().check(wired)

@@ -9,18 +9,15 @@ Each rule rewrites one statement and keeps reference semantics. The gate
     Wrap(a, %va)
     Wrap(b, %vb)
 
-A gate on a list of several qubits becomes one such group per item. A call of a
-kernel takes each qubit argument out, calls the wire function, and puts the
-returned wires back. The promotion passes in `promote` later join each `Wrap`
-with the next `Unwrap` of the same place.
-
-The rules read the places of `QubitReferenceAnalysis` only to count the items of
-a list. A list whose length the places don't give keeps its squin statement, and
-the reference check then reports it.
+A gate on a list of several qubits becomes one such group per item.
+A call takes each quantum argument out and puts its returned wire back.
+Promotion connects these temporary transfers through explicit wire values.
+Reference facts establish operand identities, list lengths and separation.
+If the facts cannot establish a supported lowering, the rule raises an error.
 """
 
 from typing import TypeVar
-from dataclasses import field, dataclass
+from dataclasses import dataclass
 from collections.abc import Mapping, Sequence, MutableMapping
 
 from kirin import ir, types
@@ -174,17 +171,13 @@ def distinct_parameters(a: Place, b: Place) -> bool:
 class LowerTwins(RewriteRule):
     """Lower a squin statement that has a twin onto `Unwrap`, twin and `Wrap`.
 
-    `refs` holds the places of the kernel before the lowering. A statement keeps
-    reference semantics if the places don't count the qubits of a list, if a
-    qubit has no place, or if two places of one group may name one qubit. The
-    converter requires distinct quantum parameters at wire function entry. If `partial` is
-    False, the rule raises a `WireConversionError` for such a statement.
-    Otherwise it leaves the statement and adds the reason to `refusals`.
+    `refs` holds the reference facts from preparation.
+    Every operand requires a known qubit identity and a separation proof for simultaneous uses.
+    Public wire functions require distinct quantum parameters.
+    If the facts cannot establish these conditions, the rule raises `WireConversionError`.
     """
 
     refs: Mapping[ir.SSAValue, Ref]
-    partial: bool = False
-    refusals: list[str] = field(default_factory=list)
 
     def items(
         self, value: ir.SSAValue, before: ir.Statement
@@ -253,10 +246,7 @@ class LowerTwins(RewriteRule):
         wires = dict(trait.wires)
         reason = self.problem(node, [getattr(node, source) for source in wires])
         if reason is not None:
-            if not self.partial:
-                raise WireConversionError(reason)
-            self.refusals.append(reason)
-            return RewriteResult()
+            raise WireConversionError(reason)
         lists = [self.items(getattr(node, source), node) for source in wires]
         classical = {
             name: getattr(node, name)
@@ -496,14 +486,12 @@ def lower(
     method: ir.Method,
     refs: Mapping[ir.SSAValue, Ref],
     kernels: Mapping[ir.Method, ir.Method],
-    partial: bool = False,
     layouts: Mapping[ir.Statement, Layout] | None = None,
-) -> list[str]:
+) -> None:
     """Lower every qubit statement of `method` in place, with the places `refs`.
 
     The method moves `method` to the dialect group of wire squin first, because
-    the lowered statements belong to it. It returns the reasons of the statements
-    that keep reference semantics, which `partial` allows.
+    the lowered statements belong to it. The conversion target checks unsupported operations afterward.
     """
     layouts = layouts or {
         copy.code: layout_of(copy.code, refs) for copy in kernels.values()
@@ -511,9 +499,9 @@ def lower(
     layout = layouts.get(method.code) or layout_of(method.code, refs)
     method.dialects = kernel
     facts = dict(refs)
-    twins = LowerTwins(facts, partial)
-    rules = Chain(twins, LowerCalls(facts, kernels, layouts), LowerLength(facts))
+    rules = Chain(
+        LowerTwins(facts), LowerCalls(facts, kernels, layouts), LowerLength(facts)
+    )
     Walk(rules).rewrite(method.code)
     Walk(LowerReturn(facts, layout)).rewrite(method.code)
     Walk(LowerEntry(facts)).rewrite(method.code)
-    return twins.refusals
