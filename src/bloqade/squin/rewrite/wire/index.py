@@ -1,15 +1,13 @@
 """Build the integer statements of an affine index, such as `2 * i + 1`.
 
-The reference analysis names a register item by an affine index over symbols. A
-symbol is an integer value of the kernel, or the `Iter` symbol of an `scf.for`
-loop, which stands for its loop variable.
+The converter names a register element with an integer expression over symbols.
+A symbol names an integer value or the iteration variable of an `scf.For` loop.
 """
 
 from kirin import ir, types
 from kirin.dialects import py, scf
 
-from bloqade.analysis.reference import Iter, Affine
-from bloqade.analysis.reference.index import Sym
+from bloqade.analysis.reference.index import Sym, Iter, Affine
 
 
 def _integer(stmt: ir.Statement, before: ir.Statement) -> ir.SSAValue:

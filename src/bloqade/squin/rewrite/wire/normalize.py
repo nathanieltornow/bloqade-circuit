@@ -1,4 +1,4 @@
-"""Rewrite reference squin into forms whose qubits `QubitReferenceAnalysis` can name.
+"""Normalize source loops, reference selections and runtime broadcasts for wire conversion.
 
 Each rule is a kirin rewrite rule, and each keeps the meaning of the kernel.
 
@@ -10,8 +10,6 @@ Each rule is a kirin rewrite rule, and each keeps the meaning of the kernel.
 - `IndexInBranch` and `IndexInLoop` handle a qubit that a branch or a loop picks
   from one register. The branch or the loop carries the index, and a read of the
   register after it gives the qubit.
-- `Concatenate` turns `a + b` of registers of known length into a literal list
-  of their qubits.
 - `BroadcastToLoop` turns a broadcast of unknown length into a loop of
   singleton broadcasts.
 
@@ -20,7 +18,7 @@ user, so a squin kernel can keep its aliases.
 """
 
 from typing import TypeVar
-from dataclasses import dataclass
+from dataclasses import field, dataclass
 from collections.abc import Mapping
 
 from kirin import ir, types
@@ -33,9 +31,8 @@ from bloqade.types import QubitType
 from bloqade.constants import constant_int
 from bloqade.squin.wire.twins import TWINS
 from bloqade.squin.wire.traits import Twin
-from bloqade.analysis.reference import Ref
-from bloqade.squin.analysis.reference import qubit_items, holds_qubits
-from bloqade.analysis.reference.analysis import typed_length
+from bloqade.squin.analysis.reference import holds_qubits
+from bloqade.squin.rewrite.wire.handles import typed_length
 
 _S = TypeVar("_S", bound=ir.Statement)
 
@@ -251,36 +248,6 @@ class IndexInLoop(RewriteRule):
 
 
 @dataclass
-class Concatenate(RewriteRule):
-    """Turn `a + b` of qubit lists of known length into one literal list.
-
-    `refs` holds the places of the kernel, which give the length of each list.
-    """
-
-    refs: Mapping[ir.SSAValue, Ref]
-
-    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
-        """Rewrite `node` if it adds two qubit lists whose lengths the places give."""
-        if not isinstance(node, py.Add) or not holds_qubits(node.result.type):
-            return RewriteResult()
-        reads: list[ir.SSAValue] = []
-        for side in (node.lhs, node.rhs):
-            ref = self.refs.get(side)
-            items = None if ref is None else qubit_items(ref)
-            if items is None:
-                return RewriteResult()
-            for k in range(len(items)):
-                at = _put(py.Constant(k), node)
-                item = _put(py.GetItem(side, at.result), node)
-                item.result.type = QubitType
-                reads.append(item.result)
-        joined = _put(ilist.New(values=tuple(reads), elem_type=QubitType), node)
-        node.result.replace_by(joined.result)
-        node.delete()
-        return RewriteResult(has_done_something=True)
-
-
-@dataclass
 class BroadcastToLoop(RewriteRule):
     """Expand a broadcast whose qubit count depends on runtime values.
 
@@ -290,7 +257,13 @@ class BroadcastToLoop(RewriteRule):
     unequal lengths.
     """
 
-    refs: Mapping[ir.SSAValue, Ref]
+    lengths: Mapping[ir.SSAValue, int | None]
+    created: list[ir.Statement] = field(default_factory=list)
+
+    def put(self, node, before):
+        """Insert a statement and record it for immediate ordered conversion."""
+        self.created.append(node)
+        return _put(node, before)
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Replace an unknown-length broadcast with an indexed loop."""
@@ -320,17 +293,18 @@ class BroadcastToLoop(RewriteRule):
         for source, _ in trait.results:
             old = getattr(node, source)
             element = old.type.vars[0]
-            empty = _put(ilist.New(values=(), elem_type=element), node)
+            empty = self.put(ilist.New(values=(), elem_type=element), node)
             collected = block.args.append_from(
                 ilist.IListType[element, types.Any], source
             )
             appended = py.Add(collected, getattr(broadcast, source))
+            appended.result.type = collected.type
             block.stmts.append(appended)
             initializers.append(empty.result)
             yielded.append(appended.result)
         block.stmts.append(scf.Yield(*yielded))
         iterable = self.iterable(node, operands, trait.truncate)
-        loop = _put(scf.For(iterable, ir.Region(block), *initializers), node)
+        loop = self.put(scf.For(iterable, ir.Region(block), *initializers), node)
         for (source, _), result in zip(trait.results, loop.results, strict=True):
             getattr(node, source).replace_by(result)
         node.delete()
@@ -338,34 +312,32 @@ class BroadcastToLoop(RewriteRule):
 
     def length(self, value: ir.SSAValue) -> int | None:
         """Read the list length from its reference or its type."""
-        if value in self.refs and (items := qubit_items(self.refs[value])) is not None:
-            return len(items)
-        return typed_length(value.type, 0)
+        return self.lengths.get(value, typed_length(value.type))
 
     def iterable(
         self, node: ir.Statement, operands: list[ir.SSAValue], truncate: bool
     ) -> ir.SSAValue:
         """Build the index range with the source's rule for unequal list lengths."""
-        size = _put(py_len.Len(operands[0]), node).result
+        size = self.put(py_len.Len(operands[0]), node).result
         for operand in operands[1:]:
-            other = _put(py_len.Len(operand), node).result
+            other = self.put(py_len.Len(operand), node).result
             if truncate:
-                shorter = _put(cmp.Lt(size, other), node).result
+                shorter = self.put(cmp.Lt(size, other), node).result
                 left, right = ir.Block(), ir.Block()
                 left.args.append_from(types.Bool)
                 right.args.append_from(types.Bool)
                 left.stmts.append(scf.Yield(size))
                 right.stmts.append(scf.Yield(other))
-                size = _put(scf.IfElse(shorter, left, right), node).results[0]
+                size = self.put(scf.IfElse(shorter, left, right), node).results[0]
                 continue
-            equal = _put(cmp.Eq(size, other), node).result
-            message = _put(
+            equal = self.put(cmp.Eq(size, other), node).result
+            message = self.put(
                 py.Constant(f"'{node.name}' requires equal qubit-list lengths."), node
             ).result
-            _put(assertion.Assert(equal, message), node)
-        zero = _put(py.Constant(0), node).result
-        one = _put(py.Constant(1), node).result
-        return _put(ilist_stmts.Range(zero, size, one), node).result
+            self.put(assertion.Assert(equal, message), node)
+        zero = self.put(py.Constant(0), node).result
+        one = self.put(py.Constant(1), node).result
+        return self.put(ilist_stmts.Range(zero, size, one), node).result
 
 
 def bounded_list_lengths(kind: types.TypeAttribute) -> types.TypeAttribute:

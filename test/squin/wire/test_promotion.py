@@ -1,4 +1,4 @@
-"""Check promotion eligibility, allocation lifetimes and structured value connections."""
+"""Check allocation lifetimes and current wire values across structured regions."""
 
 import pytest
 from test_lower import lowered
@@ -12,8 +12,7 @@ from bloqade.squin.gate import stmts as gates
 from bloqade.squin.wire import WireConversionError, stmts, twins
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
-from bloqade.squin.rewrite.wire.promote import promote
-from bloqade.squin.analysis.wire.promotion import analyze_promotion
+from bloqade.squin.rewrite.wire.promote import Conversion
 from bloqade.squin.analysis.validation.wire import WireValidation
 
 
@@ -25,13 +24,10 @@ def snapshot(method):
     return method.code.print_str(), {value: frozenset(value.uses) for value in values}
 
 
-def test_eligibility_keeps_the_program_and_its_use_lists_unchanged():
-    method = lowered(ladder)
-    before = snapshot(method)
-    info = analyze_promotion(method)
-    assert info.slots and info.touched and info.accesses
-    assert snapshot(method) == before
-    promote(method)
+def test_conversion_preserves_the_program_and_its_use_lists():
+    before = snapshot(ladder)
+    method = SquinToWire().emit(ladder)
+    assert snapshot(ladder) == before
     WireValidation().check(method)
     assert simulate(WireToSquin().emit(method)) == [1, 1, 1, 1]
 
@@ -44,7 +40,7 @@ def test_promotion_rejects_a_duplicate_transfer():
     with pytest.raises(
         WireConversionError, match="distinct simultaneous register borrows"
     ):
-        promote(method)
+        Conversion(method, SquinToWire().convert).run()
 
 
 @squin.kernel
@@ -179,5 +175,5 @@ def test_a_pure_observer_of_a_reference_blocks_its_promotion():
     observed = transfers[0].qubit
     compare = py.cmp.Eq(observed, observed)
     compare.insert_before(transfers[0])
-    info = analyze_promotion(method)
-    assert all(slot.allocation is not observed.owner for slot in info.slots.values())
+    with pytest.raises(WireConversionError, match="Unsupported reference operation"):
+        Conversion(method, SquinToWire().convert).run()

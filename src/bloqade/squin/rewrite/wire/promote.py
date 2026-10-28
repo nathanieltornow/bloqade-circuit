@@ -1,155 +1,338 @@
-"""Thread current wire values through reference accesses and structured regions.
+"""Convert one normalized function in source order using handles and current wires.
 
-Each region owns a rewrite state with its current values and outstanding register borrows.
-The rewrite visits statements in source order and creates actual wire values immediately.
-Loop and branch rules visit their bodies with separate states, then connect their final values.
+Local rules introduce reference transfers around gates and calls.
+The same traversal resolves each transfer and threads whole allocations through structured regions.
+Partial conversion can retry a private copy after discovering an allocation that must keep references.
 """
 
 from typing import TypeVar
 from dataclasses import field, dataclass
+from collections.abc import Callable, Hashable
 
 from kirin import ir, types
-from kirin.rewrite import Walk, Chain, DeadCodeElimination
-from kirin.dialects import scf, func
+from kirin.rewrite import (
+    Walk,
+    Chain,
+    DeadCodeElimination,
+    CommonSubexpressionElimination,
+)
+from kirin.dialects import py, scf, func
+from kirin.dialects.py import len as py_len
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
+from bloqade.qubit import stmts as qubit_stmts, qalloc
+from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
-from bloqade.squin.wire.types import WireType
+from bloqade.squin.wire.group import kernel as wire_kernel
+from bloqade.squin.wire.twins import TWINS
+from bloqade.squin.wire.types import WireType, RegisterType
 from bloqade.squin.wire.errors import WireConversionError
-from bloqade.squin.wire.traits import ReferenceAccess
-from bloqade.analysis.reference import Root, Place, Affine
-from bloqade.analysis.reference.index import Sym, same
+from bloqade.squin.wire.traits import Twin, ReferenceAccess
+from bloqade.analysis.reference.index import Affine, same
 from bloqade.squin.analysis.reference import holds_qubits
 from bloqade.squin.rewrite.wire.index import index_value
-from bloqade.squin.rewrite.wire.lower import Layout
+from bloqade.squin.rewrite.wire.lower import (
+    Contract,
+    LocalLowering,
+    packed_type,
+    output_types,
+)
 from bloqade.squin.rewrite.wire.driver import CheckedFixpoint
-from bloqade.analysis.reference.queries import flat
-from bloqade.analysis.reference.analysis import encloses
-from bloqade.squin.analysis.wire.promotion import PromotionInfo, analyze_promotion
+from bloqade.squin.rewrite.wire.handles import (
+    Handle,
+    Handles,
+    Descriptor,
+    merge,
+    roots,
+    distinct,
+    quantum_type,
+    typed_length,
+    register_shape,
+)
+from bloqade.squin.rewrite.wire.normalize import TupleProjection, BoundListLengths
 
 _S = TypeVar("_S", bound=ir.Statement)
 
 
 def _put(stmt: _S, before: ir.Statement) -> _S:
-    """Insert the statement before the access or boundary that requires it."""
+    """Insert a statement at the source access or region boundary."""
     stmt.insert_before(before)
     return stmt
 
 
+def encloses(scope: ir.Statement, owner: ir.Statement | ir.Block) -> bool:
+    """Return whether an owner belongs to a nested region of the statement."""
+    node = owner.parent_stmt
+    while node is not None:
+        if node is scope:
+            return True
+        node = node.parent_stmt
+    return False
+
+
+class InlineRequired(WireConversionError):
+    """Request another normalized copy with this callee inlined."""
+
+    def __init__(self, callee: ir.Method):
+        """Record the callee that prevents this call boundary from converting."""
+        self.callee = callee
+        super().__init__(f"Call '{callee.sym_name}' requires inlining.")
+
+
+class ReferencesRequired(WireConversionError):
+    """Request another private copy that preserves the selected source allocations."""
+
+    def __init__(self, allocations: set[int] | None, reason: str):
+        """Record the allocation numbers and the source operation that requires references."""
+        self.allocations = allocations
+        self.reason = reason
+        super().__init__("Partial conversion requires source reference allocations.")
+
+
 @dataclass(frozen=True)
 class Contents:
-    """Hold a current wire value and the indices of outstanding register borrows.
-
-    A missing value means that an unwrap transferred the whole allocation to an explicit wire.
-    A later wrap must restore the value before another reference access.
-    """
+    """Hold the latest linear value and the indices of outstanding borrows."""
 
     value: ir.SSAValue | None
     borrowed: frozenset[Affine] = frozenset()
 
 
 @dataclass
-class PromoteReferences(RewriteRule):
-    """Replace reference transfers in source order within one structured region.
+class Conversion:
+    """Share source handles, call contracts and allocation identities across region rewrites.
 
-    Nested regions get separate copies of the incoming state.
-    The shared index substitutions preserve reference facts when region results change.
+    Allocation numbers follow source visitation order.
+    Partial retries reuse those numbers because each private copy contains new SSA objects.
     """
 
-    info: PromotionInfo
-    contents: dict[Root, Contents] = field(default_factory=dict)
-    local: list[Root] = field(default_factory=list)
-    substitutions: dict[Sym, Affine] = field(default_factory=dict)
+    method: ir.Method
+    callee: Callable[[ir.Method], Contract]
+    partial: bool = False
+    promote: bool = True
+    blocked: set[int] = field(default_factory=set)
+    block_all: bool = False
+    handles: Handles = field(default_factory=Handles)
+    allocations: dict[Hashable, int] = field(default_factory=dict)
+    removed: set[ir.Statement] = field(default_factory=set)
+    borrowed: list[ir.SSAValue] = field(default_factory=list)
+    report: list[str] = field(default_factory=list)
+    contract: Contract | None = None
+    original_output: types.TypeAttribute = field(init=False)
+    input_types: tuple[types.TypeAttribute, ...] = field(init=False)
+    borrowed_positions: tuple[int, ...] = field(init=False)
+
+    def __post_init__(self):
+        """Record the source signature before entry parameters acquire linear types."""
+        assert isinstance(self.method.code, func.Function)
+        self.original_output = self.method.code.signature.output
+        if isinstance(self.original_output, types.BottomType):
+            raise WireConversionError(
+                "The function return has the impossible type Bottom."
+            )
+        inputs = tuple(self.method.code.signature.inputs)
+        self.borrowed_positions = tuple(
+            i for i, kind in enumerate(inputs) if quantum_type(kind) is not None
+        )
+        self.input_types = tuple(quantum_type(kind) or kind for kind in inputs)
+
+    def preserves(self, root: Hashable) -> bool:
+        """Return whether partial conversion must preserve this allocation's reference operations."""
+        return self.block_all or self.allocations[root] in self.blocked
+
+    def require_references(self, values: list[ir.SSAValue], reason: str) -> None:
+        """Fail complete conversion or retry partial conversion with all possible roots preserved."""
+        if not self.partial:
+            raise WireConversionError(reason)
+        selected: set[int] = set()
+        for value in values:
+            possible = roots(self.handles.get(value))
+            if possible is None:
+                if not self.block_all:
+                    raise ReferencesRequired(None, reason)
+                break
+            selected.update(
+                self.allocations[root] for root in possible if root in self.allocations
+            )
+        if not self.block_all and not selected <= self.blocked:
+            raise ReferencesRequired(selected, reason)
+        self.report.append(reason)
+
+    def run(self) -> ir.Method:
+        """Lower entry parameters, visit the function, then remove dead source references."""
+        method = self.method
+        assert isinstance(method.code, func.Function)
+        method.dialects = wire_kernel
+        block = method.callable_region.blocks[0]
+        first = block.first_stmt
+        assert first is not None
+        for i in self.borrowed_positions:
+            param = block.args[i + 1]
+            kind = self.input_types[i]
+            fresh = _put(
+                stmts.Reference() if kind == WireType else stmts.ReferenceRegister(),
+                first,
+            )
+            fresh.result.type = param.type
+            param.replace_by(fresh.result)
+            param.type = kind
+            _put(
+                (
+                    stmts.Wrap(fresh.result, param)
+                    if kind == WireType
+                    else stmts.WrapRegister(fresh.result, param)
+                ),
+                first,
+            )
+            self.borrowed.append(fresh.result)
+        OrderedPromotion(self).walk(method.callable_region)
+        assert self.contract is not None
+        cleanup = Chain(
+            TupleProjection(),
+            DeadCodeElimination(),
+            DropInvariantReferences(),
+            RemovePromotedAllocations(self.removed),
+        )
+        CheckedFixpoint(Walk(cleanup)).rewrite(method.code)
+        if any(node.parent_block is not None for node in self.removed):
+            raise WireConversionError(
+                "Promotion left a live reference to a converted allocation."
+            )
+        CheckedFixpoint(Walk(CommonSubexpressionElimination())).rewrite(method.code)
+        CheckedFixpoint(Walk(DeadCodeElimination())).rewrite(method.code)
+        signature = func.Signature(
+            inputs=self.input_types, output=packed_type(self.contract.outputs)
+        )
+        method.code.signature = signature
+        block.args[0].type = types.MethodType[list(signature.inputs), signature.output]
+        Walk(BoundListLengths()).rewrite(method.code)
+        return method
+
+
+@dataclass
+class OrderedPromotion(RewriteRule):
+    """Resolve source definitions and rewrite transfers once within one structured region."""
+
+    conversion: Conversion
+    current: dict[Hashable, Contents] = field(default_factory=dict)
+    local: list[Hashable] = field(default_factory=list)
+
+    @property
+    def handles(self) -> Handles:
+        """Return the definition map shared by all nested region rewrites."""
+        return self.conversion.handles
 
     def walk(self, region: ir.Region) -> RewriteResult:
-        """Visit this region once and let each structured operation visit its own bodies."""
+        """Visit one block and let structured rules own the traversal of nested bodies."""
         if len(region.blocks) != 1:
             raise WireConversionError(
-                "Promotion requires a single block in each structured region."
+                "Wire conversion requires single-block structured regions."
             )
         return Walk(
             self, skip=lambda node: isinstance(node, ir.Region) and node is not region
         ).rewrite(region)
 
-    def require(self, root: Root, *, restored=False) -> Contents:
-        """Require an available value and optionally require every borrowed element to be present."""
-        state = self.contents.get(root)
+    def generated(self, nodes: list[ir.Statement]) -> RewriteResult:
+        """Convert the statements that a local lowering constructed in their construction order."""
+        result = RewriteResult(has_done_something=bool(nodes))
+        for node in nodes:
+            result = self.rewrite(node).join(result)
+        return result
+
+    def value(self, root: Hashable, *, restored=True) -> ir.SSAValue:
+        """Require an available allocation value and optionally require every borrowed element to be present."""
+        state = self.current.get(root)
         if state is None or state.value is None:
             raise WireConversionError(
-                f"Promotion requires an available value for {root!r}."
+                "Promotion requires an available value before an unwrap."
             )
         if restored and state.borrowed:
             raise WireConversionError(
-                f"Promotion requires every borrowed element of {root!r} at the region boundary."
+                "Promotion requires every borrowed element at a region boundary."
             )
-        return state
-
-    def value(self, root: Root) -> ir.SSAValue:
-        """Return a fully restored value for a region boundary."""
-        state = self.require(root, restored=True)
-        assert state.value is not None
         return state.value
 
-    def finish(self, node: ir.Statement) -> RewriteResult:
-        """Free the allocations that this region still owns at its exit."""
-        changed = False
+    def finish(self, before: ir.Statement) -> None:
+        """Free local allocations whose values still belong to this region."""
         for root in self.local:
-            if self.contents[root].value is None:
+            if self.current[root].value is None:
                 continue
-            kind = (
-                stmts.Free
-                if self.info.slots[root].type == WireType
-                else stmts.FreeRegister
+            handle = self.handles.get(root)
+            assert isinstance(handle, Handle)
+            kind = stmts.Free if handle.kind == WireType else stmts.FreeRegister
+            _put(kind(self.value(root)), before)
+            self.current[root] = Contents(None)
+
+    def allocation(self, node: ir.Statement) -> RewriteResult:
+        """Create a stable handle and initialize its current value at the source allocation."""
+        conv = self.conversion
+        root = node.results[0]
+        kind = (
+            WireType
+            if isinstance(node, (qubit_stmts.New, stmts.Reference))
+            else RegisterType
+        )
+        length = typed_length(root.type)
+        if isinstance(node, func.Invoke):
+            size = constant_int(node.inputs[0])
+            length = None if size is None else max(0, size)
+            self.handles.extents[root] = self.handles.indices.of(node.inputs[0])
+        shape = register_shape(root.type)
+        if len(shape) > 1:
+            length = 1
+            for dimension in shape:
+                if dimension is None:
+                    length = None
+                    break
+                length *= dimension
+        self.handles.values[root] = Handle(
+            root, kind, None if length is None else Affine(length), shape=shape
+        )
+
+        conv.allocations[root] = len(conv.allocations)
+        if not conv.promote or conv.preserves(root):
+            return RewriteResult()
+        if isinstance(node, (stmts.Reference, stmts.ReferenceRegister)):
+            value = None
+        elif kind == WireType:
+            value = _put(stmts.Alloc(), node).result
+        else:
+            assert isinstance(node, func.Invoke)
+            value = _put(stmts.AllocRegister(node.inputs[0]), node).result
+        self.current[root] = Contents(value)
+        self.local.append(root)
+        conv.removed.add(node)
+        return RewriteResult(has_done_something=value is not None)
+
+    def transfer(self, node: ir.Statement) -> RewriteResult:
+        """Resolve one transfer from its handle and the current allocation value."""
+        access = node.get_present_trait(ReferenceAccess)
+        handle = self.handles.get(access.reference(node))
+        if not isinstance(handle, Handle):
+            self.conversion.require_references(
+                [access.reference(node)],
+                f"'{node.name}' has no place in a known allocation.",
             )
-            _put(kind(self.value(root)), node)
-            self.contents[root] = Contents(None)
-            changed = True
-        return RewriteResult(has_done_something=changed)
-
-    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
-        """Allocate current values, replace transfers, and thread values through region boundaries."""
-        if isinstance(node, scf.For):
-            return self.loop(node)
-        if isinstance(node, scf.IfElse):
-            return self.branch(node)
-        if isinstance(node, (func.Return, scf.Yield)):
-            return self.finish(node)
-        if (
-            ref := self.info.accesses.get(node)
-        ) is not None and ref.root in self.info.slots:
-            return self.transfer(node, ref)
-        if slot := self.info.allocations.get(node):
-            if isinstance(node, (stmts.Reference, stmts.ReferenceRegister)):
-                value = None
-            elif slot.type == WireType:
-                value = _put(stmts.Alloc(), node).result
-            else:
-                assert isinstance(node, func.Invoke)
-                value = _put(stmts.AllocRegister(*node.inputs), node).result
-            self.contents[slot.root] = Contents(value)
-            self.local.append(slot.root)
-            return RewriteResult(has_done_something=value is not None)
-        return RewriteResult()
-
-    def transfer(self, node: ir.Statement, ref: Place) -> RewriteResult:
-        """Replace one transfer using the allocation's current value and borrow state."""
-        access = node.get_trait(ReferenceAccess)
-        assert access is not None
-        root = ref.root
-        if ref.path:
-            index = flat(ref)
-            assert isinstance(index, Affine)
-            state = self.require(root)
-            assert state.value is not None
+            return RewriteResult()
+        root = handle.root
+        if root not in self.current:
+            return RewriteResult()
+        if handle.selection is not None:
+            if not isinstance(handle.selection, Affine):
+                raise WireConversionError(
+                    "A whole-register transfer requires a whole allocation."
+                )
+            index = handle.selection
+            value = self.value(root, restored=False)
+            state = self.current[root]
             if access.takes:
                 if any(same(index, held) is not False for held in state.borrowed):
                     raise WireConversionError(
                         "Promotion requires distinct simultaneous register borrows."
                     )
-                position = index_value(index.substitute(self.substitutions), node)
-                made = _put(stmts.Borrow(state.value, position), node)
+                at = index_value(index, node)
+                made = _put(stmts.Borrow(value, at), node)
                 access.value(node).replace_by(made.wire)
-                self.contents[root] = Contents(
+                self.current[root] = Contents(
                     made.register_out, state.borrowed | {index}
                 )
             else:
@@ -157,105 +340,298 @@ class PromoteReferences(RewriteRule):
                     raise WireConversionError(
                         "Promotion requires a matching borrow before a register release."
                     )
-                position = index_value(index.substitute(self.substitutions), node)
-                released = _put(
-                    stmts.Release(state.value, position, access.value(node)), node
-                )
-                self.contents[root] = Contents(
-                    released.register_out, state.borrowed - {index}
+                at = index_value(index, node)
+                made = _put(stmts.Release(value, at, access.value(node)), node)
+                self.current[root] = Contents(
+                    made.register_out, state.borrowed - {index}
                 )
         elif access.takes:
             access.value(node).replace_by(self.value(root))
-            self.contents[root] = Contents(None)
+            self.current[root] = Contents(None)
         else:
-            state = self.contents.get(root)
-            if state is None or state.value is not None:
+            if self.current[root].value is not None:
                 raise WireConversionError(
                     "Promotion requires an empty reference before a wrap."
                 )
-            self.contents[root] = Contents(access.value(node))
+            self.current[root] = Contents(access.value(node))
         node.delete()
         return RewriteResult(has_done_something=True)
 
-    def crossing(self, node: ir.Statement) -> tuple[Root, ...]:
-        """Select accessed allocations that already exist at this region boundary."""
-        touched = {place.root for place in self.info.touched.get(node, ())}
-        return tuple(
-            root
-            for root in self.info.slots
-            if root in touched and root in self.contents
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Dispatch source definitions, local lowerings and structured boundaries in source order."""
+        if isinstance(node, scf.For):
+            return self.loop(node)
+        if isinstance(node, scf.IfElse):
+            return self.branch(node)
+        if isinstance(node, scf.Yield):
+            self.finish(node)
+            return RewriteResult()
+        if isinstance(node, func.Return):
+            return self.return_(node)
+        if (
+            isinstance(
+                node, (qubit_stmts.New, stmts.Reference, stmts.ReferenceRegister)
+            )
+            or isinstance(node, func.Invoke)
+            and node.callee is qalloc
+        ):
+            return self.allocation(node)
+        if node.has_trait(ReferenceAccess):
+            return self.transfer(node)
+        if isinstance(node, func.Invoke) and node.callee.dialects is not wire_kernel:
+            return self.call(node)
+        if self.handles.record(node):
+            return RewriteResult()
+        if isinstance(node, py_len.Len) and holds_qubits(node.value.type):
+            return self.length(node)
+        if type(node) in TWINS:
+            operands = [
+                getattr(node, name)
+                for name, _ in TWINS[type(node)].get_present_trait(Twin).wires
+            ]
+            possible = [roots(self.handles.get(value)) for value in operands]
+            if self.conversion.promote and any(
+                group and any(self.conversion.preserves(root) for root in group)
+                for group in possible
+                if group is not None
+            ):
+                self.conversion.require_references(
+                    operands,
+                    "A gate uses an allocation that requires reference semantics.",
+                )
+                return RewriteResult()
+            try:
+                made = LocalLowering(node, self.handles).gate()
+            except WireConversionError as error:
+                self.conversion.require_references(operands, str(error))
+                return RewriteResult()
+            return self.generated(made)
+        values = [value for value in node.args if holds_qubits(value.type)]
+        if values:
+            self.conversion.require_references(
+                values, f"Unsupported reference operation '{node.name}'."
+            )
+        return RewriteResult()
+
+    def length(self, node: py_len.Len) -> RewriteResult:
+        """Lower a register length using its descriptor or an explicit wire length operation."""
+        size = self.handles.size(node.value)
+        if size is not None:
+            node.result.replace_by(index_value(size, node))
+            node.delete()
+            return RewriteResult(has_done_something=True)
+        handle = self.handles.get(node.value)
+        if not isinstance(handle, Handle) or handle.selection is not None:
+            self.conversion.require_references(
+                [node.value], "The register length has no place in a known allocation."
+            )
+            return RewriteResult()
+        local = LocalLowering(node, self.handles)
+        register = local.take(node.value)
+        length = local.put(stmts.Length(register))
+        local.give(node.value, length.register_out)
+        node.result.replace_by(length.result)
+        node.delete()
+        return self.generated(local.created)
+
+    def call(self, node: func.Invoke) -> RewriteResult:
+        """Require separated whole arguments and use the callee's checked wire contract."""
+        if any(value.type.is_subseteq(types.Tuple) for value in node.inputs):
+            raise InlineRequired(node.callee)
+        quantum = [
+            self.handles.get(value) for value in node.inputs if holds_qubits(value.type)
+        ]
+        for i, handle in enumerate(quantum):
+            if not isinstance(handle, Handle) or not (
+                handle.scalar or handle.selection is None
+            ):
+                raise InlineRequired(node.callee)
+            if any(
+                not isinstance(other, Handle) or not distinct(handle, other)
+                for other in quantum[i + 1 :]
+            ):
+                raise InlineRequired(node.callee)
+        try:
+            contract = self.conversion.callee(node.callee)
+        except WireConversionError:
+            raise InlineRequired(node.callee) from None
+        return self.generated(LocalLowering(node, self.handles).call(contract))
+
+    def return_(self, node: func.Return) -> RewriteResult:
+        """Check owned results, return borrowed parameters, and finish local lifetimes."""
+        conv = self.conversion
+        if node.parent_stmt is not conv.method.code:
+            raise WireConversionError(
+                "Wire conversion requires a function-level return."
+            )
+        original = output_types(conv.original_output)
+        packed = conv.original_output.is_subseteq(types.Tuple) and bool(original)
+        local = LocalLowering(node, self.handles)
+        if not original:
+            values = []
+        elif not packed:
+            values = [node.value]
+        elif isinstance(node.value.owner, py.tuple.New):
+            values = list(node.value.owner.args)
+        else:
+            values = []
+            for i, kind in enumerate(original):
+                at = local.put(py.Constant(i)).result
+                item = local.put(py.GetItem(node.value, at))
+                item.result.type = kind
+                values.append(item.result)
+            self.generated(local.created)
+            local.created.clear()
+        borrowed_roots = {
+            handle.root
+            for value in conv.borrowed
+            if isinstance(handle := self.handles.get(value), Handle)
+        }
+        seen = set()
+        ordinary, lengths, returned = [], [], []
+        for value in values:
+            handle = self.handles.get(value)
+            if holds_qubits(value.type):
+                if not isinstance(handle, Handle) or handle.selection is not None:
+                    raise WireConversionError(
+                        "A quantum return must own one whole allocation."
+                    )
+                if handle.root in borrowed_roots:
+                    raise WireConversionError(
+                        "A function cannot return a borrowed quantum parameter as an ordinary output."
+                    )
+                if handle.root in seen:
+                    raise WireConversionError(
+                        "A function cannot return one qubit twice."
+                    )
+                seen.add(handle.root)
+                ordinary.append(handle.kind)
+                lengths.append(handle.length or self.handles.extents.get(handle.root))
+                returned.append(local.take(value))
+            else:
+                ordinary.append(value.type)
+                lengths.append(None)
+                returned.append(value)
+        returned.extend(local.take(value) for value in conv.borrowed)
+        if not returned:
+            result = _put(func.ConstantNone(), node).result
+        elif len(returned) == 1:
+            result = returned[0]
+        else:
+            result = _put(py.tuple.New(tuple(returned)), node).result
+        returned_node = _put(func.Return(result), node)
+        self.generated(local.created)
+        self.finish(returned_node)
+        node.delete()
+        conv.contract = Contract(
+            conv.method,
+            conv.input_types,
+            tuple(ordinary),
+            conv.borrowed_positions,
+            tuple(lengths),
+            packed,
         )
+        return RewriteResult(has_done_something=True)
 
     def body(
-        self, region: ir.Region, contents: dict[Root, Contents], roots: tuple[Root, ...]
-    ) -> RewriteResult:
-        """Rewrite one body and append its final outer values to the yield."""
+        self, region: ir.Region, current: dict[Hashable, Contents]
+    ) -> "OrderedPromotion":
+        """Visit one body with separate current values and local lifetimes."""
         if len(region.blocks) != 1 or not isinstance(
             region.blocks[0].last_stmt, scf.Yield
         ):
             raise WireConversionError(
-                "Promotion requires structured bodies to end with a yield."
+                "Wire conversion requires structured bodies with yield terminators."
             )
-        inner = PromoteReferences(
-            self.info, dict(contents), substitutions=self.substitutions
-        )
-        result = inner.walk(region)
-        returned = region.blocks[0].last_stmt
-        assert isinstance(returned, scf.Yield)
-        if roots:
-            _put(
-                scf.Yield(*returned.values, *(inner.value(root) for root in roots)),
-                returned,
-            )
-            returned.delete()
-        return result.join(RewriteResult(has_done_something=bool(roots)))
+        inner = OrderedPromotion(self.conversion, dict(current))
+        inner.walk(region)
+        return inner
+
+    def append_yield(
+        self, region: ir.Region, inner: "OrderedPromotion", roots_: tuple[Hashable, ...]
+    ) -> list[Descriptor]:
+        """Preserve original result descriptors and append the current outer allocations."""
+        end = region.blocks[0].last_stmt
+        assert isinstance(end, scf.Yield)
+        descriptors = [self.handles.get(value) for value in end.values]
+        if roots_:
+            _put(scf.Yield(*end.values, *(inner.value(root) for root in roots_)), end)
+            end.delete()
+        return descriptors
 
     def replace_region(
-        self, node: ir.Statement, made: ir.Statement, roots: tuple[Root, ...]
+        self,
+        node: ir.Statement,
+        made: ir.Statement,
+        descriptors: list[Descriptor],
+        roots_: tuple[Hashable, ...],
     ) -> RewriteResult:
-        """Connect original results and retain the final values of each outer allocation."""
+        """Map source results and replace the enclosing current values with region results."""
         _put(made, node)
         count = len(node.results)
-        for old, new in zip(node.results, made.results[:count], strict=True):
-            self.substitutions[old] = Affine.of(new)
+        for old, new, descriptor in zip(
+            node.results, made.results[:count], descriptors, strict=True
+        ):
+            self.handles.values[new] = descriptor
             old.replace_by(new)
-        self.contents.update(
+        self.current.update(
             (root, Contents(value))
-            for root, value in zip(roots, made.results[count:], strict=True)
+            for root, value in zip(roots_, made.results[count:], strict=True)
         )
         node.delete()
         return RewriteResult(has_done_something=True)
 
     def loop(self, node: scf.For) -> RewriteResult:
-        """Create iteration arguments before visiting the body, then connect its yield and results."""
-        roots = self.crossing(node)
-        inputs = tuple(self.value(root) for root in roots)
-        contents = dict(self.contents)
-        for root in roots:
-            argument = node.body.blocks[0].args.append_from(self.info.slots[root].type)
-            contents[root] = Contents(argument)
-        result = self.body(node.body, contents, roots)
-        if not roots:
-            return result
+        """Carry every available outer allocation through the loop and check reference invariants."""
+        roots_ = tuple(
+            root for root, state in self.current.items() if state.value is not None
+        )
+        inputs = tuple(self.value(root) for root in roots_)
+        initial = [self.handles.get(value) for value in node.initializers]
+        for argument, descriptor in zip(node.body.blocks[0].args[1:], initial):
+            self.handles.values[argument] = descriptor
+        current = dict(self.current)
+        for root, value in zip(roots_, inputs):
+            current[root] = Contents(node.body.blocks[0].args.append_from(value.type))
+        inner = self.body(node.body, current)
+        descriptors = self.append_yield(node.body, inner, roots_)
+        end = node.body.blocks[0].last_stmt
+        assert isinstance(end, scf.Yield)
+        for i, (initial_value, yielded, before, after) in enumerate(
+            zip(node.initializers, end.values, initial, descriptors)
+        ):
+            if before != after and holds_qubits(initial_value.type):
+                self.conversion.require_references(
+                    [initial_value, yielded],
+                    "Cannot resolve a value carried by a loop or branch.",
+                )
+                descriptors[i] = merge(before, after)
         body = node.body
         body.detach()
-        made = scf.For(node.iterable, body, *node.initializers, *inputs)
-        return self.replace_region(node, made, roots)
+        return self.replace_region(
+            node,
+            scf.For(node.iterable, body, *node.initializers, *inputs),
+            descriptors,
+            roots_,
+        )
 
     def branch(self, node: scf.IfElse) -> RewriteResult:
-        """Visit both branches from the same incoming state and connect matching result positions."""
-        roots = self.crossing(node)
-        for root in roots:
+        """Start both branches with the same values and join their matching result positions."""
+        roots_ = tuple(
+            root for root, state in self.current.items() if state.value is not None
+        )
+        for root in roots_:
             self.value(root)
-        left = self.body(node.then_body, self.contents, roots)
-        right = self.body(node.else_body, self.contents, roots)
-        if not roots:
-            return left.join(right)
+        left = self.body(node.then_body, self.current)
+        a = self.append_yield(node.then_body, left, roots_)
+        right = self.body(node.else_body, self.current)
+        b = self.append_yield(node.else_body, right, roots_)
+        descriptors = [merge(x, y) for x, y in zip(a, b, strict=True)]
         then_body, else_body = node.then_body, node.else_body
         then_body.detach()
         else_body.detach()
         return self.replace_region(
-            node, scf.IfElse(node.cond, then_body, else_body), roots
+            node, scf.IfElse(node.cond, then_body, else_body), descriptors, roots_
         )
 
 
@@ -354,41 +730,3 @@ class RemovePromotedAllocations(RewriteRule):
             return RewriteResult()
         node.delete()
         return RewriteResult(has_done_something=True)
-
-
-def promote(method: ir.Method, layout: Layout | None = None) -> RewriteResult:
-    """Analyze references once, thread current values, and remove unused reference expressions.
-
-    The rewrite changes the method in place and can fail after a partial rewrite.
-    SquinToWire applies this rewrite to copies so failures preserve the source methods.
-    """
-    info = analyze_promotion(method)
-    result = (
-        PromoteReferences(info).walk(method.callable_region)
-        if info.slots
-        else RewriteResult()
-    )
-    allocations = {slot.allocation for slot in info.slots.values()}
-    cleanup = Chain(
-        DeadCodeElimination(),
-        DropInvariantReferences(),
-        RemovePromotedAllocations(allocations),
-    )
-    result = CheckedFixpoint(Walk(cleanup)).rewrite(method.code).join(result)
-    if any(node.parent_block is not None for node in allocations):
-        raise WireConversionError(
-            "Promotion left a live reference to a selected allocation."
-        )
-    if layout is not None:
-        retype(method, layout)
-    return result
-
-
-def retype(method: ir.Method, layout: Layout) -> None:
-    """Give the function of `method` the signature of its wire function."""
-    code = method.code
-    assert isinstance(code, func.Function)
-    block = code.body.blocks[0]
-    inputs = tuple(arg.type for arg in block.args[1:])
-    block.args[0].type = types.MethodType[list(inputs), layout.output]
-    code.signature = func.Signature(inputs=inputs, output=layout.output)
