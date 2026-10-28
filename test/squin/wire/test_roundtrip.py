@@ -179,6 +179,22 @@ def for_each_qubit() -> ilist.IList[MeasurementResult, Any]:
     return squin.broadcast.measure(qs)
 
 
+@squin.kernel
+def sliced_in_a_loop() -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(4)
+    for i in range(1, 3):
+        squin.x(qs[0:3][i])
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def growing_slice() -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(4)
+    for i in range(1, 4):
+        squin.x(qs[0:i][i - 1])
+    return squin.broadcast.measure(qs)
+
+
 CASES = [
     (ladder, (), [1, 1, 1, 1]),
     (measured_branch, (), [1, 0, 1]),
@@ -196,6 +212,8 @@ CASES = [
     (carried_by_a_loop, (3,), [1, 0]),
     (concatenated, (), [1, 1]),
     (for_each_qubit, (), [1, 1]),
+    (sliced_in_a_loop, (), [0, 1, 1, 0]),
+    (growing_slice, (), [1, 1, 1, 0]),
 ]
 
 

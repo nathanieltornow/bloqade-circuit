@@ -10,6 +10,7 @@ from .analysis import (
     KEY as KEY,
     Effect as Effect,
     QubitEffects as QubitEffects,
+    places_in as places_in,
     holds_qubits as holds_qubits,
     may_hide_qubits as may_hide_qubits,
 )

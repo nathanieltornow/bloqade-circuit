@@ -23,6 +23,8 @@ from bloqade.types import QubitType
 from bloqade.analysis.reference import (
     Ref,
     Root,
+    Place,
+    Members,
     Unknown,
     Untracked,
     roots,
@@ -38,12 +40,14 @@ class Effect:
     """Hold what one statement does to qubit roots.
 
     `allocates` is the root of the single qubit that the statement allocates, or
-    None. `uses` holds the roots that the statement touches. If `opaque` is True,
-    the statement can touch any qubit.
+    None. `uses` holds the roots that the statement touches, and `places` holds the
+    places of its qubit operands, such as `Slot(%qs, 0)`. If `opaque` is True, the
+    statement can touch any qubit.
     """
 
     allocates: Root | None = None
     uses: set[Root] = field(default_factory=set)
+    places: set[Place] = field(default_factory=set)
     opaque: bool = False
 
     def absorb(self, inner: "Effect") -> None:
@@ -55,7 +59,17 @@ class Effect:
         if inner.allocates is not None:
             self.uses.add(inner.allocates)
         self.uses |= inner.uses
+        self.places |= inner.places
         self.opaque = self.opaque or inner.opaque
+
+
+def places_in(ref: Ref) -> list[Place]:
+    """Return the places that `ref` holds, including the members of lists and tuples."""
+    if isinstance(ref, Place):
+        return [ref]
+    if isinstance(ref, Members):
+        return [place for member in ref.refs for place in places_in(member)]
+    return []
 
 
 def may_hide_qubits(kind: types.TypeAttribute) -> bool:
@@ -101,11 +115,14 @@ class QubitEffects(Forward[EmptyLattice]):
     lattice = EmptyLattice
     refs: Mapping[ir.SSAValue, Ref] = field(default_factory=dict)
     effects: dict[ir.Statement, Effect] = field(default_factory=dict, init=False)
+    accessed: dict[Root, set[Place]] = field(default_factory=dict, init=False)
+    """Map each root to the places that statements of the method touch in it."""
 
     def initialize(self):
         """Clear the effects of an earlier run."""
         super().initialize()
         self.effects = {}
+        self.accessed = {}
         return self
 
     def run(self, method: ir.Method, *args: EmptyLattice, **kwargs: EmptyLattice):
@@ -128,9 +145,17 @@ class QubitEffects(Forward[EmptyLattice]):
     ) -> tuple[EmptyLattice, ...]:
         """Record that a statement without a rule uses the roots of its operands.
 
-        A statement with a body that has no rule is opaque. The analysis does not
-        run that body, so a use inside it would stay hidden.
+        A pure statement only builds values, such as the reference `qs[i]` or a
+        slice, and touches no qubit. So it has no effect, even if an operand has a
+        type that could hide a qubit. The reference analysis still tracks the
+        references that it builds. A statement with a body that has no rule is
+        opaque. The analysis does not run that body, so a use inside it would stay
+        hidden.
         """
+        if node.has_trait(ir.Pure):
+            # The empty effect still gives each statement around `node` an entry.
+            self.record(node, Effect())
+            return self.results(node)
         effect = self.operand_uses(node)
         effect.opaque = effect.opaque or bool(node.regions)
         self.record(node, effect)
@@ -152,6 +177,7 @@ class QubitEffects(Forward[EmptyLattice]):
                 effect.opaque |= hidden or (ref is None and holds_qubits(value.type))
             else:
                 effect.uses.update(roots(ref))
+                effect.places.update(places_in(ref))
         return effect
 
     def record(self, stmt: ir.Statement, effect: Effect) -> None:
@@ -161,6 +187,8 @@ class QubitEffects(Forward[EmptyLattice]):
         the effect of each earlier run.
         """
         self.effects.setdefault(stmt, Effect()).absorb(effect)
+        for place in effect.places:
+            self.accessed.setdefault(place.root, set()).add(place)
         if effect.allocates is not None:
             self.effects[stmt].allocates = effect.allocates
             self.effects[stmt].uses.discard(effect.allocates)

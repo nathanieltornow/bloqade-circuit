@@ -27,7 +27,8 @@ from kirin.dialects import scf, func
 from kirin.validation import ValidationPass
 from kirin.analysis.forward import ForwardFrame
 
-from bloqade.analysis.reference import Ref, Place, Members, disjoint, must_alias
+from bloqade.analysis.reference import Ref, Place, Untracked, disjoint, must_alias
+from bloqade.squin.analysis.effects import places_in
 from bloqade.squin.analysis.reference import QubitReferenceAnalysis
 
 from . import stmts
@@ -38,15 +39,6 @@ KEY = "squin.wire.references"
 TAKE = (stmts.Unwrap, stmts.UnwrapRegister)
 PUT = (stmts.Wrap, stmts.WrapRegister)
 NEW = (stmts.Reference, stmts.ReferenceRegister)
-
-
-def places_in(ref: Ref | None) -> list[Place]:
-    """Return the places that `ref` holds, including the members of lists and tuples."""
-    if isinstance(ref, Place):
-        return [ref]
-    if isinstance(ref, Members):
-        return [place for member in ref.refs for place in places_in(member)]
-    return []
 
 
 def same_place(a: Place, b: Place) -> bool:
@@ -113,7 +105,7 @@ class ReferenceCheck(Forward[EmptyLattice]):
         if node.has_trait(ir.Pure):
             return self.results(node)
         for value in node.args:
-            for ref in places_in(self.refs.get(value)):
+            for ref in places_in(self.refs.get(value, Untracked())):
                 if any(not disjoint(ref, place) for place in self.out):
                     self.error(
                         node, f"'{node.name}' touches a qubit that is out as a wire"
