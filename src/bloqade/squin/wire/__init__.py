@@ -1,4 +1,4 @@
-"""Hold the squin wire dialect, a linear form of squin for optimization passes.
+"""Hold the squin wire dialect, which makes quantum state flow explicit.
 
 A wire is one qubit at one point in the program, and it has exactly one use. Each
 statement consumes its input wires and returns new wires. The conversion passes live in `bloqade.squin.passes`.

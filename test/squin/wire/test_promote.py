@@ -3,7 +3,7 @@
 import pytest
 from kirin import ir
 from kirin.dialects import func
-from test_roundtrip import CASES, calls, simulate
+from test_roundtrip import CASES, calls, simulate, cancelling
 
 from bloqade.qubit import stmts as qubit_stmts
 from bloqade.squin.wire import stmts as wire_stmts, kernel as wire_kernel
@@ -59,3 +59,11 @@ def test_a_kernel_promotes_completely(kernel, args, expected):
 
 def test_a_borrowing_call_gives_the_same_result_after_promotion():
     assert simulate(WireToSquin().emit(promoted(calls))) == [[1, 0, 1, 1, 1], 4]
+
+
+def test_a_register_with_constant_indices_splits_into_wires():
+    wired = promoted(cancelling)
+    statements = tuple(wired.callable_region.walk())
+    assert not any(isinstance(node, wire_stmts.AllocRegister) for node in statements)
+    assert sum(isinstance(node, wire_stmts.Alloc) for node in statements) == 2
+    assert not any(isinstance(node, wire_stmts.Borrow) for node in statements)
