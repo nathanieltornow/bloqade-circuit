@@ -1,4 +1,4 @@
-"""Check promotion planning, allocation lifetimes and structured value connections."""
+"""Check promotion eligibility, allocation lifetimes and structured value connections."""
 
 import pytest
 from test_lower import lowered
@@ -7,11 +7,13 @@ from test_roundtrip import ladder, simulate
 
 from bloqade import squin
 from bloqade.qubit import qalloc
+from bloqade.constants import constant_int
+from bloqade.squin.gate import stmts as gates
 from bloqade.squin.wire import WireConversionError, stmts, twins
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
-from bloqade.squin.rewrite.wire.promote import apply_promotion
-from bloqade.squin.analysis.wire.promotion import plan_promotion
+from bloqade.squin.rewrite.wire.promote import promote
+from bloqade.squin.analysis.wire.promotion import analyze_promotion
 from bloqade.squin.analysis.validation.wire import WireValidation
 
 
@@ -23,43 +25,69 @@ def snapshot(method):
     return method.code.print_str(), {value: frozenset(value.uses) for value in values}
 
 
-def test_planning_keeps_the_program_and_its_use_lists_unchanged():
+def test_eligibility_keeps_the_program_and_its_use_lists_unchanged():
     method = lowered(ladder)
     before = snapshot(method)
-    plan = plan_promotion(method)
-    assert plan.before and plan.regions and plan.replacements
+    info = analyze_promotion(method)
+    assert info.slots and info.touched and info.accesses
     assert snapshot(method) == before
-    apply_promotion(method, plan)
+    promote(method)
     WireValidation().check(method)
     assert simulate(WireToSquin().emit(method)) == [1, 1, 1, 1]
 
 
-def test_a_plan_can_only_apply_once_to_its_source_method():
-    method = lowered(ladder)
-    plan = plan_promotion(method)
-    other = method.similar()
-    before = snapshot(other)
-    with pytest.raises(WireConversionError, match="once to the method"):
-        apply_promotion(other, plan)
-    assert snapshot(other) == before
-    apply_promotion(method, plan)
-    before = snapshot(method)
-    with pytest.raises(WireConversionError, match="once to the method"):
-        apply_promotion(method, plan)
-    assert snapshot(method) == before
-
-
-def test_an_invalid_transfer_fails_during_planning_without_mutation():
+def test_promotion_rejects_a_duplicate_transfer():
     method = lowered(ladder)
     first = next(node for node in method.code.walk() if isinstance(node, stmts.Unwrap))
     duplicate = stmts.Unwrap(first.qubit)
     duplicate.insert_after(first)
-    before = snapshot(method)
     with pytest.raises(
         WireConversionError, match="distinct simultaneous register borrows"
     ):
-        plan_promotion(method)
-    assert snapshot(method) == before
+        promote(method)
+
+
+@squin.kernel
+def branch_then_loop(flag: bool, n: int):
+    qs = squin.qalloc(2)
+    if flag:
+        squin.x(qs[0])
+    else:
+        squin.x(qs[1])
+    for _ in range(n):
+        squin.x(qs[0])
+    return squin.broadcast.measure(qs)
+
+
+@pytest.mark.parametrize("flag", [False, True])
+@pytest.mark.parametrize("n", [0, 1, 2])
+def test_branches_start_from_the_same_values_and_loops_continue_the_selected_branch(
+    flag, n
+):
+    wired = SquinToWire().emit(branch_then_loop)
+    assert simulate(WireToSquin().emit(wired), flag, n) == [
+        (int(flag) + n) % 2,
+        int(not flag),
+    ]
+
+
+@squin.kernel
+def index_from_branch(flag: bool):
+    qs = squin.qalloc(3)
+    if flag:
+        squin.x(qs[0])
+        index = 1
+    else:
+        squin.x(qs[0])
+        index = 2
+    squin.x(qs[index])
+    return squin.broadcast.measure(qs)
+
+
+@pytest.mark.parametrize("flag", [False, True])
+def test_index_materialization_uses_the_rebuilt_branch_result(flag):
+    wired = SquinToWire().emit(index_from_branch)
+    assert simulate(WireToSquin().emit(wired), flag) == [1, int(flag), int(not flag)]
 
 
 @squin.kernel
@@ -74,10 +102,10 @@ def test_allocations_keep_source_order_and_live_until_the_block_exit():
     method = SquinToWire().emit(allocation_order)
     nodes = list(method.callable_region.blocks[0].stmts)
     first, second = [node for node in nodes if isinstance(node, stmts.Alloc)]
-    x = next(node for node in nodes if isinstance(node, twins.X))
-    z = next(node for node in nodes if isinstance(node, twins.Z))
-    assert x.qubit is second.result
-    assert z.qubit is first.result
+    x = next(node for node in nodes if isinstance(node, twins.TWINS[gates.X]))
+    z = next(node for node in nodes if isinstance(node, twins.TWINS[gates.Z]))
+    assert x.args[0] is second.result
+    assert z.args[0] is first.result
     assert nodes.index(first) < nodes.index(second) < nodes.index(x) < nodes.index(z)
     frees = [node for node in nodes if isinstance(node, stmts.Free)]
     assert len(frees) == 2
@@ -95,7 +123,7 @@ def test_promotion_preserves_an_unused_register_allocation():
     nodes = list(method.callable_region.blocks[0].stmts)
     allocation = next(node for node in nodes if isinstance(node, stmts.AllocRegister))
     release = next(node for node in nodes if isinstance(node, stmts.FreeRegister))
-    assert allocation.size.owner.value.unwrap() == 3
+    assert constant_int(allocation.size) == 3
     assert release.register is allocation.result
 
 
@@ -139,7 +167,7 @@ def test_a_pinned_allocation_keeps_an_independent_allocation_promotable(n):
         if isinstance(node, func.Invoke) and node.callee is qalloc
     ]
     assert len(allocations) == len(references) == 1
-    assert allocations[0].size.owner.value.unwrap() == 1
+    assert constant_int(allocations[0].size) == 1
     loop = next(node for node in method.code.walk() if isinstance(node, scf.For))
     assert allocations[0].result in loop.initializers
     assert simulate(WireToSquin().emit(method), n, 1) == [[0, 0], [n % 2]]
@@ -151,5 +179,5 @@ def test_a_pure_observer_of_a_reference_blocks_its_promotion():
     observed = transfers[0].qubit
     compare = py.cmp.Eq(observed, observed)
     compare.insert_before(transfers[0])
-    plan = plan_promotion(method)
-    assert all(slot.allocation is not observed.owner for slot in plan.slots.values())
+    info = analyze_promotion(method)
+    assert all(slot.allocation is not observed.owner for slot in info.slots.values())
