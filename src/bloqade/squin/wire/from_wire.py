@@ -83,8 +83,34 @@ class FromWireStatements(RewriteRule):
         elif isinstance(node, stmts.Length):
             node.result.replace_by(_put(py_len.Len(node.register), node).result)
             node.register_out.replace_by(node.register)
+        elif isinstance(node, stmts.Unwrap):
+            node.wire.replace_by(node.qubit)
+        elif isinstance(node, stmts.UnwrapRegister):
+            node.register.replace_by(node.qubits)
+        elif isinstance(node, (stmts.Reference, stmts.ReferenceRegister)):
+            return self.reference(node)
+        elif isinstance(node, (stmts.Wrap, stmts.WrapRegister)):
+            # The rule for a reference removes the `Wrap` that fills it.
+            if isinstance(
+                node.args[0].owner, (stmts.Reference, stmts.ReferenceRegister)
+            ):
+                return RewriteResult()
         elif not isinstance(node, (stmts.Free, stmts.FreeRegister)):
             return RewriteResult()
+        node.delete()
+        return RewriteResult(has_done_something=True)
+
+    def reference(self, node: ir.Statement) -> RewriteResult:
+        """Replace a new reference with the wire of the `Wrap` that follows it.
+
+        The reference check makes sure that this `Wrap` comes right after the
+        reference. A wire stands for the same qubit as the reference that it
+        fills, so every later use of the reference reads the wire.
+        """
+        fill = node.next_stmt
+        assert isinstance(fill, (stmts.Wrap, stmts.WrapRegister))
+        node.results[0].replace_by(fill.args[1])
+        fill.delete()
         node.delete()
         return RewriteResult(has_done_something=True)
 

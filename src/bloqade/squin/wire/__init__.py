@@ -5,16 +5,22 @@ statement consumes its input wires and returns new wires. `SquinToWire` builds a
 wire squin method from a squin kernel, and `WireToSquin` turns it back.
 """
 
-from . import twins as twins, rewrite as rewrite
+from . import impls as impls, twins as twins, rewrite as rewrite
 from .group import kernel as kernel
 from .stmts import (
     Free as Free,
+    Wrap as Wrap,
     Alloc as Alloc,
     Borrow as Borrow,
     Length as Length,
+    Unwrap as Unwrap,
     Release as Release,
+    Reference as Reference,
     FreeRegister as FreeRegister,
+    WrapRegister as WrapRegister,
     AllocRegister as AllocRegister,
+    UnwrapRegister as UnwrapRegister,
+    ReferenceRegister as ReferenceRegister,
 )
 from .twins import TWINS as TWINS
 from .types import (
@@ -40,5 +46,6 @@ from .validation import (
     WireValidation as WireValidation,
     BorrowValidation as BorrowValidation,
     LinearityValidation as LinearityValidation,
+    ReferenceValidation as ReferenceValidation,
     StructureValidation as StructureValidation,
 )

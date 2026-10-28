@@ -1,8 +1,10 @@
 """Check wire squin with the kirin validation suite `WireValidation`.
 
-The suite runs three kirin validation passes. `StructureValidation` runs kirin's
+The suite runs four kirin validation passes. `StructureValidation` runs kirin's
 own `verify` and `verify_type`. `LinearityValidation` checks the use rule below.
 `BorrowValidation` checks that each `Borrow` has a matching `Release`.
+`ReferenceValidation`, in `reference_check`, checks how wires leave and enter
+qubit references.
 
 The use rule:
 
@@ -40,6 +42,7 @@ from bloqade.constants import constant_int
 
 from . import stmts
 from .types import RegisterType, is_linear
+from .reference_check import ReferenceValidation
 
 KEY = "squin.wire.linearity"
 """Name the registry key of the method tables of `LinearityCheck`."""
@@ -431,11 +434,16 @@ class StructureValidation(ValidationPass[None]):
 
 @dataclass
 class WireValidation:
-    """Run the structure, linearity and borrow checks as one kirin validation suite."""
+    """Run the structure, linearity, borrow and reference checks as one kirin suite."""
 
     def check(self, method: ir.Method) -> None:
         """Raise a `ValidationErrorGroup` that lists every broken rule of `method`."""
         suite = ValidationSuite(
-            [StructureValidation, LinearityValidation, BorrowValidation]
+            [
+                StructureValidation,
+                LinearityValidation,
+                BorrowValidation,
+                ReferenceValidation,
+            ]
         )
         suite.validate(method).raise_if_invalid()
