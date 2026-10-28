@@ -46,11 +46,11 @@ def test_two_hadamards_on_one_register_qubit_cancel():
     assert count(wired, TWINS[gate_stmts.X]) == 1
 
 
-def test_the_register_round_trips_between_gates_disappear():
+def test_a_register_with_constant_indices_splits_into_wires():
     wired = simplified(h_twice)
-    # One borrow and one release per qubit remain, around the measurements.
-    assert count(wired, wire_stmts.Borrow) == 2
-    assert count(wired, wire_stmts.Release) == 2
+    assert count(wired, wire_stmts.AllocRegister) == 0
+    assert count(wired, wire_stmts.Alloc) == 2
+    assert count(wired, wire_stmts.Borrow) == 0
 
 
 @squin.kernel

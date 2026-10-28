@@ -12,7 +12,7 @@ from bloqade.squin.wire.pipeline import SquinToWire
 def lowered(kernel: ir.Method) -> ir.Method:
     """Return the prepared copy of `kernel` after the lowering rules."""
     converter = SquinToWire()
-    converter.prepared, converter.refs, converter.effects = {}, {}, {}
+    converter.prepared, converter.refs = {}, {}
     converter.prepare(kernel)
     copy = converter.prepared[kernel]
     lower(copy, converter.refs, converter.prepared)

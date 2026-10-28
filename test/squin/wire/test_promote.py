@@ -12,23 +12,12 @@ from bloqade.squin.wire import (
     stmts as wire_stmts,
     kernel as wire_kernel,
 )
-from bloqade.squin.wire.lower import lower, layout_of
-from bloqade.squin.wire.promote import promote
 from bloqade.squin.wire.pipeline import SquinToWire
 
 
 def promoted(kernel: ir.Method) -> ir.Method:
     """Return the wire squin method of `kernel` from lowering and promotion."""
-    converter = SquinToWire()
-    converter.prepared, converter.refs, converter.effects = {}, {}, {}
-    converter.prepare(kernel)
-    copies = list(converter.prepared.values())
-    layouts = {copy.code: layout_of(copy.code, converter.refs) for copy in copies}
-    for copy in copies:
-        lower(copy, converter.refs, converter.prepared)
-    for copy in copies:
-        promote(copy, layouts[copy.code])
-    return converter.prepared[kernel]
+    return SquinToWire().emit(kernel)
 
 
 def survivors(mt: ir.Method) -> int:

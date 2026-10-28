@@ -30,6 +30,7 @@ from .types import (
     RegisterType as RegisterType,
     is_linear as is_linear,
 )
+from .errors import WireConversionError as WireConversionError
 from .traits import (
     Twin as Twin,
     Noise as Noise,

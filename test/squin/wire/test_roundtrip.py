@@ -4,7 +4,7 @@ import math
 from typing import Any
 
 import pytest
-from kirin import ir, types, interp
+from kirin import ir, types
 from kirin.dialects import scf, func, ilist
 
 from bloqade import squin
@@ -15,6 +15,7 @@ from bloqade.squin.wire import (
     SquinToWire,
     WireToSquin,
     WireValidation,
+    WireConversionError,
     stmts as wire_stmts,
 )
 from bloqade.squin.wire.rewrite import Simplify, ReuseQubits
@@ -255,7 +256,7 @@ def maybe_the_same_qubit(j: int) -> ilist.IList[MeasurementResult, Any]:
 
 
 def test_a_gate_on_two_places_that_may_alias_is_refused():
-    with pytest.raises(interp.InterpreterError, match="may name one qubit"):
+    with pytest.raises(WireConversionError, match="may name one qubit"):
         SquinToWire().emit(maybe_the_same_qubit)
 
 

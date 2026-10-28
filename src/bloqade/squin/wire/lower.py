@@ -33,6 +33,7 @@ from bloqade.analysis.reference import (
     Ref,
     Place,
     Untracked,
+    disjoint,
     positions,
     typed_length,
 )
@@ -42,6 +43,7 @@ from . import stmts
 from .group import kernel
 from .twins import TWINS
 from .types import WireType, RegisterType
+from .errors import WireConversionError
 from .traits import Twin
 
 
@@ -143,10 +145,13 @@ def layout_of(code: ir.Statement, refs: Mapping[ir.SSAValue, Ref]) -> Layout:
 class LowerTwins(RewriteRule):
     """Lower a squin statement that has a twin onto `Unwrap`, twin and `Wrap`.
 
-    `refs` holds the places of the kernel before the lowering.
+    `refs` holds the places of the kernel before the lowering. The rule raises a
+    `WireConversionError` if two places of one gate may name one qubit, unless
+    `assume_disjoint` is True.
     """
 
     refs: Mapping[ir.SSAValue, Ref]
+    assume_disjoint: bool = False
 
     def items(
         self, value: ir.SSAValue, before: ir.Statement
@@ -173,6 +178,28 @@ class LowerTwins(RewriteRule):
             items.append(item.result)
         return items
 
+    def check_apart(self, node: ir.Statement, operands: list[ir.SSAValue]) -> None:
+        """Raise if two qubits of one group of `node` may be one qubit.
+
+        One group takes item `k` of each operand list. A reference that the lowering
+        created, such as a returned register, has no places, and its items differ.
+        """
+        if self.assume_disjoint:
+            return
+        found = [
+            qubit_items(self.refs[v]) if v in self.refs else None for v in operands
+        ]
+        if any(items is None for items in found):
+            return
+        for group in zip(*found):  # type: ignore[misc]
+            for k, a in enumerate(group):
+                for b in group[k + 1 :]:
+                    if not disjoint(a, b):
+                        raise WireConversionError(
+                            f"the places {a!r} and {b!r} of one '{node.name}' may "
+                            "name one qubit"
+                        )
+
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Lower `node` if it is a squin statement with a twin."""
         twin = TWINS.get(type(node))
@@ -184,6 +211,7 @@ class LowerTwins(RewriteRule):
         lists = [self.items(getattr(node, source), node) for source in wires]
         if any(items is None for items in lists):
             return RewriteResult()
+        self.check_apart(node, [getattr(node, source) for source in wires])
         classical = {
             name: getattr(node, name)
             for name in fields.std_args
@@ -374,6 +402,7 @@ def lower(
     method: ir.Method,
     refs: Mapping[ir.SSAValue, Ref],
     kernels: Mapping[ir.Method, ir.Method],
+    assume_disjoint: bool = False,
 ) -> RewriteResult:
     """Lower every qubit statement of `method` in place, with the places `refs`.
 
@@ -381,6 +410,10 @@ def lower(
     the lowered statements belong to it.
     """
     method.dialects = kernel
-    rules = Chain(LowerTwins(refs), LowerCalls(refs, kernels), LowerLength(refs))
+    rules = Chain(
+        LowerTwins(refs, assume_disjoint),
+        LowerCalls(refs, kernels),
+        LowerLength(refs),
+    )
     result = Walk(rules).rewrite(method.code)
     return Walk(LowerReturn(refs)).rewrite(method.code).join(result)

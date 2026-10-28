@@ -26,10 +26,13 @@ from bloqade.analysis.reference import (
     roots,
     disjoint,
 )
-from bloqade.squin.analysis.effects import Effect, QubitEffects
 from bloqade.squin.analysis.reference import QubitReferenceAnalysis
 
-from .to_wire import ToWire
+from . import stmts
+from .lower import lower, layout_of
+from .twins import TWINS
+from .errors import WireConversionError
+from .promote import promote
 from .from_wire import FromWire
 from .normalize import (
     MapToLoop,
@@ -99,6 +102,31 @@ def _returns_only_fresh(kernel: ir.Method) -> bool:
     return True
 
 
+REFERENCE_STATEMENTS = (
+    stmts.Unwrap,
+    stmts.Wrap,
+    stmts.UnwrapRegister,
+    stmts.WrapRegister,
+    stmts.Reference,
+    stmts.ReferenceRegister,
+)
+"""Hold the statements that connect wires to qubit references."""
+
+
+def remaining(method: ir.Method) -> list[str]:
+    """Return the names of the statements of `method` that kept reference semantics.
+
+    A reference access survives promotion where the places can't name its slot. A
+    squin statement on qubits survives lowering where the places can't count the
+    qubits of its lists.
+    """
+    left: list[str] = []
+    for node in method.callable_region.walk():
+        if isinstance(node, REFERENCE_STATEMENTS) or type(node) in TWINS:
+            left.append(node.name)
+    return left
+
+
 @dataclass
 class SquinToWire:
     """Convert a squin kernel to a wire squin method and leave the kernel as it is.
@@ -113,34 +141,36 @@ class SquinToWire:
     assume_disjoint: bool = False
     prepared: dict[ir.Method, ir.Method] = field(default_factory=dict, init=False)
     refs: dict[ir.SSAValue, Ref] = field(default_factory=dict, init=False)
-    effects: dict[ir.Statement, Effect] = field(default_factory=dict, init=False)
 
     def emit(self, method: ir.Method) -> ir.Method:
         """Return the wire squin method of `method`.
 
-        The method raises a kirin `InterpreterError` if a construct of `method`
-        has no wire form, and a `ValidationErrorGroup` if the result breaks a
-        rule of `WireValidation`.
+        The method prepares `method` and every kernel that a kept call reaches,
+        lowers each copy onto `Unwrap`, twin and `Wrap`, and promotes the copies
+        to wires. It raises a `WireConversionError` if a construct of `method` has
+        no wire form, and a `ValidationErrorGroup` if a result breaks a rule of
+        `WireValidation`.
         """
         if method.dialects is not squin.kernel:
             raise ValueError("SquinToWire expects a method on `squin.kernel`.")
-        self.prepared, self.refs, self.effects = {}, {}, {}
+        self.prepared, self.refs = {}, {}
         self.prepare(method)
-        emitter = ToWire(
-            method.dialects,
-            self.refs,
-            self.effects,
-            kernels=self.prepared,
-            assume_disjoint=self.assume_disjoint,
-        )
-        top = self.prepared[method]
-        emitter.run(top)
-        for wired in emitter.functions.values():
-            Fixpoint(Walk(CommonSubexpressionElimination())).rewrite(wired.code)
-            Fixpoint(Walk(DeadCodeElimination())).rewrite(wired.code)
-        result = emitter.functions[top.code]
-        WireValidation().check(result)
-        return result
+        copies = list(self.prepared.values())
+        layouts = {copy.code: layout_of(copy.code, self.refs) for copy in copies}
+        for copy in copies:
+            lower(copy, self.refs, self.prepared, self.assume_disjoint)
+        for copy in copies:
+            promote(copy, layouts[copy.code])
+            Fixpoint(Walk(CommonSubexpressionElimination())).rewrite(copy.code)
+            Fixpoint(Walk(DeadCodeElimination())).rewrite(copy.code)
+        for copy in copies:
+            if left := remaining(copy):
+                raise WireConversionError(
+                    f"'{copy.sym_name}' keeps statements without a wire form: "
+                    + ", ".join(sorted(set(left)))
+                )
+            WireValidation().check(copy)
+        return self.prepared[method]
 
     def prepare(self, kernel: ir.Method) -> None:
         """Copy `kernel`, normalize the copy, and analyze it.
@@ -165,10 +195,7 @@ class SquinToWire:
             if not Walk(rules).rewrite(copy.code).has_done_something:
                 break
             self.normalize(copy)
-        effects = QubitEffects(copy.dialects, refs=frame.entries)
-        effects.run(copy)
         self.refs.update(frame.entries)
-        self.effects.update(effects.effects)
         for callee in rejected.kept:
             self.prepare(callee)
 

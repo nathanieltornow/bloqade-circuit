@@ -30,9 +30,9 @@ from bloqade.types import QubitType
 
 from . import stmts
 from .group import kernel as wire_kernel
+from .lower import packed_type, output_types
 from .types import RegisterType, is_linear
 from .traits import Twin
-from .to_wire import packed_type, output_types
 
 
 def squin_type(kind: types.TypeAttribute) -> types.TypeAttribute:
