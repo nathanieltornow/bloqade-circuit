@@ -85,22 +85,99 @@ If a reference call can alias its arguments, preparation inlines it and checks t
 | --- | --- | --- |
 | Prepare | `Inline`, `RewriteRule`, `Walk`, `CheckedFixpoint`, `TypeInfer`, reference analysis | Calls expose supported reference behavior, and unknown-length broadcasts use loops. |
 | Lower | `LowerTwins`, `LowerCalls`, `LowerLength`, `LowerReturn`, `LowerEntry` | Quantum operations use wire twins between explicit reference transfers. |
-| Promote | `SlotAnalysis` and rewrite rules | Eligible slots travel through wire values, block arguments and results. |
+| Promote | `SlotAnalysis`, `PromotionAnalysis`, `RewriteRule`, `Walk` | A read-only plan connects eligible allocations through wire values, block arguments and results. |
 | Check conversion | `ConversionTarget` with `Walk` | Complete conversion contains supported operations and excludes qubit reference types. |
 | Validate | Kirin `ValidationSuite` and forward analyses | The result satisfies structure, types, linear uses, borrow balance, positions and reference access rules. |
 
-Promotion first rewrites register accesses as `Borrow` and `Release`.
-`Boundaries` adds the wire values that loops and branches carry.
-`Forward` replaces a reference read with the preceding write's wire value when intervening operations permit it.
-Materialization creates wire allocations and frees at the ends of those sequences.
-Cleanup removes dead references and allocations.
-Promotion reruns slot analysis after changes that rebuild statements or remove reference operands.
+## Promotion algorithm
 
-The rewrite rules use Kirin's walkers to visit the program.
-A rule can rebuild an entire loop or branch.
-Reference analysis follows data across blocks and calls.
-The forwarding rule also searches adjacent statements within a block.
-These dependencies require analysis beyond a single statement.
+Promotion converts each eligible allocation into a sequence of explicit wire values.
+A register remains one allocation, including when every access uses a constant index.
+`plan_promotion` computes all decisions before `apply_promotion` changes the program.
+
+1. `SlotAnalysis` identifies each reference's allocation and records the accesses inside each structured region.
+2. `Eligibility` checks each allocation's accesses and excludes allocations with unsupported uses or paths.
+3. `PromotionAnalysis` follows execution order and records the current value of each selected allocation.
+4. `LoopArguments` and `ApplyPromotion` create the planned values and replace the reference transfers.
+5. Cleanup removes unused reference expressions, invariant reference arguments and the selected reference allocations.
+
+An unsupported use prevents promotion of its whole allocation.
+An unknown blocking reference prevents promotion of every allocation.
+Partial conversion preserves these references and can still promote independent allocations.
+Complete conversion rejects any references that remain.
+
+### The forward state
+
+For each allocation `r`, the analysis records `Contents(value, borrowed)`.
+`value` names the current wire or register.
+`borrowed` contains the register indices that currently belong to separate wires.
+A missing `value` records a whole-allocation transfer from reference access to explicit wire operations.
+
+| Input operation | Required state | Planned operation and next state |
+| --- | --- | --- |
+| Allocation | The allocation starts here. | Create a wire allocation at this position and record its value. |
+| Whole `Unwrap(r)` | `r` holds a value with every element present. | Replace the result with that value and mark `r` empty. |
+| Whole `Wrap(r, w)` | `r` is empty. | Record `w` as its current value. |
+| Element `Unwrap(r[i])` | `r` holds a register and `i` differs from every outstanding borrow. | Insert `Borrow`, record the remaining register, and add `i` to `borrowed`. |
+| Element `Wrap(r[i], w)` | `borrowed` contains `i`. | Insert `Release`, record its register result, and remove `i` from `borrowed`. |
+
+A gate keeps its existing wire operands and results throughout promotion.
+The rewrite substitutes planned values into the operands that previously came from `Unwrap`.
+Synthetic reference initializers for parameters and call results start empty.
+Their following `Wrap` operations supply the existing wire values.
+
+At each region exit, the plan frees local allocations that the region still owns.
+A transfer to a return value removes that allocation from the region's ownership.
+Allocations inside a loop remain inside that loop.
+Promotion preserves unused allocations and their frees.
+It performs no register splitting or lifetime shortening.
+
+### Loops and branches
+
+A loop carries each accessed outer allocation as an initializer, a body argument and a result.
+The analysis visits the body once with symbolic values for those new arguments.
+The body's final values become the extra yield operands.
+The loop's results become the current values after the loop.
+For zero iterations, the loop returns the initializers.
+
+Both branches start with the same incoming state.
+Each branch yields its final value at the same result position for each accessed outer allocation.
+The branch results become the current values after the conditional.
+Every register must contain all its borrowed elements at these boundaries.
+
+For example, this pseudocode gives a loop's explicit register connections:
+
+```text
+r0 = AllocRegister(n)
+r_after = For(indices, initial=r0):
+    r_iter = iteration_argument
+    r_hole, q0 = Borrow(r_iter, i)
+    q1 = X(q0)
+    r_next = Release(r_hole, i, q1)
+    Yield(r_next)
+FreeRegister(r_after)
+```
+
+`Definition` names each future value while the plan has no corresponding IR node.
+Planning creates no IR nodes and changes no SSA use lists.
+SSA means that each program value has one definition.
+Apply a plan once, immediately after analysis, to its unchanged source method.
+The driver performs no intervening rewrites.
+
+### Local rewrites and method-wide decisions
+
+The rewrite of one transfer uses a precomputed replacement.
+Finding that replacement requires the allocation's earlier transfers, aliases and enclosing control flow.
+A branch can supply different reaching definitions, which are the values available at the end of each path.
+A loop must connect its final value to the next iteration's argument.
+These decisions require information beyond the statement that the rewrite replaces.
+
+`PromotionAnalysis` uses Kirin's `ForwardExtra` interpreter and dialect method tables.
+Its supported regions contain one block and use `scf.For` or `scf.IfElse` with `scf.Yield` terminators.
+The analysis visits each structured body once because symbolic region arguments represent repeated execution.
+`ApplyPromotion` uses Kirin's `Walk` to apply the plan after loop arguments exist.
+The walker rewrites each body before rebuilding its enclosing operation.
+Cleanup uses `CheckedFixpoint` and has no role in choosing wire connections or lifetimes.
 
 ## Validation contracts
 
@@ -140,7 +217,7 @@ Preparation checks structure and types after normalization.
 The converter computes every call layout before it changes any signature.
 Lowering records reference facts for each reference that a call result creates.
 Tuple projection resolves the temporary tuples that lowering constructs.
-Promotion recomputes its analysis after structural changes.
+Promotion computes a read-only plan after lowering finishes its structural changes.
 The final target check and validation suite cover every converted function.
 A failed conversion leaves the source methods unchanged.
 Repeated calls clear the converter's preparation state and diagnostics.

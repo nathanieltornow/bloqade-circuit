@@ -61,9 +61,10 @@ def test_a_borrowing_call_gives_the_same_result_after_promotion():
     assert simulate(WireToSquin().emit(promoted(calls))) == [[1, 0, 1, 1, 1], 4]
 
 
-def test_a_register_with_constant_indices_splits_into_wires():
+def test_a_register_with_constant_indices_stays_whole():
     wired = promoted(cancelling)
     statements = tuple(wired.callable_region.walk())
-    assert not any(isinstance(node, wire_stmts.AllocRegister) for node in statements)
-    assert sum(isinstance(node, wire_stmts.Alloc) for node in statements) == 2
-    assert not any(isinstance(node, wire_stmts.Borrow) for node in statements)
+    assert sum(isinstance(node, wire_stmts.AllocRegister) for node in statements) == 1
+    assert not any(isinstance(node, wire_stmts.Alloc) for node in statements)
+    assert any(isinstance(node, wire_stmts.Borrow) for node in statements)
+    assert sum(isinstance(node, wire_stmts.FreeRegister) for node in statements) == 1
