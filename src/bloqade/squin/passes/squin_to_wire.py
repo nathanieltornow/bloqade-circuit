@@ -109,13 +109,18 @@ class SquinToWire:
     qubits that it allocates. Kirin's `Inline` rule inlines every other call.
     A public wire function requires distinct quantum arguments from its caller.
 
-    Every converted method must satisfy the complete wire conversion target.
-    Unsupported operations and unresolved reference accesses cause conversion to fail.
+    If `partial` is True, a statement whose qubits the places can't name keeps
+    reference semantics, and the rest of the kernel still becomes wire squin.
+    Each such statement adds one line to `report`. If `partial` is False, the
+    converter raises a `WireConversionError` for it.
     """
 
     max_iterations: int = 32
+    partial: bool = False
     prepared: dict[ir.Method, ir.Method] = field(default_factory=dict, init=False)
     refs: dict[ir.SSAValue, Ref] = field(default_factory=dict, init=False)
+    report: list[str] = field(default_factory=list, init=False)
+    """Hold one line for each statement that kept reference semantics."""
 
     def emit(self, method: ir.Method) -> ir.Method:
         """Return the wire squin method of `method`.
@@ -128,7 +133,7 @@ class SquinToWire:
         """
         if not method.dialects.data <= reference_kernel.data:
             raise ValueError("SquinToWire expects squin or native kernel dialects.")
-        self.prepared, self.refs = {}, {}
+        self.prepared, self.refs, self.report = {}, {}, []
         if self.max_iterations < 1:
             raise ValueError("The rewrite iteration limit must be positive.")
         reachable(method, skip=lambda callee: callee is qalloc or is_library(callee))
@@ -136,7 +141,8 @@ class SquinToWire:
         copies = list(self.prepared.values())
         layouts = {copy.code: layout_of(copy.code, self.refs) for copy in copies}
         for copy in copies:
-            lower(copy, self.refs, self.prepared, layouts=layouts)
+            reasons = lower(copy, self.refs, self.prepared, self.partial, layouts)
+            self.report += [f"'{copy.sym_name}': {reason}" for reason in reasons]
         for copy in copies:
             CheckedFixpoint(
                 Walk(Chain(TupleProjection(), DeadCodeElimination()))
@@ -150,7 +156,9 @@ class SquinToWire:
                     f"'{copy.sym_name}' violates the wire conversion target at: "
                     + ", ".join(sorted(set(left)))
                 )
-                raise WireConversionError(message)
+                if not self.partial:
+                    raise WireConversionError(message)
+                self.report.append(message)
             WireValidation().check(copy)
         return self.prepared[method]
 
