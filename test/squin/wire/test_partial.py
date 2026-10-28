@@ -1,9 +1,8 @@
 """Test partial promotion of squin kernels to wire squin.
 
-A place is what the reference analysis names for a qubit value, such as item 2 of
-a register. If the analysis can't name the place of a qubit, or can't prove two
-places of one gate apart, the gate keeps reference semantics. Partial promotion
-turns the rest of the kernel into wires.
+The converter records each reference's allocation and register position.
+If a gate's operands can overlap, partial conversion preserves their reference operations.
+Independent allocations can still become wires.
 """
 
 from typing import Any

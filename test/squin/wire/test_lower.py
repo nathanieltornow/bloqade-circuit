@@ -5,7 +5,6 @@ from kirin import ir
 from test_roundtrip import CASES, simulate
 
 from bloqade.squin.wire import stmts as wire_stmts
-from bloqade.squin.rewrite.wire.lower import lower
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
 from bloqade.squin.analysis.validation.wire import ReferenceValidation
@@ -13,12 +12,7 @@ from bloqade.squin.analysis.validation.wire import ReferenceValidation
 
 def lowered(kernel: ir.Method) -> ir.Method:
     """Return the prepared copy of `kernel` after the lowering rules."""
-    converter = SquinToWire()
-    converter.prepared, converter.refs = {}, {}
-    converter.prepare(kernel)
-    copy = converter.prepared[kernel]
-    lower(copy, converter.refs, converter.prepared)
-    return copy
+    return SquinToWire().lower(kernel)
 
 
 @pytest.mark.parametrize("kernel, args, expected", CASES)

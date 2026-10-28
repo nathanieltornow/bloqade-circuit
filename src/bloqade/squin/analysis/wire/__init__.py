@@ -1,1 +1,1 @@
-"""Analyze the references and register slots of wire conversion."""
+"""Provide reference-analysis rules for consumers of the wire dialect."""

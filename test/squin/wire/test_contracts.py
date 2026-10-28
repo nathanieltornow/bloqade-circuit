@@ -63,7 +63,7 @@ def recursive(q: Qubit, n: int):
         recursive(q, n - 1)
 
 
-def test_recursive_calls_fail_before_reference_analysis():
+def test_recursive_calls_fail_before_conversion():
     before = recursive.code.print_str()
     with pytest.raises(WireConversionError, match="recursive calls"):
         SquinToWire().emit(recursive)
@@ -90,18 +90,19 @@ def test_duplicate_quantum_returns_fail_before_materialization(kernel):
     assert kernel.code.print_str() == before
 
 
-def test_missing_reference_facts_cannot_authorize_a_gate():
+def test_missing_handles_cannot_authorize_a_gate():
     from kirin.dialects import ilist
 
     from bloqade.qubit.stmts import New
     from bloqade.squin.gate.stmts import CX
-    from bloqade.squin.rewrite.wire.lower import LowerTwins
+    from bloqade.squin.rewrite.wire.lower import LocalLowering
+    from bloqade.squin.rewrite.wire.handles import Handles
 
     a, b = New(), New()
     controls, targets = ilist.New((a.result,)), ilist.New((b.result,))
     gate = CX(controls.result, targets.result)
-    with pytest.raises(WireConversionError, match="no reference proof"):
-        LowerTwins({}).rewrite(gate)
+    with pytest.raises(WireConversionError, match="has no place"):
+        LocalLowering(gate, Handles()).gate()
 
 
 def test_reused_reference_analysis_discards_index_facts_after_a_rewrite():

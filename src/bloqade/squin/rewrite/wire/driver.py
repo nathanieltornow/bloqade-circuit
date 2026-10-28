@@ -41,7 +41,7 @@ class Calls(RewriteRule):
 def reachable(
     method: ir.Method, skip: Callable[[ir.Method], bool] = lambda _: False
 ) -> list[ir.Method]:
-    """Return reachable methods and reject call cycles before running forward analysis."""
+    """Return reachable methods and reject call cycles before conversion or validation."""
     done: dict[ir.Method, None] = {}
     active: set[ir.Method] = set()
 
