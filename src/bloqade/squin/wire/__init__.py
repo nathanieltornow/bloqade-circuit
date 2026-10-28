@@ -1,0 +1,43 @@
+"""Hold the squin wire dialect, a linear form of squin for optimization passes.
+
+A wire is one qubit at one point in the program, and it has exactly one use. Each
+statement consumes its input wires and returns new wires. The conversion passes live in `bloqade.squin.passes`.
+"""
+
+from bloqade.squin.analysis.wire import reference_impl as reference_impl
+
+from . import twins as twins
+from .group import kernel as kernel
+from .stmts import (
+    Free as Free,
+    Wrap as Wrap,
+    Alloc as Alloc,
+    Borrow as Borrow,
+    Length as Length,
+    Unwrap as Unwrap,
+    Release as Release,
+    Reference as Reference,
+    FreeRegister as FreeRegister,
+    WrapRegister as WrapRegister,
+    AllocRegister as AllocRegister,
+    UnwrapRegister as UnwrapRegister,
+    ReferenceRegister as ReferenceRegister,
+)
+from .twins import TWINS as TWINS
+from .types import (
+    Wire as Wire,
+    Register as Register,
+    WireType as WireType,
+    RegisterType as RegisterType,
+    is_linear as is_linear,
+)
+from .errors import WireConversionError as WireConversionError
+from .traits import (
+    Twin as Twin,
+    Noise as Noise,
+    Threads as Threads,
+    Unitary as Unitary,
+    Measurement as Measurement,
+    Preparation as Preparation,
+)
+from ._dialect import dialect as dialect
