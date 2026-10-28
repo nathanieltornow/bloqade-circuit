@@ -1,27 +1,52 @@
-"""Promote explicit reference transfers with one source-order Kirin walk.
+"""Promote prepared transfers through separate rules under one ordered Kirin walk.
 
-Each region owns a map of its current wires. Boundary rules create wire arguments
-and results before the walk reaches their bodies. Yield rules close those boundaries.
-Structural rules preserve the source statements that Kirin has already scheduled.
+Preparation supplies whole allocations, element indices and invariant reference results.
+Each region owns its current wires. Headers seed body arguments before the walk visits
+those bodies. Terminators yield the final wires and close local allocation lifetimes.
 """
 
 from dataclasses import field, dataclass
-from collections.abc import Hashable
+from collections.abc import Mapping
 
 from kirin import ir
-from kirin.rewrite import Walk
+from kirin.rewrite import Walk, Chain
 from kirin.dialects import scf, func
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade.qubit import stmts as qubit_stmts
-from bloqade.types import holds_qubits
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Sym, Affine, same
 from bloqade.squin.wire.types import WireType
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.traits import ReferenceAccess
-from bloqade.squin.rewrite.wire.index import index_value
-from bloqade.squin.rewrite.wire.handles import Handle, Handles, known
+from bloqade.squin.rewrite.wire.index import compare_indices
+
+
+@dataclass(frozen=True)
+class Whole:
+    """Identify one whole source allocation."""
+
+    root: ir.ResultValue
+
+
+@dataclass(frozen=True)
+class Element:
+    """Identify one element with an integer SSA value available at the transfer."""
+
+    root: ir.ResultValue
+    index: ir.SSAValue
+
+
+@dataclass(frozen=True)
+class PromotionInput:
+    """Supply concrete transfer locations and reference results that retain their source identity.
+
+    Each location belongs to one transfer because its index must dominate that use.
+    Partial conversion omits transfers whose allocations retain reference semantics.
+    """
+
+    locations: Mapping[ir.Statement, Whole | Element]
+    allocations: frozenset[ir.Statement]
+    invariants: Mapping[ir.Statement, Mapping[int, ir.SSAValue]]
 
 
 @dataclass(frozen=True)
@@ -29,17 +54,17 @@ class Contents:
     """Hold the current wire and the register indices that still require release."""
 
     value: ir.SSAValue | None
-    borrowed: frozenset[Affine] = frozenset()
+    borrowed: tuple[ir.SSAValue, ...] = ()
 
 
 @dataclass
 class RegionState:
     """Track available wires and allocations whose lifetimes end in this region."""
 
-    current: dict[Hashable, Contents] = field(default_factory=dict)
-    local: list[Hashable] = field(default_factory=list)
+    current: dict[ir.ResultValue, Contents] = field(default_factory=dict)
+    local: list[ir.ResultValue] = field(default_factory=list)
 
-    def value(self, root: Hashable, *, restored: bool = True) -> ir.SSAValue:
+    def value(self, root: ir.ResultValue, *, restored: bool = True) -> ir.SSAValue:
         """Require an available wire and, at boundaries, a complete register."""
         content = self.current.get(root)
         if content is None or content.value is None:
@@ -65,80 +90,48 @@ class RegionState:
 
 @dataclass
 class PromotionState:
-    """Share prepared locations and region maps across the ordered rewrite rules."""
+    """Share prepared input and mutable region maps across the promotion rules."""
 
-    locations: Handles
-    allocations: set[ir.Statement]
+    inputs: PromotionInput
     regions: dict[ir.Region, RegionState] = field(default_factory=dict)
-    boundaries: dict[ir.Statement, dict[Hashable, None]] = field(default_factory=dict)
-    symbols: dict[Sym, ir.SSAValue] = field(default_factory=dict)
+    boundaries: dict[ir.Statement, tuple[ir.ResultValue, ...]] = field(
+        default_factory=dict
+    )
+    replacements: dict[ir.SSAValue, ir.SSAValue] = field(default_factory=dict)
 
     def frame(self, node: ir.Statement) -> RegionState:
         """Return the map for the statement's current enclosing region."""
         assert node.parent_block is not None and node.parent_block.parent is not None
         return self.regions[node.parent_block.parent]
 
+    def index(self, location: Element) -> ir.SSAValue:
+        """Resolve an index whose defining region header has acquired new results."""
+        return self.replacements.get(location.index, location.index)
+
 
 @dataclass
-class CollectCaptures(RewriteRule):
-    """Record allocations that transfers use across enclosing region boundaries."""
+class PromoteEntry(RewriteRule):
+    """Open the function's current-wire map before visiting its body."""
 
     state: PromotionState
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
-        """Collect captures in source order while preserving allocation scope."""
-        if isinstance(node, (scf.For, scf.IfElse)):
-            self.state.boundaries.setdefault(node, {})
-        if access := node.get_trait(ReferenceAccess):
-            location = self.state.locations.get(access.reference(node))
-            if isinstance(location, Handle) and isinstance(location.root, ir.SSAValue):
-                allocation = location.root.owner
-                if (
-                    isinstance(allocation, ir.Statement)
-                    and allocation in self.state.allocations
-                ):
-                    scope = allocation.parent_block
-                    assert scope is not None
-                    block = node.parent_block
-                    while block is not scope:
-                        assert block is not None
-                        owner = block.parent_stmt
-                        if not isinstance(owner, (scf.For, scf.IfElse)):
-                            raise WireConversionError(
-                                "A quantum capture requires a supported loop or branch."
-                            )
-                        self.state.boundaries.setdefault(owner, {})[
-                            location.root
-                        ] = None
-                        block = owner.parent_block
+        """Initialize region state for the prepared function entry."""
+        if isinstance(node, func.Function):
+            self.state.regions[node.body] = RegionState()
         return RewriteResult()
 
 
 @dataclass
-class Promote(RewriteRule):
-    """Apply each promotion rule once under Kirin's parent-first walk."""
+class PromoteAllocation(RewriteRule):
+    """Create initial wires and record their local lifetimes."""
 
     state: PromotionState
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
-        """Dispatch allocations, transfers, region headers and terminators."""
-        if node in self.state.allocations:
-            self.allocation(node)
-        elif node.has_trait(ReferenceAccess):
-            if not self.transfer(node):
-                return RewriteResult()
-        elif isinstance(node, (scf.For, scf.IfElse)):
-            self.boundary(node)
-        elif isinstance(node, scf.Yield):
-            self.yield_(node)
-        elif isinstance(node, func.Return):
-            self.state.frame(node).finish(node)
-        else:
+        """Promote a selected allocation or initialize an empty reference for an incoming wire."""
+        if node not in self.state.inputs.allocations:
             return RewriteResult()
-        return RewriteResult(has_done_something=True)
-
-    def allocation(self, node: ir.Statement) -> None:
-        """Create the initial wire and register the allocation's local lifetime."""
         frame = self.state.frame(node)
         root = node.results[0]
         if isinstance(node, (stmts.Reference, stmts.ReferenceRegister)):
@@ -153,78 +146,114 @@ class Promote(RewriteRule):
             value = made.results[0]
         frame.current[root] = Contents(value)
         frame.local.append(root)
+        return RewriteResult(has_done_something=value is not None)
 
-    def transfer(self, node: ir.Statement) -> bool:
-        """Replace a transfer with its current wire or an explicit register borrow."""
-        access = node.get_present_trait(ReferenceAccess)
-        location = self.state.locations.get(access.reference(node))
-        if not isinstance(location, Handle):
-            return False
-        root = location.root
+
+@dataclass
+class PromoteUnwrap(RewriteRule):
+    """Replace an unwrap with the available wire or an explicit register borrow."""
+
+    state: PromotionState
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Consume the current value at a prepared transfer location."""
+        access = node.get_trait(ReferenceAccess)
+        if access is None or not access.takes:
+            return RewriteResult()
+        location = self.state.inputs.locations.get(node)
+        if location is None:
+            return RewriteResult()
         frame = self.state.frame(node)
-        if root not in frame.current:
-            if isinstance(root, ir.SSAValue) and root.owner in self.state.allocations:
+        root = location.root
+        value = frame.value(root, restored=isinstance(location, Whole))
+        if isinstance(location, Element):
+            index = self.state.index(location)
+            borrowed = frame.current[root].borrowed
+            if any(compare_indices(index, held) is not False for held in borrowed):
                 raise WireConversionError(
-                    "A promoted allocation has no wire in the current region."
+                    "Promotion requires distinct simultaneous register borrows."
                 )
-            return False
-        if location.selection is not None:
-            if not isinstance(location.selection, Affine):
-                raise WireConversionError(
-                    "A whole-register transfer requires a whole allocation."
-                )
-            index = location.selection
-            register = frame.value(root, restored=False)
-            content = frame.current[root]
-            if access.takes:
-                if any(same(index, held) is not False for held in content.borrowed):
-                    raise WireConversionError(
-                        "Promotion requires distinct simultaneous register borrows."
-                    )
-                at = index_value(index, node, self.state.symbols)
-                made = stmts.Borrow(register, at)
-                made.insert_before(node)
-                access.value(node).replace_by(made.wire)
-                frame.current[root] = Contents(
-                    made.register_out, content.borrowed | {index}
-                )
-            else:
-                if index not in content.borrowed:
-                    raise WireConversionError(
-                        "Promotion requires a matching borrow before a register release."
-                    )
-                at = index_value(index, node, self.state.symbols)
-                made = stmts.Release(register, at, access.value(node))
-                made.insert_before(node)
-                frame.current[root] = Contents(
-                    made.register_out, content.borrowed - {index}
-                )
-        elif access.takes:
-            access.value(node).replace_by(frame.value(root))
-            frame.current[root] = Contents(None)
+            made = stmts.Borrow(value, index)
+            made.insert_before(node)
+            access.value(node).replace_by(made.wire)
+            frame.current[root] = Contents(made.register_out, (*borrowed, index))
         else:
-            if frame.current[root].value is not None:
+            access.value(node).replace_by(value)
+            frame.current[root] = Contents(None)
+        node.delete()
+        return RewriteResult(has_done_something=True)
+
+
+@dataclass
+class PromoteWrap(RewriteRule):
+    """Restore a whole allocation or release a borrowed register element."""
+
+    state: PromotionState
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Record the replacement wire at a prepared transfer location."""
+        access = node.get_trait(ReferenceAccess)
+        if access is None or access.takes:
+            return RewriteResult()
+        location = self.state.inputs.locations.get(node)
+        if location is None:
+            return RewriteResult()
+        frame = self.state.frame(node)
+        root = location.root
+        if isinstance(location, Element):
+            register = frame.value(root, restored=False)
+            index = self.state.index(location)
+            borrowed = frame.current[root].borrowed
+            position = next(
+                (
+                    i
+                    for i, held in enumerate(borrowed)
+                    if compare_indices(index, held) is True
+                ),
+                None,
+            )
+            if position is None:
+                raise WireConversionError(
+                    "Promotion requires a matching borrow before a register release."
+                )
+            made = stmts.Release(register, index, access.value(node))
+            made.insert_before(node)
+            frame.current[root] = Contents(
+                made.register_out, borrowed[:position] + borrowed[position + 1 :]
+            )
+        else:
+            content = frame.current.get(root)
+            if content is None or content.value is not None:
                 raise WireConversionError(
                     "Promotion requires an empty reference before a wrap."
                 )
             frame.current[root] = Contents(access.value(node))
         node.delete()
-        return True
+        return RewriteResult(has_done_something=True)
 
-    def boundary(self, node: scf.For | scf.IfElse) -> None:
-        """Create boundary results and seed body maps before visiting the original body statements."""
-        roots = self.state.boundaries.pop(node)
+
+@dataclass
+class PromoteBoundary(RewriteRule):
+    """Carry available allocations through loop and branch boundaries."""
+
+    state: PromotionState
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Create boundary results and seed bodies while preserving scheduled statements."""
+        if not isinstance(node, (scf.For, scf.IfElse)):
+            return RewriteResult()
         outer = self.state.frame(node)
+        roots = tuple(
+            root for root, content in outer.current.items() if content.value is not None
+        )
         inputs = tuple(outer.value(root) for root in roots)
-        dropped = self.invariant_references(node)
+        dropped = self.state.inputs.invariants.get(node, {})
         original = tuple(node.results)
         kept = [i for i in range(len(original)) if i not in dropped]
 
         if isinstance(node, scf.For):
             body = node.body
             block = body.blocks[0]
-            for symbol, _ in self.state.locations.indices.of(block.args[0]).terms:
-                self.state.symbols[symbol] = block.args[0]
             for i, value in dropped.items():
                 block.args[i + 1].replace_by(value)
             for i in sorted(dropped, reverse=True):
@@ -251,21 +280,21 @@ class Promote(RewriteRule):
         for i, value in dropped.items():
             original[i].replace_by(value)
         for i, value in zip(kept, made.results[: len(kept)], strict=True):
-            self.state.symbols[original[i]] = value
-            self.state.locations.values[value] = self.state.locations.get(original[i])
+            self.state.replacements[original[i]] = value
             original[i].replace_by(value)
         for root, result in zip(roots, made.results[len(kept) :], strict=True):
             outer.current[root] = Contents(result)
         node.delete()
+        return RewriteResult(has_done_something=True)
 
     def seed(
         self,
         region: ir.Region,
-        roots: dict[Hashable, None],
+        roots: tuple[ir.ResultValue, ...],
         inputs: tuple[ir.SSAValue, ...],
-        dropped: dict[int, ir.SSAValue],
+        dropped: Mapping[int, ir.SSAValue],
     ) -> None:
-        """Seed a body and reserve its wire yield positions without replacing scheduled statements."""
+        """Seed a body and reserve its wire yield positions while retaining the original terminator."""
         self.state.regions[region] = RegionState(
             {root: Contents(value) for root, value in zip(roots, inputs, strict=True)}
         )
@@ -276,33 +305,17 @@ class Promote(RewriteRule):
             *inputs,
         )
 
-    def invariant_references(
-        self, node: scf.For | scf.IfElse
-    ) -> dict[int, ir.SSAValue]:
-        """Find reference results that retain the same source location across the boundary."""
-        if isinstance(node, scf.For):
-            end = node.body.blocks[0].last_stmt
-            assert isinstance(end, scf.Yield)
-            return {
-                i: value
-                for i, (value, yielded) in enumerate(
-                    zip(node.initializers, end.values, strict=True)
-                )
-                if holds_qubits(value.type)
-                and known(self.state.locations.get(value))
-                and self.state.locations.get(value) == self.state.locations.get(yielded)
-            }
-        left = node.then_body.blocks[0].last_stmt
-        right = node.else_body.blocks[0].last_stmt
-        assert isinstance(left, scf.Yield) and isinstance(right, scf.Yield)
-        return {
-            i: a
-            for i, (a, b) in enumerate(zip(left.values, right.values, strict=True))
-            if holds_qubits(a.type) and a is b
-        }
 
-    def yield_(self, node: scf.Yield) -> None:
-        """Close local lifetimes and yield each captured allocation's final wire."""
+@dataclass
+class PromoteYield(RewriteRule):
+    """Yield current wires and close the body's local allocation lifetimes."""
+
+    state: PromotionState
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Close a prepared loop or branch body at its original terminator."""
+        if not isinstance(node, scf.Yield):
+            return RewriteResult()
         owner = node.parent_stmt
         assert owner is not None
         roots = self.state.boundaries[owner]
@@ -313,13 +326,33 @@ class Promote(RewriteRule):
             node.args = (*node.values[:count], *(frame.value(root) for root in roots))
         assert node.parent_block is not None and node.parent_block.parent is not None
         del self.state.regions[node.parent_block.parent]
+        return RewriteResult(has_done_something=True)
 
 
-def promote(
-    method: ir.Method, locations: Handles, allocations: set[ir.Statement]
-) -> None:
-    """Collect captures and promote each prepared statement once in source order."""
-    state = PromotionState(locations, allocations)
-    Walk(CollectCaptures(state), region_first=True).rewrite(method.code)
-    state.regions[method.callable_region] = RegionState()
-    Walk(Promote(state), region_first=True).rewrite(method.code)
+@dataclass
+class PromoteReturn(RewriteRule):
+    """Close local allocation lifetimes before the prepared function return."""
+
+    state: PromotionState
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Free remaining local wires after the return transfers consume the output wires."""
+        if not isinstance(node, func.Return):
+            return RewriteResult()
+        self.state.frame(node).finish(node)
+        return RewriteResult(has_done_something=True)
+
+
+def promote(method: ir.Method, inputs: PromotionInput) -> None:
+    """Apply the promotion rules once to the caller's prepared private method copy."""
+    state = PromotionState(inputs)
+    rules = Chain(
+        PromoteEntry(state),
+        PromoteAllocation(state),
+        PromoteBoundary(state),
+        PromoteUnwrap(state),
+        PromoteWrap(state),
+        PromoteYield(state),
+        PromoteReturn(state),
+    )
+    Walk(rules, region_first=True).rewrite(method.code)

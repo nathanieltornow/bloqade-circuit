@@ -4,12 +4,10 @@ The converter names a register element with an integer expression over symbols.
 A symbol names an integer value or the iteration variable of an `scf.For` loop.
 """
 
-from collections.abc import Mapping
-
 from kirin import ir, types
 from kirin.dialects import py, scf
 
-from bloqade.analysis.indices import Sym, Iter, Affine
+from bloqade.analysis.indices import Sym, Iter, Affine, IndexAnalysis, same
 
 
 def _integer(stmt: ir.Statement, before: ir.Statement) -> ir.SSAValue:
@@ -32,27 +30,21 @@ def symbol_value(symbol: Sym) -> ir.SSAValue:
     return symbol
 
 
-def index_value(
-    index: Affine,
-    before: ir.Statement,
-    symbols: Mapping[Sym, ir.SSAValue] | None = None,
-) -> ir.SSAValue:
-    """Insert the statements that compute `index` before `before`, and return it.
+def compare_indices(left: ir.SSAValue, right: ir.SSAValue) -> bool | None:
+    """Prove index equality or separation from their current integer definitions."""
+    indices = IndexAnalysis()
+    return same(indices.of(left), indices.of(right))
 
-    The sum takes each symbol times its coefficient, plus the constant.
-    Structural rewrites supply replacement values for symbols whose owners they rebuild.
-    """
+
+def index_value(index: Affine, before: ir.Statement) -> ir.SSAValue:
+    """Insert integer arithmetic for a prepared element index before its transfer."""
     if (constant := index.constant) is not None:
         made = py.Constant(constant)
         made.insert_before(before)
         return made.result
     total: ir.SSAValue | None = None
     for symbol, a in sorted(index.terms, key=lambda t: repr(t[0])):
-        term = (
-            symbols[symbol]
-            if symbols is not None and symbol in symbols
-            else symbol_value(symbol)
-        )
+        term = symbol_value(symbol)
         if a != 1:
             factor = py.Constant(a)
             factor.insert_before(before)
