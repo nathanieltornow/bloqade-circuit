@@ -23,11 +23,9 @@ from bloqade.jeff.forms import (
 )
 from bloqade.jeff.types import FloatArrayType, is_bit, is_subtype
 from bloqade.jeff.dialects import stmts
-from bloqade.analysis.reference import Members, Register
 from bloqade.jeff.dialects.stmts.call import declared_outputs
-from bloqade.squin.analysis.reference import qubit_items
 
-from .linearize import KEY, Frame, Value, Linearize, bitwidth, elements, jeff_kind
+from .emitter import KEY, Frame, Value, WireEmitter, bitwidth, elements, jeff_kind
 
 
 @py.constant.dialect.register(key=KEY)
@@ -36,12 +34,12 @@ class _Constant(interp.MethodTable):
 
     @interp.impl(py.Constant)
     def constant(
-        self, emit: Linearize, frame: Frame, stmt: py.Constant
+        self, emit: WireEmitter, frame: Frame, stmt: py.Constant
     ) -> interp.StatementResult[Value]:
         """Emit a number, a bit, a list or a tuple, and give a range no value.
 
-        A slice and a `None` bound of a slice have no value either, because the
-        reference analysis already turned each read of a slice into a place.
+        Normalization resolves quantum slices before Jeff emission.
+        Slices and omitted bounds have no emitted value.
         """
         match stmt.value.unwrap():
             case ilist.IList(data=range()) | slice() | None:
@@ -130,12 +128,16 @@ def _truth(frame: Frame, value: ir.SSAValue) -> ir.SSAValue:
 def _as_float(frame: Frame, value: ir.SSAValue) -> ir.SSAValue:
     """Return the jeff float of `value`, which is a float or an integer constant.
 
-    Jeff has no conversion from an integer to a float, so the validation refuses
-    any other integer operand of a float operation.
+    Jeff has no conversion from a runtime integer to a float.
+    This rule rejects such operands before it constructs a float operation.
     """
     match value.owner:
         case py.Constant(value=constant) if not _is_float(value):
             return frame.push(stmts.ConstFloat(value=float(constant.unwrap()))).result
+    if not _is_float(value):
+        raise interp.InterpreterError(
+            "Jeff cannot convert a runtime integer to a float."
+        )
     return frame.scalar(value)
 
 
@@ -143,16 +145,17 @@ class _Binary(interp.MethodTable):
     """A method table that emits jeff arithmetic for a kirin statement on two values."""
 
     def binary(
-        self, emit: Linearize, frame: Frame, stmt: ir.Statement
+        self, emit: WireEmitter, frame: Frame, stmt: ir.Statement
     ) -> interp.StatementResult[Value]:
-        """Emit the jeff statement of a binary operation, comparison or boolean op.
-
-        A `+` of two lists of qubits is a literal list, which its roots name.
-        """
-        if isinstance(emit.refs.get(stmt.results[0]), Members):
-            return (None,)
+        """Emit a classical binary operation, comparison or boolean operation."""
         kind = type(stmt)
         lhs, rhs = stmt.args
+        if not all(
+            value.type.is_subseteq(types.Int | types.Float) for value in (lhs, rhs)
+        ):
+            raise interp.InterpreterError(
+                f"'{stmt.name}' requires scalar numeric operands."
+            )
         if kind in SWAPPED:
             kind, lhs, rhs = SWAPPED[kind], rhs, lhs
         if _is_float(lhs) or _is_float(rhs):
@@ -166,6 +169,10 @@ class _Binary(interp.MethodTable):
             operands = (
                 emit.fitted(frame, frame.scalar(lhs), widest),
                 emit.fitted(frame, frame.scalar(rhs), widest),
+            )
+        if kind not in table:
+            raise interp.InterpreterError(
+                f"Jeff has no numeric form for '{stmt.name}' with these operand types."
             )
         made = frame.push(table[kind](*operands)).results[0]
         if kind is py.cmp.NotEq:
@@ -187,7 +194,7 @@ class _BinOp(_Binary):
     @interp.impl(py.binop.BitOr)
     @interp.impl(py.binop.BitXor)
     def binop(
-        self, emit: Linearize, frame: Frame, stmt: ir.Statement
+        self, emit: WireEmitter, frame: Frame, stmt: ir.Statement
     ) -> interp.StatementResult[Value]:
         """Emit the jeff arithmetic statement."""
         return self.binary(emit, frame, stmt)
@@ -195,7 +202,7 @@ class _BinOp(_Binary):
     @interp.impl(py.binop.FloorDiv)
     @interp.impl(py.binop.Mod)
     def floored(
-        self, emit: Linearize, frame: Frame, stmt: py.binop.FloorDiv | py.binop.Mod
+        self, emit: WireEmitter, frame: Frame, stmt: py.binop.FloorDiv | py.binop.Mod
     ) -> interp.StatementResult[Value]:
         """Emit a floor division or a modulo of two integers.
 
@@ -203,7 +210,17 @@ class _BinOp(_Binary):
         the remainder is nonzero and the operands differ in sign, the quotient
         drops one and the remainder gains the divisor.
         """
-        a, b = frame.scalar(stmt.lhs), frame.scalar(stmt.rhs)
+        if not all(value.type.is_subseteq(types.Int) for value in stmt.args):
+            raise interp.InterpreterError(
+                f"'{stmt.name}' requires integer operands in Jeff."
+            )
+        a, b = (
+            emit.fitted(frame, frame.scalar(value), types.Int) for value in stmt.args
+        )
+        if not all(value.type.is_subseteq(types.Int) for value in (a, b)):
+            raise interp.InterpreterError(
+                f"'{stmt.name}' requires integer operands in Jeff."
+            )
         zero = frame.push(stmts.ConstInt(value=0)).result
         one = frame.push(stmts.ConstInt(value=1)).result
         remainder = frame.push(stmts.IntRemS(a, b)).result
@@ -232,7 +249,7 @@ class _Cmp(_Binary):
     @interp.impl(py.cmp.Gt)
     @interp.impl(py.cmp.GtE)
     def cmp(
-        self, emit: Linearize, frame: Frame, stmt: ir.Statement
+        self, emit: WireEmitter, frame: Frame, stmt: ir.Statement
     ) -> interp.StatementResult[Value]:
         """Emit the jeff comparison statement."""
         return self.binary(emit, frame, stmt)
@@ -245,7 +262,7 @@ class _BoolOp(interp.MethodTable):
     @interp.impl(py.boolop.And)
     @interp.impl(py.boolop.Or)
     def boolop(
-        self, emit: Linearize, frame: Frame, stmt: ir.Statement
+        self, emit: WireEmitter, frame: Frame, stmt: ir.Statement
     ) -> interp.StatementResult[Value]:
         """Emit the bit operation on the truth bit of each operand.
 
@@ -264,12 +281,16 @@ class _Unary(interp.MethodTable):
 
     @interp.impl(py.unary.USub)
     def usub(
-        self, emit: Linearize, frame: Frame, stmt: py.unary.USub
+        self, emit: WireEmitter, frame: Frame, stmt: py.unary.USub
     ) -> interp.StatementResult[Value]:
         """Emit a subtraction from zero.
 
-        The validation refuses `-` on a bool, since Python gives an int there.
+        The emission rule rejects `-` on a bool, since Python gives an int there.
         """
+        if stmt.value.type.is_subseteq(types.Bool):
+            raise interp.InterpreterError(
+                f"'{stmt.name}' on a bool requires Python integer semantics."
+            )
         value = frame.scalar(stmt.value)
         if _is_float(stmt.value):
             zero = frame.push(stmts.ConstFloat(value=0.0)).result
@@ -279,19 +300,23 @@ class _Unary(interp.MethodTable):
 
     @interp.impl(py.unary.Not)
     def not_(
-        self, emit: Linearize, frame: Frame, stmt: py.unary.Not
+        self, emit: WireEmitter, frame: Frame, stmt: py.unary.Not
     ) -> interp.StatementResult[Value]:
         """Emit the test that the operand is zero, which is Python's `not`."""
         return (_zero_test(frame, stmt.value),)
 
     @interp.impl(py.unary.Invert)
     def invert(
-        self, emit: Linearize, frame: Frame, stmt: py.unary.Invert
+        self, emit: WireEmitter, frame: Frame, stmt: py.unary.Invert
     ) -> interp.StatementResult[Value]:
         """Emit the bitwise negation of an integer.
 
-        The validation refuses `~` on a bool, since Python gives an int there.
+        The emission rule rejects `~` on a bool, since Python gives an int there.
         """
+        if stmt.value.type.is_subseteq(types.Bool):
+            raise interp.InterpreterError(
+                "'invert' on a bool requires Python integer semantics."
+            )
         return (frame.push(stmts.IntNot(frame.scalar(stmt.value))).result,)
 
 
@@ -301,9 +326,13 @@ class _Builtin(interp.MethodTable):
 
     @interp.impl(py.builtin.Abs)
     def abs_(
-        self, emit: Linearize, frame: Frame, stmt: py.builtin.Abs
+        self, emit: WireEmitter, frame: Frame, stmt: py.builtin.Abs
     ) -> interp.StatementResult[Value]:
         """Emit the absolute value."""
+        if stmt.value.type.is_subseteq(types.Bool):
+            raise interp.InterpreterError(
+                f"'{stmt.name}' on a bool requires Python integer semantics."
+            )
         value = frame.scalar(stmt.value)
         if _is_float(stmt.value):
             return (frame.push(stmts.FloatAbs(value)).result,)
@@ -333,7 +362,7 @@ class _Math(interp.MethodTable):
     @interp.impl(math_stmts.isnan)
     @interp.impl(math_stmts.isinf)
     def unary(
-        self, emit: Linearize, frame: Frame, stmt: ir.Statement
+        self, emit: WireEmitter, frame: Frame, stmt: ir.Statement
     ) -> interp.StatementResult[Value]:
         """Emit the jeff float function of one argument."""
         made = frame.push(FLOAT_UNARY[type(stmt)](frame.scalar(stmt.args[0])))
@@ -342,7 +371,7 @@ class _Math(interp.MethodTable):
     @interp.impl(math_stmts.pow)
     @interp.impl(math_stmts.atan2)
     def binary(
-        self, emit: Linearize, frame: Frame, stmt: ir.Statement
+        self, emit: WireEmitter, frame: Frame, stmt: ir.Statement
     ) -> interp.StatementResult[Value]:
         """Emit the jeff float function of two arguments."""
         lhs, rhs = (frame.scalar(v) for v in stmt.args)
@@ -350,7 +379,7 @@ class _Math(interp.MethodTable):
 
     @interp.impl(math_stmts.log)
     def log(
-        self, emit: Linearize, frame: Frame, stmt: math_stmts.log
+        self, emit: WireEmitter, frame: Frame, stmt: math_stmts.log
     ) -> interp.StatementResult[Value]:
         """Emit the natural logarithm, divided by the natural logarithm of the base.
 
@@ -374,7 +403,7 @@ class _Tuple(interp.MethodTable):
 
     @interp.impl(py.tuple.New)
     def new(
-        self, emit: Linearize, frame: Frame, stmt: py.tuple.New
+        self, emit: WireEmitter, frame: Frame, stmt: py.tuple.New
     ) -> interp.StatementResult[Value]:
         """Return the values of the members."""
         return (frame.values(stmt.args),)
@@ -386,17 +415,15 @@ class _IList(interp.MethodTable):
 
     @interp.impl(ilist.New)
     def new(
-        self, emit: Linearize, frame: Frame, stmt: ilist.New
+        self, emit: WireEmitter, frame: Frame, stmt: ilist.New
     ) -> interp.StatementResult[Value]:
-        """Return the array of the members, or None for a list that roots name."""
-        if isinstance(emit.refs[stmt.result], Members):
-            return (None,)
+        """Create a classical array from the emitted members."""
         values = tuple(frame.scalar(v) for v in stmt.values)
         return (frame.push(_array(values)).result,)
 
     @interp.impl(ilist_stmts.Range)
     def range_(
-        self, emit: Linearize, frame: Frame, stmt: ilist_stmts.Range
+        self, emit: WireEmitter, frame: Frame, stmt: ilist_stmts.Range
     ) -> interp.StatementResult[Value]:
         """Give a range no value, because a loop reads its bounds."""
         return (None,)
@@ -408,17 +435,9 @@ class _Len(interp.MethodTable):
 
     @interp.impl(py_len.Len)
     def len_(
-        self, emit: Linearize, frame: Frame, stmt: py_len.Len
+        self, emit: WireEmitter, frame: Frame, stmt: py_len.Len
     ) -> interp.StatementResult[Value]:
-        """Return the length of the array, or the number of qubits of a list."""
-        match emit.refs[stmt.value]:
-            case Register(root) as ref if qubit_items(ref) is None:
-                measured = frame.push(stmts.RegLength(frame.wire(root)))
-                frame.wires[root] = measured.result_reg
-                return (measured.length,)
-            case Register() | Members():
-                count = len(emit.qubits(stmt.value))
-                return (frame.push(stmts.ConstInt(value=count)).result,)
+        """Return the length of a classical array."""
         array = frame.scalar(stmt.value)
         if is_subtype(array.type, FloatArrayType):
             return (frame.push(stmts.FloatArrayLen(array)).result,)
@@ -431,9 +450,9 @@ class _Indexing(interp.MethodTable):
 
     @interp.impl(py.indexing.GetItem)
     def getitem(
-        self, emit: Linearize, frame: Frame, stmt: py.indexing.GetItem
+        self, emit: WireEmitter, frame: Frame, stmt: py.indexing.GetItem
     ) -> interp.StatementResult[Value]:
-        """Return the item, or None for a qubit, which its root names."""
+        """Select an emitted tuple field or a classical array element."""
         obj = frame.value(stmt.obj)
         if obj is None:
             return (None,)
@@ -454,9 +473,9 @@ class _Slice(interp.MethodTable):
 
     @interp.impl(py_slice.Slice)
     def slice_(
-        self, emit: Linearize, frame: Frame, stmt: py_slice.Slice
+        self, emit: WireEmitter, frame: Frame, stmt: py_slice.Slice
     ) -> interp.StatementResult[Value]:
-        """Give the slice no value, because the reference analysis reads its bounds."""
+        """Omit the slice object after wire normalization resolves its quantum accesses."""
         return (None,)
 
 
@@ -466,7 +485,7 @@ class _Assign(interp.MethodTable):
 
     @interp.impl(py.assign.Alias)
     def alias(
-        self, emit: Linearize, frame: Frame, stmt: py.assign.Alias
+        self, emit: WireEmitter, frame: Frame, stmt: py.assign.Alias
     ) -> interp.StatementResult[Value]:
         """Return the value of the aliased value."""
         return (frame.value(stmt.value),)

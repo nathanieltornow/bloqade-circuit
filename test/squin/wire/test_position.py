@@ -83,11 +83,11 @@ def assert_only_positions_fail(method: ir.Method, match: str):
 
 @pytest.mark.parametrize("kernel", [loop_pair, branch_pair, call_pair, swap_pair])
 def test_gates_and_control_flow_preserve_qubit_positions(kernel):
-    WireValidation().check(SquinToWire(assume_disjoint=True).emit(kernel))
+    WireValidation().check(SquinToWire().emit(kernel))
 
 
 def test_a_loop_cannot_exchange_its_carried_qubits():
-    wired = SquinToWire(assume_disjoint=True).emit(loop_pair)
+    wired = SquinToWire().emit(loop_pair)
     loop = first(wired, scf.For)
     swap_yield(loop.body.blocks[0].last_stmt)
     assert_only_positions_fail(wired, "loop input position")
@@ -95,27 +95,27 @@ def test_a_loop_cannot_exchange_its_carried_qubits():
 
 @pytest.mark.parametrize("body", ["then_body", "else_body"])
 def test_both_branches_must_continue_the_same_qubits(body):
-    wired = SquinToWire(assume_disjoint=True).emit(branch_pair)
+    wired = SquinToWire().emit(branch_pair)
     branch = first(wired, scf.IfElse)
     swap_yield(getattr(branch, body).blocks[0].last_stmt)
     assert_only_positions_fail(wired, "both branches")
 
 
 def test_a_function_cannot_exchange_its_borrowed_parameters():
-    wired = SquinToWire(assume_disjoint=True).emit(loop_pair)
+    wired = SquinToWire().emit(loop_pair)
     swap_suffix(wired)
     assert_only_positions_fail(wired, "return suffix position")
 
 
 def test_a_call_checks_the_return_suffix_inside_its_callee():
-    wired = SquinToWire(assume_disjoint=True).emit(call_pair)
+    wired = SquinToWire().emit(call_pair)
     call = first(wired, func.Invoke)
     swap_suffix(call.callee)
     assert_only_positions_fail(wired, "return suffix position")
 
 
 def test_a_release_cannot_exchange_the_qubits_of_two_slots():
-    wired = SquinToWire(assume_disjoint=True).emit(ladder)
+    wired = SquinToWire().emit(ladder)
     releases = [
         node for node in wired.callable_region.walk() if isinstance(node, stmts.Release)
     ]
@@ -125,7 +125,7 @@ def test_a_release_cannot_exchange_the_qubits_of_two_slots():
 
 
 def test_a_function_cannot_replace_a_borrowed_wire_with_a_fresh_wire():
-    wired = SquinToWire(assume_disjoint=True).emit(swap_pair)
+    wired = SquinToWire().emit(swap_pair)
     returned = first(wired, func.Return)
     packed = returned.value.owner
     old = packed.args[-1]
@@ -137,7 +137,7 @@ def test_a_function_cannot_replace_a_borrowed_wire_with_a_fresh_wire():
 
 
 def test_a_function_must_return_every_borrowed_parameter():
-    wired = SquinToWire(assume_disjoint=True).emit(swap_pair)
+    wired = SquinToWire().emit(swap_pair)
     returned = first(wired, func.Return)
     packed = returned.value.owner
     returned.value = packed.args[0]

@@ -618,10 +618,10 @@ class _Indexing(interp.MethodTable):
 
 @dataclass
 class SquinToJeffValidation(ValidationPass[ForwardFrame[EmptyLattice]]):
-    """A validation pass that reports every construct of one squin kernel that jeff cannot express.
+    """Check the original reference-form restrictions for standalone Jeff validation.
 
-    The pass checks one kernel. `SquinToJeff` runs it on every kernel that a
-    conversion reaches.
+    The pass checks one reference-form kernel for the original Jeff restrictions.
+    `SquinToJeff` uses wire validation and can accept more programs after normalization.
     """
 
     references: ForwardFrame[Ref] | None = field(default=None, init=False)

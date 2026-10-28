@@ -12,5 +12,4 @@ from . import (
     functions as functions,
 )
 from .isolate import IsolateRegions as IsolateRegions
-from .pipeline import SquinToJeff as SquinToJeff
-from .linearize import Linearize as Linearize
+from .pipeline import WireToJeff as WireToJeff, SquinToJeff as SquinToJeff

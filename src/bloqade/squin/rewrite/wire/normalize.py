@@ -19,6 +19,7 @@ Guppy asks the user to write these forms by hand. The rules write them for the
 user, so a squin kernel can keep its aliases.
 """
 
+from typing import TypeVar
 from dataclasses import dataclass
 from collections.abc import Mapping
 
@@ -29,14 +30,17 @@ from kirin.rewrite.abc import RewriteRule, RewriteResult
 from kirin.dialects.ilist import stmts as ilist_stmts
 
 from bloqade.types import QubitType
+from bloqade.constants import constant_int
 from bloqade.squin.wire.twins import TWINS
 from bloqade.squin.wire.traits import Twin
 from bloqade.analysis.reference import Ref
 from bloqade.squin.analysis.reference import qubit_items, holds_qubits
 from bloqade.analysis.reference.analysis import typed_length
 
+_S = TypeVar("_S", bound=ir.Statement)
 
-def _put(stmt: ir.Statement, before: ir.Statement) -> ir.Statement:
+
+def _put(stmt: _S, before: ir.Statement) -> _S:
     """Insert `stmt` before the statement `before` and return `stmt`."""
     stmt.insert_before(before)
     return stmt
@@ -177,7 +181,7 @@ class MapToLoop(RewriteRule):
             invoke.result.type = method.return_type
             return invoke
         if isinstance(owner, func.Lambda):
-            return func.Call(fn, (item,))
+            return func.Call(fn, (item,), kwargs=())
         return None
 
 
@@ -362,3 +366,69 @@ class BroadcastToLoop(RewriteRule):
         zero = _put(py.Constant(0), node).result
         one = _put(py.Constant(1), node).result
         return _put(ilist_stmts.Range(zero, size, one), node).result
+
+
+def bounded_list_lengths(kind: types.TypeAttribute) -> types.TypeAttribute:
+    """Constrain unknown list lengths to integers without assuming a concrete size."""
+    if isinstance(kind, types.Generic) and kind.is_subseteq(ilist.IListType):
+        element, length = kind.vars
+        return ilist.IListType[
+            bounded_list_lengths(element), types.Int if length == types.Any else length
+        ]
+    if (
+        isinstance(kind, types.Generic)
+        and kind.is_subseteq(types.Tuple)
+        and kind.vararg is None
+    ):
+        return types.Generic(
+            tuple, *(bounded_list_lengths(member) for member in kind.vars)
+        )
+    return kind
+
+
+class BoundListLengths(RewriteRule):
+    """Give list lengths integer bounds before checking operation types."""
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Refine result types and the declared function signature."""
+        changed = False
+        for value in node.results:
+            kind = bounded_list_lengths(value.type)
+            changed |= value.type != kind
+            value.type = kind
+        if isinstance(node, func.Function):
+            signature = node.signature
+            inputs = tuple(bounded_list_lengths(kind) for kind in signature.inputs)
+            output = bounded_list_lengths(signature.output)
+            changed |= inputs != signature.inputs or output != signature.output
+            node.signature = func.Signature(inputs=inputs, output=output)
+            node.body.blocks[0].args[0].type = types.MethodType[list(inputs), output]
+        return RewriteResult(has_done_something=changed)
+
+    def rewrite_Block(self, node: ir.Block) -> RewriteResult:
+        """Refine list lengths in block arguments."""
+        changed = False
+        for value in node.args:
+            kind = bounded_list_lengths(value.type)
+            changed |= value.type != kind
+            value.type = kind
+        return RewriteResult(has_done_something=changed)
+
+
+@dataclass
+class TupleProjection(RewriteRule):
+    """Resolve a constant tuple projection to the value that constructs its field."""
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Replace a direct tuple field read with its constructing operand."""
+        if not isinstance(node, py.GetItem) or not isinstance(
+            node.obj.owner, py.tuple.New
+        ):
+            return RewriteResult()
+        index = constant_int(node.index)
+        values = node.obj.owner.args
+        if index is None or not -len(values) <= index < len(values):
+            return RewriteResult()
+        node.result.replace_by(values[index])
+        node.delete()
+        return RewriteResult(has_done_something=True)

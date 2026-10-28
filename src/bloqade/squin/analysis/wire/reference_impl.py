@@ -34,4 +34,4 @@ class _References(interp.MethodTable):
         stmt: stmts.ReferenceRegister,
     ) -> tuple[Ref, ...]:
         """Return the new reference as a register root."""
-        return (Register(stmt.result),)
+        return (Register(stmt.result, levels=analysis.shape(stmt.result.type) or 1),)

@@ -235,11 +235,6 @@ def test_a_gate_on_two_places_that_may_alias_is_refused():
         SquinToWire().emit(maybe_the_same_qubit)
 
 
-def test_assume_disjoint_trusts_two_places_that_may_alias():
-    wired = SquinToWire(assume_disjoint=True).emit(maybe_the_same_qubit)
-    assert simulate(WireToSquin().emit(wired), 2) == [1, 0, 1]
-
-
 @squin.kernel
 def kick(q: Qubit, k: int) -> int:
     for _ in range(k):
