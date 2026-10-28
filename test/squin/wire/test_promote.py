@@ -2,13 +2,15 @@
 
 import pytest
 from kirin import ir
-from test_roundtrip import CASES, simulate
+from kirin.dialects import func
+from test_roundtrip import CASES, calls, simulate
 
 from bloqade.qubit import stmts as qubit_stmts
 from bloqade.squin.wire import (
     WireToSquin,
     WireValidation,
     stmts as wire_stmts,
+    kernel as wire_kernel,
 )
 from bloqade.squin.wire.lower import lower, layout_of
 from bloqade.squin.wire.promote import promote
@@ -30,9 +32,24 @@ def promoted(kernel: ir.Method) -> ir.Method:
 
 
 def survivors(mt: ir.Method) -> int:
-    """Return the count of `Unwrap` and `Wrap` statements left in `mt`."""
-    kinds = (wire_stmts.Unwrap, wire_stmts.Wrap)
-    return sum(isinstance(node, kinds) for node in mt.callable_region.walk())
+    """Return the count of qubit reference accesses left in `mt` and its callees."""
+    kinds = (
+        wire_stmts.Unwrap,
+        wire_stmts.Wrap,
+        wire_stmts.UnwrapRegister,
+        wire_stmts.WrapRegister,
+    )
+    count, seen, todo = 0, set(), [mt]
+    while todo:
+        method = todo.pop()
+        if method in seen:
+            continue
+        seen.add(method)
+        for node in method.callable_region.walk():
+            count += isinstance(node, kinds)
+            if isinstance(node, func.Invoke) and node.callee.dialects is wire_kernel:
+                todo.append(node.callee)
+    return count
 
 
 @pytest.mark.parametrize("kernel, args, expected", CASES)
@@ -47,16 +64,12 @@ def test_a_promoted_kernel_gives_the_same_result_after_the_way_back(
     assert simulate(WireToSquin().emit(promoted(kernel)), *args) == expected
 
 
-FULLY_PROMOTED = [
-    case
-    for case in CASES
-    if case[0].sym_name
-    in {"measured_branch", "born_inside", "through_calls", "cancelling", "two_ancillas"}
-]
-
-
-@pytest.mark.parametrize("kernel, args, expected", FULLY_PROMOTED)
-def test_a_kernel_of_single_qubits_promotes_completely(kernel, args, expected):
+@pytest.mark.parametrize("kernel, args, expected", [*CASES, (calls, (), None)])
+def test_a_kernel_promotes_completely(kernel, args, expected):
     mt = promoted(kernel)
     assert survivors(mt) == 0
     assert not any(isinstance(n, qubit_stmts.New) for n in mt.callable_region.walk())
+
+
+def test_a_borrowing_call_gives_the_same_result_after_promotion():
+    assert simulate(WireToSquin().emit(promoted(calls))) == [[1, 0, 1, 1, 1], 4]

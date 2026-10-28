@@ -1,11 +1,13 @@
 """Promote the `Unwrap` and `Wrap` of a lowered kernel to wires, as MLIR's `mem2reg` does.
 
-A slot is a place whose qubit can travel as one wire. One qubit is a slot, and so
-is each item of a `qalloc` register of static length that the kernel only reads
-at constant indices. Such a register splits into one slot per qubit, as SROA
-splits an aggregate. Every other place keeps its `Unwrap` and `Wrap`.
+A slot is a place whose qubits can travel as one wire or one register. One qubit
+is a slot, and so is each item of a `qalloc` register of static length that the
+kernel only reads at constant indices. Such a register splits into one slot per
+qubit, as SROA splits an aggregate. Any other register is one slot as a whole.
+`RegisterAccesses` first turns each qubit access of such a register into a
+`Borrow` or a `Release` on the register.
 
-The promotion runs in three steps, each a kirin rewrite rule:
+The promotion then runs in three steps, each a kirin rewrite rule:
 
 1. `Boundaries` makes every slot that crosses a loop or a branch explicit. A loop
    carries the slot as a wire, with an `Unwrap` before it and a `Wrap` after it.
@@ -36,6 +38,8 @@ from bloqade.analysis.reference import (
     Slot,
     Place,
     Whole,
+    Affine,
+    Register,
     Returned,
     disjoint,
     origin_of,
@@ -50,11 +54,13 @@ from bloqade.squin.analysis.reference import (
     QubitReferenceAnalysis,
     qubit_register_length,
 )
+from bloqade.analysis.reference.layout import flat
 from bloqade.analysis.reference.analysis import encloses
 
 from . import stmts
+from .index import index_value
 from .lower import Layout
-from .types import WireType
+from .types import WireType, RegisterType
 from .reference_check import same_place
 
 TAKE = (stmts.Unwrap, stmts.UnwrapRegister)
@@ -85,7 +91,7 @@ def allocation(root: Root) -> ir.Statement | None:
     if isinstance(root, Returned):
         return root.call if root.call.callee is qalloc else None
     owner = root.owner
-    if isinstance(owner, (qubit_stmts.New, stmts.Reference)):
+    if isinstance(owner, (qubit_stmts.New, stmts.Reference, stmts.ReferenceRegister)):
         return owner
     return None
 
@@ -116,17 +122,85 @@ class SlotPolicy:
         return all(isinstance(p, Slot) and p.index.constant is not None for p in places)
 
     def slot(self, ref: Ref | None) -> Place | None:
-        """Return `ref` if it is a slot, and None otherwise."""
-        if isinstance(ref, Place) and ref.one_item and self.scalar_root(ref.root):
+        """Return `ref` if it is a slot, and None otherwise.
+
+        One qubit of a root that splits is a slot. So is a whole register of a
+        root that stays one register.
+        """
+        if not isinstance(ref, Place) or root_value(ref.root) is None:
+            return None
+        if ref.one_item:
+            return ref if self.scalar_root(ref.root) else None
+        if isinstance(ref, Register) and not self.scalar_root(ref.root):
             return ref
         return None
+
+
+def take_out(ref: ir.SSAValue, slot: Place, before: ir.Statement) -> ir.SSAValue:
+    """Insert the statement that takes the slot `slot` of `ref` out, and return it."""
+    if slot.one_item:
+        return _put(stmts.Unwrap(ref), before).wire
+    return _put(stmts.UnwrapRegister(ref), before).register
+
+
+def put_back(
+    ref: ir.SSAValue, slot: Place, value: ir.SSAValue, before: ir.Statement
+) -> None:
+    """Insert the statement that puts `value` back into the slot `slot` of `ref`."""
+    if slot.one_item:
+        _put(stmts.Wrap(ref, value), before)
+    else:
+        _put(stmts.WrapRegister(ref, value), before)
+
+
+def linear_type(slot: Place) -> types.TypeAttribute:
+    """Return the type of the wire or register that carries the slot `slot`."""
+    return WireType if slot.one_item else RegisterType
+
+
+@dataclass
+class RegisterAccesses(RewriteRule):
+    """Turn each qubit access of a register that stays whole into a register access.
+
+    `Unwrap(qs[i])` becomes `UnwrapRegister(qs)`, `Borrow` at `i` and
+    `WrapRegister(qs)`. `Wrap(qs[i], w)` becomes `UnwrapRegister(qs)`, `Release`
+    of `w` at `i` and `WrapRegister(qs)`. The register itself is then one slot.
+    """
+
+    refs: Mapping[ir.SSAValue, Ref]
+    policy: SlotPolicy
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Rewrite `node` if it takes out or puts back one qubit of such a register."""
+        if not isinstance(node, (stmts.Unwrap, stmts.Wrap)):
+            return RewriteResult()
+        place = self.refs.get(node.qubit)
+        if not isinstance(place, Place) or not place.path:
+            return RewriteResult()
+        if self.policy.scalar_root(place.root):
+            return RewriteResult()
+        register = root_value(place.root)
+        at = flat(place)
+        if register is None or not isinstance(at, Affine):
+            return RewriteResult()
+        index = index_value(at, node)
+        whole = _put(stmts.UnwrapRegister(register), node).register
+        if isinstance(node, stmts.Unwrap):
+            borrow = _put(stmts.Borrow(whole, index), node)
+            _put(stmts.WrapRegister(register, borrow.register_out), node)
+            node.wire.replace_by(borrow.wire)
+        else:
+            release = _put(stmts.Release(whole, index, node.wire), node)
+            _put(stmts.WrapRegister(register, release.register_out), node)
+        node.delete()
+        return RewriteResult(has_done_something=True)
 
 
 def reference(place: Place, before: ir.Statement) -> ir.SSAValue:
     """Insert a reference to the slot `place` before `before`, and return it."""
     value = root_value(place.root)
     assert value is not None
-    if isinstance(place, Whole):
+    if isinstance(place, (Whole, Register)):
         return value
     assert isinstance(place, Slot) and place.index.constant is not None
     at = _put(py.Constant(place.index.constant), before)
@@ -170,24 +244,28 @@ class Boundaries(RewriteRule):
         if not carried:
             return RewriteResult()
         refs = [reference(place, node) for place in carried]
-        starts = [_put(stmts.Unwrap(ref), node).wire for ref in refs]
+        starts = [take_out(ref, slot, node) for ref, slot in zip(refs, carried)]
         if isinstance(node, scf.For):
-            made = self.loop(node, refs, starts)
+            made = self.loop(node, carried, refs, starts)
         else:
-            made = self.branch(node, refs, starts)
+            made = self.branch(node, carried, refs, starts)
         kept = len(node.results)
         for old, new in zip(node.results, made.results[:kept], strict=True):
             old.replace_by(new)
         after = node.next_stmt
         assert after is not None
-        for ref, result in zip(refs, made.results[kept:], strict=True):
-            _put(stmts.Wrap(ref, result), after)
+        outs = zip(carried, refs, made.results[kept:], strict=True)
+        for slot, ref, result in outs:
+            put_back(ref, slot, result, after)
         node.delete()
         return RewriteResult(has_done_something=True)
 
     @staticmethod
     def enclose(
-        block: ir.Block, refs: list[ir.SSAValue], wires: list[ir.SSAValue]
+        block: ir.Block,
+        slots: list[Place],
+        refs: list[ir.SSAValue],
+        wires: list[ir.SSAValue],
     ) -> None:
         """Put `wires` into `refs` at the start of `block`, and take them out at its end.
 
@@ -195,28 +273,36 @@ class Boundaries(RewriteRule):
         """
         first = block.first_stmt
         assert first is not None
-        for ref, wire in zip(refs, wires, strict=True):
-            _put(stmts.Wrap(ref, wire), first)
+        for slot, ref, wire in zip(slots, refs, wires, strict=True):
+            put_back(ref, slot, wire, first)
         returned = block.last_stmt
         assert isinstance(returned, scf.Yield)
-        outs = [_put(stmts.Unwrap(ref), returned).wire for ref in refs]
+        outs = [take_out(ref, slot, returned) for slot, ref in zip(slots, refs)]
         _put(scf.Yield(*returned.values, *outs), returned)
         returned.delete()
 
     def loop(
-        self, node: scf.For, refs: list[ir.SSAValue], starts: list[ir.SSAValue]
+        self,
+        node: scf.For,
+        slots: list[Place],
+        refs: list[ir.SSAValue],
+        starts: list[ir.SSAValue],
     ) -> ir.Statement:
         """Return a copy of the loop `node` that carries one wire per slot."""
         block = node.body.blocks[0]
-        args = [block.args.append_from(WireType) for _ in refs]
-        self.enclose(block, refs, args)
+        args = [block.args.append_from(linear_type(slot)) for slot in slots]
+        self.enclose(block, slots, refs, args)
         region = node.body
         region.detach()
         made = scf.For(node.iterable, region, *node.initializers, *starts)
         return _put(made, node)
 
     def branch(
-        self, node: scf.IfElse, refs: list[ir.SSAValue], starts: list[ir.SSAValue]
+        self,
+        node: scf.IfElse,
+        slots: list[Place],
+        refs: list[ir.SSAValue],
+        starts: list[ir.SSAValue],
     ) -> ir.Statement:
         """Return a copy of the branch `node` whose bodies read and yield the wires."""
         for region in (node.then_body, node.else_body):
@@ -225,7 +311,7 @@ class Boundaries(RewriteRule):
                 block.args.append_from(node.cond.type, "cond")
                 block.stmts.append(scf.Yield())
                 region.blocks.append(block)
-            self.enclose(region.blocks[0], refs, starts)
+            self.enclose(region.blocks[0], slots, refs, starts)
         then_body, else_body = node.then_body, node.else_body
         then_body.detach()
         else_body.detach()
@@ -284,17 +370,17 @@ class Forward(RewriteRule):
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Forward the wire of an earlier `Wrap` to `node`, if `node` is an `Unwrap`."""
-        if not isinstance(node, stmts.Unwrap) or node.parent_block is None:
+        if not isinstance(node, TAKE) or node.parent_block is None:
             return RewriteResult()
-        slot = self.policy.slot(self.scan.place(node.qubit))
+        slot = self.policy.slot(self.scan.place(node.args[0]))
         if slot is None:
             return RewriteResult()
         stmt = node.prev_stmt
         while stmt is not None:
-            if isinstance(stmt, stmts.Wrap):
-                other = self.scan.place(stmt.qubit)
+            if isinstance(stmt, PUT):
+                other = self.scan.place(stmt.args[0])
                 if other is not None and same_place(slot, other):
-                    node.wire.replace_by(stmt.wire)
+                    node.results[0].replace_by(stmt.args[1])
                     node.delete()
                     stmt.delete()
                     return RewriteResult(has_done_something=True)
@@ -334,8 +420,9 @@ def _local(root: Root, block: ir.Block) -> bool:
 class MaterializeStart(RewriteRule):
     """Turn the first `Unwrap` of a slot into its allocation or its parameter.
 
-    A slot whose root the block allocates gets an `Alloc`. A qubit parameter of the
-    function becomes a wire parameter.
+    A slot whose root the block allocates gets an `Alloc` or an `AllocRegister`. A
+    qubit or register parameter of the function becomes a wire or register
+    parameter.
     """
 
     scan: Scan
@@ -343,20 +430,26 @@ class MaterializeStart(RewriteRule):
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Rewrite `node` if it is the first access to its slot in its block."""
-        if not isinstance(node, stmts.Unwrap) or node.parent_block is None:
+        if not isinstance(node, TAKE) or node.parent_block is None:
             return RewriteResult()
-        slot = self.policy.slot(self.scan.place(node.qubit))
+        slot = self.policy.slot(self.scan.place(node.args[0]))
         if slot is None or not _first(node, self.scan, slot):
             return RewriteResult()
         block = node.parent_block
         root = slot.root
+        made = allocation(root)
         if _local(root, block):
-            if isinstance(allocation(root), stmts.Reference):
+            if isinstance(made, (stmts.Reference, stmts.ReferenceRegister)):
                 return RewriteResult()
-            node.wire.replace_by(_put(stmts.Alloc(), node).result)
+            if slot.one_item:
+                fresh = _put(stmts.Alloc(), node).result
+            else:
+                assert isinstance(made, func.Invoke)
+                fresh = _put(stmts.AllocRegister(made.inputs[0]), node).result
+            node.results[0].replace_by(fresh)
         elif self.parameter(root, block) and len(root.uses) == 1:
-            root.type = WireType
-            node.wire.replace_by(root)
+            root.type = linear_type(slot)
+            node.results[0].replace_by(root)
         else:
             return RewriteResult()
         node.delete()
@@ -382,14 +475,17 @@ class MaterializeEnd(RewriteRule):
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Rewrite `node` if it is the last access to a local slot in its block."""
-        if not isinstance(node, stmts.Wrap) or node.parent_block is None:
+        if not isinstance(node, PUT) or node.parent_block is None:
             return RewriteResult()
-        slot = self.policy.slot(self.scan.place(node.qubit))
+        slot = self.policy.slot(self.scan.place(node.args[0]))
         if slot is None or not _local(slot.root, node.parent_block):
             return RewriteResult()
         if not _last(node, self.scan, slot):
             return RewriteResult()
-        _put(stmts.Free(node.wire), node)
+        if slot.one_item:
+            _put(stmts.Free(node.args[1]), node)
+        else:
+            _put(stmts.FreeRegister(node.args[1]), node)
         node.delete()
         return RewriteResult(has_done_something=True)
 
@@ -444,7 +540,8 @@ class DeadAllocations(RewriteRule):
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Remove `node` if it allocates a reference without uses."""
-        dead = isinstance(node, (qubit_stmts.New, stmts.Reference)) or (
+        fresh = (qubit_stmts.New, stmts.Reference, stmts.ReferenceRegister)
+        dead = isinstance(node, fresh) or (
             isinstance(node, func.Invoke) and node.callee is qalloc
         )
         if not dead or node.results[0].uses:
@@ -468,11 +565,23 @@ def promote(method: ir.Method, layout: Layout | None = None) -> RewriteResult:
     """
     refs, effects = analyze(method)
     policy = SlotPolicy(effects.accessed)
-    result = Walk(Boundaries(effects.effects, policy)).rewrite(method.code)
+    result = Walk(RegisterAccesses(refs, policy)).rewrite(method.code)
+    refs, effects = analyze(method)
+    policy = SlotPolicy(effects.accessed)
+    result = Walk(Boundaries(effects.effects, policy)).rewrite(method.code).join(result)
     refs, effects = analyze(method)
     policy = SlotPolicy(effects.accessed)
     scan = Scan(refs, effects.effects)
     result = Fixpoint(Walk(Forward(scan, policy))).rewrite(method.code).join(result)
+    # The reads `qs[i]` of the promoted accesses are dead now, and loops still
+    # carry the references that kirin's lowering added. A parameter becomes a wire
+    # parameter only when its last use is the `Unwrap` that takes it out.
+    tidy = Chain(DeadCodeElimination(), DropInvariantReferences())
+    result = Fixpoint(Walk(tidy)).rewrite(method.code).join(result)
+    # `DropInvariantReferences` rebuilds loops, so the effects need a fresh run.
+    refs, effects = analyze(method)
+    policy = SlotPolicy(effects.accessed)
+    scan = Scan(refs, effects.effects)
     ends = Chain(MaterializeStart(scan, policy), MaterializeEnd(scan, policy))
     result = Fixpoint(Walk(ends)).rewrite(method.code).join(result)
     cleanup = Chain(DeadCodeElimination(), DropInvariantReferences(), DeadAllocations())
