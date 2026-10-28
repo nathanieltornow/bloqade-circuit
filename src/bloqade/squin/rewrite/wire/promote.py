@@ -1,8 +1,8 @@
-"""Apply a completed reference-promotion plan with Kirin rewrite rules.
+"""Thread current wire values through reference accesses and structured regions.
 
-Analysis decides every allocation, transfer and control-flow connection before this module mutates the program.
-The rewrite first creates loop arguments, then applies planned operations in region order.
-Cleanup removes reference expressions whose quantum accesses the plan replaced.
+Each region owns a rewrite state with its current values and outstanding register borrows.
+The rewrite visits statements in source order and creates actual wire values immediately.
+Loop and branch rules visit their bodies with separate states, then connect their final values.
 """
 
 from typing import TypeVar
@@ -13,110 +13,250 @@ from kirin.rewrite import Walk, Chain, DeadCodeElimination
 from kirin.dialects import scf, func
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
+from bloqade.squin.wire import stmts
+from bloqade.squin.wire.types import WireType
 from bloqade.squin.wire.errors import WireConversionError
+from bloqade.squin.wire.traits import ReferenceAccess
+from bloqade.analysis.reference import Root, Place, Affine
+from bloqade.analysis.reference.index import Sym, same
 from bloqade.squin.analysis.reference import holds_qubits
 from bloqade.squin.rewrite.wire.index import index_value
 from bloqade.squin.rewrite.wire.lower import Layout
 from bloqade.squin.rewrite.wire.driver import CheckedFixpoint
+from bloqade.analysis.reference.queries import flat
 from bloqade.analysis.reference.analysis import encloses
-from bloqade.squin.analysis.wire.promotion import Value, PromotionPlan, plan_promotion
+from bloqade.squin.analysis.wire.promotion import PromotionInfo, analyze_promotion
 
 _S = TypeVar("_S", bound=ir.Statement)
 
 
 def _put(stmt: _S, before: ir.Statement) -> _S:
-    """Insert the statement at its planned program position."""
+    """Insert the statement before the access or boundary that requires it."""
     stmt.insert_before(before)
     return stmt
 
 
+@dataclass(frozen=True)
+class Contents:
+    """Hold a current wire value and the indices of outstanding register borrows.
+
+    A missing value means that an unwrap transferred the whole allocation to an explicit wire.
+    A later wrap must restore the value before another reference access.
+    """
+
+    value: ir.SSAValue | None
+    borrowed: frozenset[Affine] = frozenset()
+
+
 @dataclass
-class ApplyPromotion(RewriteRule):
-    """Resolve symbolic definitions and apply the precomputed promotion decisions."""
+class PromoteReferences(RewriteRule):
+    """Replace reference transfers in source order within one structured region.
 
-    plan: PromotionPlan
-    values: dict[Value, ir.SSAValue] = field(default_factory=dict)
+    Nested regions get separate copies of the incoming state.
+    The shared index substitutions preserve reference facts when region results change.
+    """
 
-    def resolve(self, value: Value) -> ir.SSAValue:
-        """Resolve a planned definition or a replaced source value to its current SSA value."""
-        if value in self.values:
-            return self.values[value]
-        if isinstance(value, ir.SSAValue) and value in self.plan.replacements:
-            return self.resolve(self.plan.replacements[value])
-        if isinstance(value, ir.SSAValue):
-            return value
-        raise ValueError(
-            "The promotion plan uses a definition before its construction."
-        )
+    info: PromotionInfo
+    contents: dict[Root, Contents] = field(default_factory=dict)
+    local: list[Root] = field(default_factory=list)
+    substitutions: dict[Sym, Affine] = field(default_factory=dict)
 
-    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
-        """Insert planned operations, connect region outputs, and remove reference transfers."""
+    def walk(self, region: ir.Region) -> RewriteResult:
+        """Visit this region once and let each structured operation visit its own bodies."""
+        if len(region.blocks) != 1:
+            raise WireConversionError(
+                "Promotion requires a single block in each structured region."
+            )
+        return Walk(
+            self, skip=lambda node: isinstance(node, ir.Region) and node is not region
+        ).rewrite(region)
+
+    def require(self, root: Root, *, restored=False) -> Contents:
+        """Require an available value and optionally require every borrowed element to be present."""
+        state = self.contents.get(root)
+        if state is None or state.value is None:
+            raise WireConversionError(
+                f"Promotion requires an available value for {root!r}."
+            )
+        if restored and state.borrowed:
+            raise WireConversionError(
+                f"Promotion requires every borrowed element of {root!r} at the region boundary."
+            )
+        return state
+
+    def value(self, root: Root) -> ir.SSAValue:
+        """Return a fully restored value for a region boundary."""
+        state = self.require(root, restored=True)
+        assert state.value is not None
+        return state.value
+
+    def finish(self, node: ir.Statement) -> RewriteResult:
+        """Free the allocations that this region still owns at its exit."""
         changed = False
-        for operation in self.plan.before.get(node, ()):
-            args = tuple(self.resolve(value) for value in operation.operands)
-            if operation.index is not None:
-                index = index_value(operation.index, node)
-                args = (args[0], index, *args[1:])
-            made = _put(operation.kind(*args), node)
-            self.values.update(zip(operation.results, made.results, strict=True))
-            changed = True
-        if isinstance(node, scf.Yield) and node in self.plan.yields:
-            values = tuple(self.resolve(value) for value in self.plan.yields[node])
-            _put(scf.Yield(*node.values, *values), node)
-            node.delete()
-            return RewriteResult(has_done_something=True)
-        if region := self.plan.regions.get(node):
-            count = len(node.results)
-            if isinstance(node, scf.For):
-                body = node.body
-                body.detach()
-                made = _put(
-                    scf.For(
-                        node.iterable,
-                        body,
-                        *node.initializers,
-                        *(self.resolve(value) for value in region.inputs),
-                    ),
-                    node,
-                )
-            else:
-                assert isinstance(node, scf.IfElse)
-                then_body, else_body = node.then_body, node.else_body
-                then_body.detach()
-                else_body.detach()
-                made = _put(scf.IfElse(node.cond, then_body, else_body), node)
-            for old, new in zip(node.results, made.results[:count], strict=True):
-                self.values[old] = new
-                old.replace_by(new)
-            self.values.update(zip(region.results, made.results[count:], strict=True))
-            node.delete()
-            return RewriteResult(has_done_something=True)
-        if node in self.plan.removed:
-            for value in node.results:
-                replacement = self.resolve(value)
-                self.values[value] = replacement
-                value.replace_by(replacement)
-            node.delete()
+        for root in self.local:
+            if self.contents[root].value is None:
+                continue
+            kind = (
+                stmts.Free
+                if self.info.slots[root].type == WireType
+                else stmts.FreeRegister
+            )
+            _put(kind(self.value(root)), node)
+            self.contents[root] = Contents(None)
             changed = True
         return RewriteResult(has_done_something=changed)
 
-
-@dataclass
-class LoopArguments(RewriteRule):
-    """Create the planned loop arguments before rewriting statements that use them."""
-
-    application: ApplyPromotion
-
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
-        """Bind each symbolic iteration value to an appended block argument."""
-        region = self.application.plan.regions.get(node)
-        if region is None or not isinstance(node, scf.For):
-            return RewriteResult()
-        for value in region.arguments:
-            self.application.values[value] = node.body.blocks[0].args.append_from(
-                value.type
+        """Allocate current values, replace transfers, and thread values through region boundaries."""
+        if isinstance(node, scf.For):
+            return self.loop(node)
+        if isinstance(node, scf.IfElse):
+            return self.branch(node)
+        if isinstance(node, (func.Return, scf.Yield)):
+            return self.finish(node)
+        if (
+            ref := self.info.accesses.get(node)
+        ) is not None and ref.root in self.info.slots:
+            return self.transfer(node, ref)
+        if slot := self.info.allocations.get(node):
+            if isinstance(node, (stmts.Reference, stmts.ReferenceRegister)):
+                value = None
+            elif slot.type == WireType:
+                value = _put(stmts.Alloc(), node).result
+            else:
+                assert isinstance(node, func.Invoke)
+                value = _put(stmts.AllocRegister(*node.inputs), node).result
+            self.contents[slot.root] = Contents(value)
+            self.local.append(slot.root)
+            return RewriteResult(has_done_something=value is not None)
+        return RewriteResult()
+
+    def transfer(self, node: ir.Statement, ref: Place) -> RewriteResult:
+        """Replace one transfer using the allocation's current value and borrow state."""
+        access = node.get_trait(ReferenceAccess)
+        assert access is not None
+        root = ref.root
+        if ref.path:
+            index = flat(ref)
+            assert isinstance(index, Affine)
+            state = self.require(root)
+            assert state.value is not None
+            if access.takes:
+                if any(same(index, held) is not False for held in state.borrowed):
+                    raise WireConversionError(
+                        "Promotion requires distinct simultaneous register borrows."
+                    )
+                position = index_value(index.substitute(self.substitutions), node)
+                made = _put(stmts.Borrow(state.value, position), node)
+                access.value(node).replace_by(made.wire)
+                self.contents[root] = Contents(
+                    made.register_out, state.borrowed | {index}
+                )
+            else:
+                if index not in state.borrowed:
+                    raise WireConversionError(
+                        "Promotion requires a matching borrow before a register release."
+                    )
+                position = index_value(index.substitute(self.substitutions), node)
+                released = _put(
+                    stmts.Release(state.value, position, access.value(node)), node
+                )
+                self.contents[root] = Contents(
+                    released.register_out, state.borrowed - {index}
+                )
+        elif access.takes:
+            access.value(node).replace_by(self.value(root))
+            self.contents[root] = Contents(None)
+        else:
+            state = self.contents.get(root)
+            if state is None or state.value is not None:
+                raise WireConversionError(
+                    "Promotion requires an empty reference before a wrap."
+                )
+            self.contents[root] = Contents(access.value(node))
+        node.delete()
+        return RewriteResult(has_done_something=True)
+
+    def crossing(self, node: ir.Statement) -> tuple[Root, ...]:
+        """Select accessed allocations that already exist at this region boundary."""
+        touched = {place.root for place in self.info.touched.get(node, ())}
+        return tuple(
+            root
+            for root in self.info.slots
+            if root in touched and root in self.contents
+        )
+
+    def body(
+        self, region: ir.Region, contents: dict[Root, Contents], roots: tuple[Root, ...]
+    ) -> RewriteResult:
+        """Rewrite one body and append its final outer values to the yield."""
+        if len(region.blocks) != 1 or not isinstance(
+            region.blocks[0].last_stmt, scf.Yield
+        ):
+            raise WireConversionError(
+                "Promotion requires structured bodies to end with a yield."
             )
-        return RewriteResult(has_done_something=bool(region.arguments))
+        inner = PromoteReferences(
+            self.info, dict(contents), substitutions=self.substitutions
+        )
+        result = inner.walk(region)
+        returned = region.blocks[0].last_stmt
+        assert isinstance(returned, scf.Yield)
+        if roots:
+            _put(
+                scf.Yield(*returned.values, *(inner.value(root) for root in roots)),
+                returned,
+            )
+            returned.delete()
+        return result.join(RewriteResult(has_done_something=bool(roots)))
+
+    def replace_region(
+        self, node: ir.Statement, made: ir.Statement, roots: tuple[Root, ...]
+    ) -> RewriteResult:
+        """Connect original results and retain the final values of each outer allocation."""
+        _put(made, node)
+        count = len(node.results)
+        for old, new in zip(node.results, made.results[:count], strict=True):
+            self.substitutions[old] = Affine.of(new)
+            old.replace_by(new)
+        self.contents.update(
+            (root, Contents(value))
+            for root, value in zip(roots, made.results[count:], strict=True)
+        )
+        node.delete()
+        return RewriteResult(has_done_something=True)
+
+    def loop(self, node: scf.For) -> RewriteResult:
+        """Create iteration arguments before visiting the body, then connect its yield and results."""
+        roots = self.crossing(node)
+        inputs = tuple(self.value(root) for root in roots)
+        contents = dict(self.contents)
+        for root in roots:
+            argument = node.body.blocks[0].args.append_from(self.info.slots[root].type)
+            contents[root] = Contents(argument)
+        result = self.body(node.body, contents, roots)
+        if not roots:
+            return result
+        body = node.body
+        body.detach()
+        made = scf.For(node.iterable, body, *node.initializers, *inputs)
+        return self.replace_region(node, made, roots)
+
+    def branch(self, node: scf.IfElse) -> RewriteResult:
+        """Visit both branches from the same incoming state and connect matching result positions."""
+        roots = self.crossing(node)
+        for root in roots:
+            self.value(root)
+        left = self.body(node.then_body, self.contents, roots)
+        right = self.body(node.else_body, self.contents, roots)
+        if not roots:
+            return left.join(right)
+        then_body, else_body = node.then_body, node.else_body
+        then_body.detach()
+        else_body.detach()
+        return self.replace_region(
+            node, scf.IfElse(node.cond, then_body, else_body), roots
+        )
 
 
 class DropInvariantReferences(RewriteRule):
@@ -204,7 +344,7 @@ class DropInvariantReferences(RewriteRule):
 
 @dataclass
 class RemovePromotedAllocations(RewriteRule):
-    """Remove reference allocations after their planned wire allocations replace every use."""
+    """Remove reference allocations after wire allocations replace every use."""
 
     allocations: set[ir.Statement]
 
@@ -216,17 +356,19 @@ class RemovePromotedAllocations(RewriteRule):
         return RewriteResult(has_done_something=True)
 
 
-def apply_promotion(method: ir.Method, plan: PromotionPlan) -> RewriteResult:
-    """Apply a plan to its unchanged source method and remove dead reference expressions."""
-    if plan.code is not method.code or plan.applied:
-        raise WireConversionError(
-            "Apply a promotion plan once to the method that supplied it."
-        )
-    plan.applied = True
-    rewrite = ApplyPromotion(plan)
-    result = Walk(LoopArguments(rewrite)).rewrite(method.code)
-    result = Walk(rewrite).rewrite(method.code).join(result)
-    allocations = {slot.allocation for slot in plan.slots.values()}
+def promote(method: ir.Method, layout: Layout | None = None) -> RewriteResult:
+    """Analyze references once, thread current values, and remove unused reference expressions.
+
+    The rewrite changes the method in place and can fail after a partial rewrite.
+    SquinToWire applies this rewrite to copies so failures preserve the source methods.
+    """
+    info = analyze_promotion(method)
+    result = (
+        PromoteReferences(info).walk(method.callable_region)
+        if info.slots
+        else RewriteResult()
+    )
+    allocations = {slot.allocation for slot in info.slots.values()}
     cleanup = Chain(
         DeadCodeElimination(),
         DropInvariantReferences(),
@@ -237,13 +379,6 @@ def apply_promotion(method: ir.Method, plan: PromotionPlan) -> RewriteResult:
         raise WireConversionError(
             "Promotion left a live reference to a selected allocation."
         )
-    return result
-
-
-def promote(method: ir.Method, layout: Layout | None = None) -> RewriteResult:
-    """Plan promotion without mutation, then apply the complete plan once."""
-    plan = plan_promotion(method)
-    result = apply_promotion(method, plan)
     if layout is not None:
         retype(method, layout)
     return result
