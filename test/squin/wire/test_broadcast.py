@@ -12,7 +12,6 @@ from test_roundtrip import simulate
 from bloqade import squin, native
 from bloqade.types import Qubit
 from bloqade.pyqrack import DynamicMemorySimulator
-from bloqade.squin.passes.wire import Simplify
 from bloqade.squin.wire.traits import Twin
 from bloqade.native.dialects.gate import stmts as native_stmts
 from bloqade.squin.passes.squin_to_wire import SquinToWire, remaining
@@ -127,7 +126,6 @@ def test_runtime_broadcasts_promote_completely_and_preserve_results(kernel, bit,
     assert converter.report == []
     assert remaining(wired) == []
     assert any(isinstance(node, scf.For) for node in wired.callable_region.walk())
-    Simplify(wired.dialects)(wired)
     WireValidation().check(wired)
     back = WireToSquin().emit(wired)
     back.verify_type()

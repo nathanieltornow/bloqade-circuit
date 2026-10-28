@@ -12,12 +12,11 @@ The quantum state can span several entangled qubits.
 `bloqade.squin.analysis.wire` computes the facts that promotion needs.
 `bloqade.squin.analysis.validation.wire` checks the wire contracts.
 `bloqade.squin.rewrite.wire` contains the transformation rules.
-`bloqade.squin.passes` contains the conversion and optimization entry points.
+`bloqade.squin.passes` contains the conversion entry points.
 
 ```python
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
-from bloqade.squin.passes.wire import Simplify, ReuseQubits
 ```
 
 ## The semantic contract

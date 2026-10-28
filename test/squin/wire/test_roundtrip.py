@@ -10,11 +10,9 @@ from kirin.dialects import scf, func, ilist
 from bloqade import squin
 from bloqade.types import Qubit, MeasurementResult
 from bloqade.pyqrack import DynamicMemorySimulator
-from bloqade.squin.wire import WireType, WireConversionError, stmts as wire_stmts
-from bloqade.squin.passes.wire import Simplify, ReuseQubits
+from bloqade.squin.wire import WireType, WireConversionError
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
-from bloqade.squin.analysis.validation.wire import WireValidation
 
 
 def plain(value):
@@ -32,16 +30,9 @@ def simulate(kernel: ir.Method, *args):
     return plain(DynamicMemorySimulator().run(kernel, args=args))
 
 
-def trip(kernel: ir.Method, *, optimize: bool) -> ir.Method:
-    """Return the squin kernel that comes back from wire squin.
-
-    If `optimize` is True, the wire passes run before the trip back.
-    """
+def trip(kernel: ir.Method) -> ir.Method:
+    """Convert the kernel to wire squin and back to squin."""
     wired = SquinToWire().emit(kernel)
-    if optimize:
-        Simplify(wired.dialects)(wired)
-        ReuseQubits(wired.dialects)(wired)
-        WireValidation().check(wired)
     return WireToSquin().emit(wired)
 
 
@@ -214,28 +205,16 @@ CASES = [
 ]
 
 
-@pytest.mark.parametrize("optimize", [False, True])
 @pytest.mark.parametrize("kernel, args, expected", CASES)
-def test_a_kernel_gives_the_same_result_after_the_trip(
-    kernel, args, expected, optimize
-):
+def test_a_kernel_gives_the_same_result_after_the_trip(kernel, args, expected):
     assert simulate(kernel, *args) == expected
-    assert simulate(trip(kernel, optimize=optimize), *args) == expected
+    assert simulate(trip(kernel), *args) == expected
 
 
 def test_the_conversion_leaves_the_kernel_as_it_is():
     before = ladder.code.print_str()
     SquinToWire().emit(ladder)
     assert ladder.code.print_str() == before
-
-
-def test_the_reuse_pass_turns_a_second_allocation_into_a_reset():
-    wired = SquinToWire().emit(two_ancillas)
-    ReuseQubits(wired.dialects)(wired)
-    allocs = [
-        s for s in wired.callable_region.walk() if isinstance(s, wire_stmts.Alloc)
-    ]
-    assert len(allocs) == 1
 
 
 @squin.kernel
@@ -310,8 +289,7 @@ def test_a_call_with_qubit_arguments_stays_a_borrowing_call():
 def test_a_borrowing_call_gives_the_same_result_after_the_trip():
     expected = [[1, 0, 1, 1, 1], 4]
     assert simulate(calls) == expected
-    assert simulate(trip(calls, optimize=False)) == expected
-    assert simulate(trip(calls, optimize=True)) == expected
+    assert simulate(trip(calls)) == expected
 
 
 @squin.kernel
