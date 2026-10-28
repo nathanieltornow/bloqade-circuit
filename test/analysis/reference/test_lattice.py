@@ -178,12 +178,17 @@ def reason(ref) -> str | None:
     return ref.reason if isinstance(ref, Unknown) else None
 
 
-def test_returns_the_lattice_cannot_root():
+def test_returns_of_lists_and_of_owned_slots():
+    """A qubit in a returned list has a path, and a slot of an owned register has none.
+
+    The caller can name a member of a returned list. The caller cannot name the
+    register that `returns_element` allocates, because the callee keeps it.
+    """
     mt, refs = analyzed(reads_returned_list)
     (h,) = calls(mt, "h")
-    assert (
-        reason(refs[h.inputs[0]]) == "a root returned inside a list or a nested tuple"
-    )
+    (call,) = calls(mt, "returns_list")
+    ref = refs[h.inputs[0]]
+    assert isinstance(ref, Whole) and ref.root.call is call and ref.root.path == (0, 0)
     mt, refs = analyzed(reads_returned_element)
     (h,) = calls(mt, "h")
     assert reason(refs[h.inputs[0]]) == "a root that the callee owns"

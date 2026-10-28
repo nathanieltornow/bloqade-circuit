@@ -1,7 +1,7 @@
 """Test reference tracking through allocations, calls, indexing, and loops."""
 
 import math
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from kirin import types
@@ -11,9 +11,12 @@ from bloqade import squin
 from bloqade.types import Qubit, QubitType, MeasurementResult
 from bloqade.analysis.reference import (
     UNTRACKED,
+    Part,
     Slot,
     Items,
+    Slice,
     Whole,
+    Affine,
     Bottom,
     Unknown,
     Register,
@@ -138,7 +141,9 @@ def test_parameters_allocations_and_elements():
     _, qs, i = mt.callable_region.blocks[0].args
     assert refs[qs] == Register(qs) and refs[i] == UNTRACKED
     cx = calls(mt, "cx")
-    assert [refs[v] for v in cx[0].inputs] == [Slot(qs, 1), Slot(qs, -1)]
+    first, last = (refs[v] for v in cx[0].inputs)
+    assert first == Slot(qs, 1)
+    assert reason(last) == "a negative index into a register of unknown length"
     (new,) = calls(mt, "new")
     fresh = Whole(returned(refs, new))
     assert [refs[v] for v in cx[1].inputs] == [Slot(qs, i), fresh]
@@ -167,8 +172,9 @@ def reason(ref) -> str | None:
 
 def test_unknowns_carry_their_reason():
     mt, refs = refs_of(bad_reads)
+    (qs,) = allocations(mt, refs)
     (x,) = calls(mt, "x")
-    assert reason(refs[x.inputs[0]]) == "a slice of a register"
+    assert refs[x.inputs[0]] == Part(qs, (Slice(Affine(0), 1, Affine(2)),))
     (h,) = calls(mt, "h")
     assert reason(refs[h.inputs[0]]) == "a constant index out of range"
 
@@ -234,7 +240,7 @@ def test_a_returned_register_keeps_its_static_length():
     first, second = (refs[v] for v in cx.inputs)
     assert isinstance(first, Slot) and isinstance(second, Slot)
     assert first.root == second.root
-    assert first.index == second.index == 1
+    assert first.index == second.index and first.index.constant == 1
     assert repr(first) == "Slot(%qs = make_pair()[0], 1)"
 
 
@@ -322,14 +328,15 @@ def picks():
 def test_a_slot_at_a_parameter_index_takes_the_argument():
     """A slot keeps a parameter index, so the caller's constant resolves it.
 
-    A literal list has no slots, so a read at a parameter index stays unknown.
+    An affine index such as `i + 1` resolves the same way. A literal list has no
+    slots, so a read at a parameter index stays unknown.
     """
     mt, refs = refs_of(picks)
     (qs,) = allocations(mt, refs)
-    last, first, literal, computed = (refs[h.inputs[0]] for h in calls(mt, "h"))
+    last, first, literal, following = (refs[h.inputs[0]] for h in calls(mt, "h"))
     assert last == Slot(qs, 2) and first == Slot(qs, 0)
     assert reason(literal) == "a list or tuple read at a runtime index"
-    assert reason(computed) == "an item at an index that the callee computes"
+    assert following == Slot(qs, 1)
 
 
 def test_a_function_runs_in_terms_of_its_own_parameters():
@@ -337,6 +344,49 @@ def test_a_function_runs_in_terms_of_its_own_parameters():
     _, result = QubitReferenceAnalysis(mt.dialects).run(mt)
     qs, i = mt.callable_region.blocks[0].args[1:]
     assert result == Slot(qs, i)
+
+
+@squin.kernel
+def flip_pair(ps: ilist.IList[Qubit, Literal[2]]):
+    squin.x(ps[0])
+    squin.x(ps[1])
+
+
+@squin.kernel
+def flips_two_pairs():
+    qs = squin.qalloc(4)
+    flip_pair(qs[1:3])
+    flip_pair(qs[0:2])
+
+
+def test_calls_hold_the_places_inside_each_callee_per_call_site():
+    """Each call keeps the frame of its callee, with the caller's roots."""
+    mt = flips_two_pairs.similar()
+    analysis = QubitReferenceAnalysis(mt.dialects)
+    frame, _ = analysis.run(mt)
+    (qs,) = allocations(mt, frame.entries)
+    middle, front = calls(mt, "flip_pair")
+    callee = middle.callee.callable_region
+    (ps,) = callee.blocks[0].args[1:]
+    first, second = (s.inputs[0] for s in callee.walk() if isinstance(s, func.Invoke))
+    inner = analysis.calls[middle].entries
+    assert inner[ps] == Part(qs, (Slice(Affine(1), 1, Affine(2)),))
+    assert (inner[first], inner[second]) == (Slot(qs, 1), Slot(qs, 2))
+    inner = analysis.calls[front].entries
+    assert (inner[first], inner[second]) == (Slot(qs, 0), Slot(qs, 1))
+    assert all(value not in frame.entries for value in (ps, first, second))
+
+
+def test_a_call_keeps_the_parameter_symbols_of_its_callee():
+    """`pick(qs, -1)` reads `qs[i]` at the symbol `i` of the callee."""
+    mt = picks.similar()
+    analysis = QubitReferenceAnalysis(mt.dialects)
+    frame, _ = analysis.run(mt)
+    (qs,) = allocations(mt, frame.entries)
+    call = calls(mt, "pick")[0]
+    _, i = call.callee.callable_region.blocks[0].args[1:]
+    (read,) = statements(call.callee, py.GetItem)
+    assert analysis.calls[call].entries[read.result] == Slot(qs, i)
 
 
 @squin.kernel
@@ -353,26 +403,47 @@ def reads_nested_pair() -> Qubit:
     return inner[0]
 
 
-def test_a_root_inside_a_nested_tuple_is_unknown():
-    """`Returned` names a position of the result, and a nested tuple has none."""
+def test_a_root_inside_a_nested_tuple_has_a_path():
+    """`Returned` names the output position and then the member of the inner tuple."""
     mt, refs = refs_of(reads_nested_pair)
     (call,) = calls(mt, "nested_pair")
     ref = refs[call.result]
     assert isinstance(ref, Positions)
-    assert (
-        reason(ref.refs[0].refs[0]) == "a root returned inside a list or a nested tuple"
-    )
+    first, second = ref.refs[0].refs
+    assert first.root.path == (0, 0) and second.root.path == (0, 1)
+    assert repr(first) == "Whole(%made[0] = nested_pair()[0][0])"
     assert ref.refs[1] == UNTRACKED
+    (ret,) = statements(mt, func.Return)
+    assert refs[ret.value] == first
 
 
 def test_a_bottom_type_is_not_tracked():
     analysis = QubitReferenceAnalysis(squin.kernel)
-    assert analysis.kind(types.Bottom) is None
-    assert analysis.kind(QubitType) is Whole
-    assert analysis.kind(QUBIT_LIST) is Register
+    assert analysis.shape(types.Bottom) is None
+    assert analysis.shape(QubitType) == 0
+    assert analysis.shape(QUBIT_LIST) == 1
 
 
 def test_an_index_into_bottom_stays_bottom():
     """A call that reaches itself reads its result as bottom in the first round."""
     analysis = QubitReferenceAnalysis(squin.kernel)
     assert analysis.index(Bottom(), 0) == Bottom()
+
+
+@squin.kernel
+def indexed_parameter(qs: ilist.IList[Qubit, Any], i: int):
+    return qs[i + 1]
+
+
+def test_reusing_an_analysis_recomputes_indices_after_a_rewrite():
+    method = indexed_parameter.similar()
+    addition = statements(method, py.Add)[0]
+    analysis = QubitReferenceAnalysis(method.dialects)
+    _, before = analysis.run(method)
+    two = py.Constant(2)
+    two.insert_before(addition)
+    addition.rhs = two.result
+    _, after = analysis.run(method)
+    _, fresh = QubitReferenceAnalysis(method.dialects).run(method)
+    assert before != after
+    assert after == fresh

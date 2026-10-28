@@ -11,8 +11,6 @@ from bloqade.constants import constant_int
 from bloqade.analysis.reference import (
     KEY,
     Ref,
-    Whole,
-    Register,
     Returned,
     ReferenceAnalysis,
     items_of,
@@ -29,14 +27,18 @@ class QubitReferenceAnalysis(ReferenceAnalysis):
 
     keys = (KEY, "absint")
 
-    def kind(self, type_: types.TypeAttribute) -> type[Whole] | type[Register] | None:
-        """Return `Whole` for a qubit, `Register` for a list of qubits, else None."""
+    def shape(self, type_: types.TypeAttribute) -> int | None:
+        """Return 0 for a qubit, 1 more for each list level around it, else None.
+
+        So a list of qubits has the shape 1, and a list of lists of qubits has 2.
+        """
         if isinstance(type_, types.BottomType):
             return None
-        if type_.is_subseteq(ilist.IListType[QubitType, types.Any]):
-            return Register
         if type_.is_subseteq(QubitType):
-            return Whole
+            return 0
+        if type_.is_subseteq(ilist.IListType) and isinstance(type_, types.Generic):
+            inner = self.shape(type_.vars[0])
+            return None if inner is None else inner + 1
         return None
 
     def register_length(
@@ -71,3 +73,22 @@ def qubit_items(ref: Ref) -> tuple[Ref, ...] | None:
     length holds one slot per index.
     """
     return items_of(ref, qubit_register_length)
+
+
+def holds_qubits(kind: types.TypeAttribute) -> bool:
+    """Return True if the type `kind` holds qubits, such as `IList[Qubit, 3]`."""
+    if isinstance(kind, types.BottomType):
+        return False
+    if kind.is_subseteq(QubitType):
+        return True
+    if isinstance(kind, types.Union):
+        return any(holds_qubits(member) for member in kind.types)
+    if isinstance(kind, types.TypeVar):
+        return holds_qubits(kind.bound)
+    if isinstance(kind, types.Generic):
+        # The second variable of an `IList` is its length, which holds no qubit.
+        members = kind.vars[:1] if kind.is_subseteq(ilist.IListType) else kind.vars
+        return any(holds_qubits(member) for member in members) or (
+            kind.vararg is not None and holds_qubits(kind.vararg.typ)
+        )
+    return False
