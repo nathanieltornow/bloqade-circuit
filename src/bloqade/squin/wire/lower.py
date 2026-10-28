@@ -29,7 +29,13 @@ from kirin.dialects.py import len as py_len
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade.types import QubitType
-from bloqade.analysis.reference import Ref, Place, Untracked, positions
+from bloqade.analysis.reference import (
+    Ref,
+    Place,
+    Untracked,
+    positions,
+    typed_length,
+)
 from bloqade.squin.analysis.reference import qubit_items
 
 from . import stmts
@@ -148,16 +154,19 @@ class LowerTwins(RewriteRule):
         """Return one reference for each qubit of the list `value`, or None.
 
         A literal list gives its values. Any other list of known length gives the
-        reads `value[k]`.
+        reads `value[k]`. The places give the length, or the type gives it for a
+        reference that the lowering created, such as the register that a call
+        returns.
         """
         if isinstance(made := value.owner, ilist.New):
             return list(made.values)
         ref = self.refs.get(value)
         counted = None if ref is None else qubit_items(ref)
-        if counted is None:
+        size = typed_length(value.type, 0) if counted is None else len(counted)
+        if size is None:
             return None
         items: list[ir.SSAValue] = []
-        for k in range(len(counted)):
+        for k in range(size):
             at = _put(py.Constant(k), before)
             item = _put(py.GetItem(value, at.result), before)
             item.result.type = QubitType
@@ -231,7 +240,11 @@ class LowerCalls(RewriteRule):
         given = [arg for arg, ref in zip(node.inputs, passed) if linear_type(ref)]
         for arg, wire in zip(given, outs[layout.positions :], strict=True):
             give(arg, wire, node)
-        values = [self.reference(out, node) for out in outs[: layout.positions]]
+        places = positions(self.refs.get(node.result, Untracked()), layout.positions)
+        values = [
+            self.reference(out, place, node)
+            for out, place in zip(outs[: layout.positions], places, strict=True)
+        ]
         if not layout.positions:
             node.result.replace_by(_put(func.ConstantNone(), node).result)
         elif not layout.packed:
@@ -257,11 +270,12 @@ class LowerCalls(RewriteRule):
         return items
 
     @staticmethod
-    def reference(value: ir.SSAValue, before: ir.Statement) -> ir.SSAValue:
+    def reference(value: ir.SSAValue, place: Ref, before: ir.Statement) -> ir.SSAValue:
         """Return a reference for a returned wire or register, or `value` itself.
 
         A returned qubit gets a new `Reference` that the wire fills, so the rest of
-        the caller can keep using it as a reference.
+        the caller can keep using it as a reference. A returned register gets a
+        `ReferenceRegister` whose type holds the length that `place` gives.
         """
         if value.type.is_subseteq(WireType):
             fresh = _put(stmts.Reference(), before)
@@ -269,6 +283,9 @@ class LowerCalls(RewriteRule):
             return fresh.result
         if value.type.is_subseteq(RegisterType):
             fresh = _put(stmts.ReferenceRegister(), before)
+            counted = qubit_items(place)
+            size = types.Any if counted is None else types.Literal(len(counted))
+            fresh.result.type = ilist.IListType[QubitType, size]
             _put(stmts.WrapRegister(fresh.result, value), before)
             return fresh.result
         return value
