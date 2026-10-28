@@ -62,7 +62,7 @@ Complete conversion requires every reference transfer to disappear.
 
 ## Conversion state
 
-`Handles` records the meaning of each source value when the converter visits its definition.
+`Handles` belongs to preparation and records the meaning of each source value at its definition.
 A handle contains an allocation identity and an optional register index or slice.
 Literal lists and tuples contain descriptors for their members.
 Nested register parameters use one flat register with their rows in source order.
@@ -73,6 +73,18 @@ An unresolved descriptor retains every possible allocation identity when those i
 For example, both `a = qs[1]` and `b = a` identify element 1 of allocation `qs`.
 A gate changes the current wire for that allocation.
 The handles for `a` and `b` keep the same identity.
+
+`prepare_promotion` gives promotion a `PromotionInput` with concrete locations:
+
+```text
+Whole(allocation)
+Element(allocation, integer_value)
+```
+
+The location table maps each selected transfer to its location.
+Preparation materializes each element index before that transfer, so its integer value is available at the use.
+Preparation retains source shapes, slices, container descriptions and unresolved reference possibilities.
+The input also identifies the selected allocations and source reference results that each boundary can remove.
 
 The region's `current` map stores the latest wire or register value for each allocation.
 Each entry also records the register indices that currently have outstanding borrows.
@@ -89,17 +101,34 @@ The utility lives in `analysis.indices`.
 | Stage | Kirin mechanism | Required result |
 | --- | --- | --- |
 | Normalize | `Inline`, `RewriteRule`, `Walk`, `CheckedFixpoint`, `TypeInfer` | Expose source gates and normalize closures, maps and selected indices. |
-| Prepare | `LowerTransfers`, `RewriteRule`, `Walk` | Resolve source locations and construct explicit transfers around gates, calls and returns. |
-| Promote | `CollectCaptures`, `Promote`, `RewriteRule`, `Walk` | Collect region captures, then replace transfers in source order. |
+| Prepare | `LowerTransfers`, `Walk`, `prepare_promotion` | Create transfers, resolve their locations and materialize integer indices. |
+| Promote | `RewriteRule`, `Chain`, `Walk` | Replace transfers and carry available wires through region boundaries in source order. |
 | Clean up | Tuple projection and dead-code elimination | Remove obsolete source references and allocations. |
 | Check | `ConversionTarget`, `ValidationPass`, `ValidationSuite` | Enforce complete conversion and every wire ownership contract. |
 
 `rewrite.wire.prepare` owns source normalization decisions, call contracts and partial-conversion retries.
 `rewrite.wire.promote` consumes prepared transfers and source locations.
-Its state holds the selected allocations, region maps, boundary captures and replacement index symbols.
-A capture identifies an allocation that a region uses from an enclosing scope.
+Its mutable state holds region maps, boundary allocation order and replacements for old SSA results.
+When a header creates new results, the replacement map updates prepared indices that directly name its old results.
+Each boundary stores its allocation order as a tuple.
 
-The promotion driver uses `Walk(Promote(state), region_first=True)` once.
+The promotion driver applies this chain once:
+
+```python
+rules = Chain(
+    PromoteEntry(state),
+    PromoteAllocation(state),
+    PromoteBoundary(state),
+    PromoteUnwrap(state),
+    PromoteWrap(state),
+    PromoteYield(state),
+    PromoteReturn(state),
+)
+Walk(rules, region_first=True).rewrite(method.code)
+```
+
+The public converter creates a private method copy before preparation.
+It removes unused source references and checks the conversion target and wire contracts after promotion.
 This Kirin driver schedules each statement before its nested bodies.
 It records the worklist before the first rewrite.
 Every promotion rule must preserve source statements that still await their visit.
@@ -108,8 +137,6 @@ New wire operations already satisfy the output representation and need no promot
 
 The preparation walk can expand a runtime broadcast into a new loop.
 It visits those new statements before promotion records its worklist.
-The capture collector then records each boundary's external allocations in deterministic source order.
-The collector follows explicit source locations through enclosing region boundaries.
 
 The current-value map belongs to the region that contains the next scheduled statement.
 Each transfer updates that map together with its IR change.
@@ -122,6 +149,7 @@ An element unwrap emits `Borrow` and records its index as outstanding.
 An element wrap emits `Release` and removes that outstanding index.
 Every simultaneous operand needs a proof that it names a distinct qubit.
 Every simultaneous register borrow needs a proof that its index differs from outstanding indices.
+`compare_indices` checks the existing integer definitions when promotion borrows or releases an element.
 
 Unknown-length broadcasts become loops during preparation.
 Each iteration lowers a singleton broadcast through the same gate rule.
@@ -129,7 +157,9 @@ Measurement broadcasts carry their classical result list through the loop.
 
 ## Loops and branches
 
-The loop rule carries the allocations that its body captures through extra loop parameters.
+The loop rule carries every available outer allocation through extra loop parameters.
+An unused allocation passes through the body unchanged.
+The header reads these allocations directly from the enclosing current-wire map.
 The header rule creates these parameters and the loop results before the driver visits the body.
 The body starts with the parameters as its current values.
 The yield rule reads the final current values when the driver reaches the original terminator.
@@ -147,8 +177,8 @@ r_after = For(indices, initial=r0):
 FreeRegister(r_after)
 ```
 
-Each branch starts with a separate map of the captured incoming values.
-Both branches yield each captured allocation at the same result position.
+Each branch starts with a separate map of the available incoming values.
+Both branches yield each incoming allocation at the same result position.
 The conditional's results become the enclosing region's current values.
 Every register must contain all its borrowed elements at these boundaries.
 
@@ -205,7 +235,7 @@ A gate that touches a preserved allocation preserves all its operand allocations
 Partial conversion still runs every wire validation pass.
 
 Promotion visits each prepared statement once during one conversion attempt.
-Preparation and capture collection each perform their own traversal.
+Preparation performs its own traversals to lower source operations and build the concrete promotion input.
 Normalization, required inlining, partial retries, cleanup and validation can each perform additional traversals.
 `max_iterations` limits normalization and conversion retries to 32 by default.
 A failure leaves the source method and its source callees unchanged.

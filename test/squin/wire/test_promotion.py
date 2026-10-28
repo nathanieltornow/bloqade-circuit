@@ -1,6 +1,7 @@
 """Check allocation lifetimes and current wire values across structured regions."""
 
 import pytest
+from kirin import ir
 from test_lower import lowered
 from kirin.dialects import py, scf, func
 from test_roundtrip import ladder, simulate
@@ -180,7 +181,7 @@ def test_a_pure_observer_of_a_reference_blocks_its_promotion():
 
 
 def test_promotion_visits_each_prepared_statement_once(monkeypatch):
-    """Check the driver's order while boundary rules move scheduled body statements."""
+    """Check the shared chain's order while boundary rules move scheduled body statements."""
     from test_roundtrip import nested
 
     from bloqade.squin.rewrite.wire import prepare, promote
@@ -188,22 +189,27 @@ def test_promotion_visits_each_prepared_statement_once(monkeypatch):
     expected = []
     visited = []
     run = prepare.promote
-    rewrite = promote.Promote.rewrite_Statement
+    entry = promote.PromoteEntry.rewrite_Statement
+    boundary = promote.PromoteBoundary.rewrite_Statement
 
-    def record_input(method, locations, allocations):
+    def record_input(method, inputs):
         expected.extend(method.code.walk())
-        return run(method, locations, allocations)
+        return run(method, inputs)
 
     def record_visit(rule, node):
         assert node is expected[len(visited)]
         visited.append(node)
+        return entry(rule, node)
+
+    def preserve_children(rule, node):
         children = [child for region in node.regions for child in region.walk()]
-        result = rewrite(rule, node)
+        result = boundary(rule, node)
         assert all(child.parent_block is not None for child in children)
         return result
 
     monkeypatch.setattr(prepare, "promote", record_input)
-    monkeypatch.setattr(promote.Promote, "rewrite_Statement", record_visit)
+    monkeypatch.setattr(promote.PromoteEntry, "rewrite_Statement", record_visit)
+    monkeypatch.setattr(promote.PromoteBoundary, "rewrite_Statement", preserve_children)
     method = SquinToWire().emit(nested)
     assert visited == expected
     assert len(set(visited)) == len(visited)
@@ -223,13 +229,18 @@ def one_captured_register(n: int):
 
 
 @pytest.mark.parametrize("n", [0, 1, 2])
-def test_a_loop_carries_only_the_allocations_that_its_body_uses(n):
-    """Keep unused outer allocations outside the loop and free local allocations inside it."""
+def test_a_loop_carries_available_allocations_and_preserves_unused_wires(n):
+    """Carry outer allocations in source order and free local allocations inside the loop."""
     method = SquinToWire().emit(one_captured_register)
     loop = next(node for node in method.code.walk() if isinstance(node, scf.For))
-    assert len(loop.initializers) == 1
-    assert isinstance(loop.initializers[0].owner, stmts.AllocRegister)
-    assert constant_int(loop.initializers[0].owner.size) == 2
+    assert len(loop.initializers) == 2
+    assert all(
+        isinstance(value.owner, stmts.AllocRegister) for value in loop.initializers
+    )
+    assert [constant_int(value.owner.size) for value in loop.initializers] == [2, 1]
+    end = loop.body.blocks[0].last_stmt
+    assert isinstance(end, scf.Yield)
+    assert end.values[-1] is loop.body.blocks[0].args[-1]
     assert len([node for node in loop.body.walk() if isinstance(node, stmts.Free)]) == 1
     assert simulate(WireToSquin().emit(method), n) == [[n % 2, 0], [1]]
 
@@ -241,3 +252,38 @@ def test_a_boundary_rejects_an_outstanding_register_borrow():
     wrap.delete()
     with pytest.raises(WireConversionError, match="every borrowed element"):
         Conversion(method, SquinToWire().convert).run()
+
+
+@pytest.mark.parametrize("kernel", [ladder, index_from_branch])
+def test_promotion_uses_concrete_locations_without_source_resolution(
+    monkeypatch, kernel
+):
+    """Require promotion to use prepared integer indices after preparation resolves source references."""
+    from bloqade.squin.rewrite.wire import prepare, promote
+    from bloqade.squin.rewrite.wire.handles import Handles
+
+    run = prepare.promote
+    inspected = []
+
+    def forbid_resolution(*args, **kwargs):
+        raise AssertionError("Promotion must use its concrete location table.")
+
+    def check_input(method, inputs):
+        assert inputs.locations
+        for node, location in inputs.locations.items():
+            assert isinstance(location, (promote.Whole, promote.Element))
+            assert location.root.owner in inputs.allocations
+            if isinstance(location, promote.Element):
+                assert isinstance(location.index, (ir.ResultValue, ir.BlockArgument))
+            assert node.parent_block is not None
+        inspected.append(inputs)
+        with monkeypatch.context() as context:
+            context.setattr(Handles, "get", forbid_resolution)
+            context.setattr(Handles, "record", forbid_resolution)
+            context.setattr(prepare, "index_value", forbid_resolution)
+            run(method, inputs)
+
+    monkeypatch.setattr(prepare, "promote", check_input)
+    method = SquinToWire().emit(kernel)
+    assert inspected
+    WireValidation().check(method)

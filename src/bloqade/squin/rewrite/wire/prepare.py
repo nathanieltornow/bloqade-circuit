@@ -48,7 +48,7 @@ from bloqade.squin.rewrite.wire.handles import (
     typed_length,
     register_shape,
 )
-from bloqade.squin.rewrite.wire.promote import promote
+from bloqade.squin.rewrite.wire.promote import Whole, Element, PromotionInput, promote
 from bloqade.squin.rewrite.wire.normalize import TupleProjection, BoundListLengths
 
 _S = TypeVar("_S", bound=ir.Statement)
@@ -173,7 +173,8 @@ class Conversion:
                 for root in self.allocations
                 if isinstance(root, ir.ResultValue) and not self.preserves(root)
             }
-            promote(method, self.handles, self.removed)
+            inputs = prepare_promotion(method, self.handles, self.removed)
+            promote(method, inputs)
         assert self.contract is not None
         cleanup = Chain(
             TupleProjection(),
@@ -490,3 +491,54 @@ class RemovePromotedAllocations(RewriteRule):
             return RewriteResult()
         node.delete()
         return RewriteResult(has_done_something=True)
+
+
+def prepare_promotion(
+    method: ir.Method, handles: Handles, allocations: set[ir.Statement]
+) -> PromotionInput:
+    """Resolve selected transfers to concrete locations and materialize their element indices.
+
+    The location table contains only whole allocations and individual elements.
+    The boundary table records reference results whose source identities stay constant.
+    Kirin's walker supplies the source statements before index insertion changes the IR.
+    """
+    locations: dict[ir.Statement, Whole | Element] = {}
+    invariants: dict[ir.Statement, dict[int, ir.SSAValue]] = {}
+    for node in tuple(method.code.walk()):
+        if access := node.get_trait(ReferenceAccess):
+            handle = handles.get(access.reference(node))
+            if not isinstance(handle, Handle):
+                continue
+            root = handle.root
+            if not isinstance(root, ir.ResultValue) or root.owner not in allocations:
+                continue
+            if handle.selection is None:
+                locations[node] = Whole(root)
+            elif isinstance(handle.selection, Affine):
+                locations[node] = Element(root, index_value(handle.selection, node))
+            else:
+                raise WireConversionError(
+                    "A whole-register transfer requires a whole allocation."
+                )
+        elif isinstance(node, scf.For):
+            end = node.body.blocks[0].last_stmt
+            assert isinstance(end, scf.Yield)
+            invariants[node] = {
+                i: value
+                for i, (value, yielded) in enumerate(
+                    zip(node.initializers, end.values, strict=True)
+                )
+                if holds_qubits(value.type)
+                and known(handles.get(value))
+                and handles.get(value) == handles.get(yielded)
+            }
+        elif isinstance(node, scf.IfElse):
+            left = node.then_body.blocks[0].last_stmt
+            right = node.else_body.blocks[0].last_stmt
+            assert isinstance(left, scf.Yield) and isinstance(right, scf.Yield)
+            invariants[node] = {
+                i: a
+                for i, (a, b) in enumerate(zip(left.values, right.values, strict=True))
+                if holds_qubits(a.type) and a is b
+            }
+    return PromotionInput(locations, frozenset(allocations), invariants)
