@@ -1,21 +1,20 @@
 """This module holds the reference rules for kirin's own dialects."""
 
-from kirin import interp
+from kirin import types, interp
 from kirin.dialects import py, scf, func, ilist
 from kirin.analysis.forward import ForwardFrame
-
-from bloqade.constants import constant_int
+from kirin.dialects.scf.absint import Methods as ScfAbsint
 
 from .lattice import (
     UNTRACKED,
     Ref,
     Items,
+    Closure,
     Members,
-    Unknown,
-    Register,
     Positions,
+    roots,
 )
-from .analysis import KEY, ReferenceAnalysis
+from .analysis import KEY, ReferenceAnalysis, owned_by
 
 
 @py.assign.dialect.register(key=KEY)
@@ -43,7 +42,7 @@ class _IList(interp.MethodTable):
     ) -> tuple[Ref, ...]:
         """Return `Items` if the list holds tracked state, and `Untracked` otherwise."""
         members = frame.get_values(stmt.values)
-        if analysis.kind(stmt.result.type) is not None or any(
+        if analysis.shape(stmt.result.type) is not None or any(
             m != UNTRACKED for m in members
         ):
             return (Items(members),)
@@ -53,10 +52,20 @@ class _IList(interp.MethodTable):
     def map_(
         self, analysis: ReferenceAnalysis, frame: ForwardFrame[Ref], stmt: ilist.Map
     ) -> tuple[Ref, ...]:
-        """Return the result as a register root if the map produces tracked values."""
-        if analysis.kind(stmt.result.type) is Register:
-            return (Register(stmt.result),)
-        return (UNTRACKED,)
+        """Return the reference of the mapped list, through `map_result`."""
+        depth = analysis.shape(stmt.result.type)
+        return (analysis.map_result(frame, stmt, stmt.fn, stmt.collection, depth),)
+
+    @interp.impl(ilist.ForEach)
+    def for_each(
+        self,
+        analysis: ReferenceAnalysis,
+        frame: ForwardFrame[Ref],
+        stmt: ilist.ForEach,
+    ) -> tuple[Ref, ...]:
+        """Run the body once on the item at the `Iter` symbol, for its references."""
+        analysis.map_result(frame, stmt, stmt.fn, stmt.collection, None)
+        return ()
 
 
 @py.binop.dialect.register(key=KEY)
@@ -97,21 +106,22 @@ class _Indexing(interp.MethodTable):
         frame: ForwardFrame[Ref],
         stmt: py.indexing.GetItem,
     ) -> tuple[Ref, ...]:
-        """Return the reference of the item at the index."""
+        """Return the reference of the item or the slice at the index."""
         obj = frame.get(stmt.obj)
-        kind = analysis.kind(stmt.result.type)
-        if constant_int(stmt.index) is None:
-            # A register read with a slice gives a register, which has no root.
-            if isinstance(obj, Register) and kind is Register:
-                return (Unknown("a slice of a register"),)
-            # A tuple read at a runtime index is fine if the item is untracked.
-            if isinstance(obj, Positions) and kind is None:
+        shape = analysis.shape(stmt.result.type)
+        if stmt.index.type.is_subseteq(types.Slice):
+            if shape is None and not isinstance(obj, Members):
                 return (UNTRACKED,)
+            return (analysis.slice(obj, stmt.index),)
+        index = analysis.affine(stmt.index)
+        # A tuple read at a runtime index is fine if the item is untracked.
+        if index.constant is None and isinstance(obj, Positions) and shape is None:
+            return (UNTRACKED,)
         # An untracked item of a list or tuple is looked up. Any other untracked
         # read, such as a classical list, needs no reference.
-        if kind is None and not isinstance(obj, Members):
+        if shape is None and not isinstance(obj, Members):
             return (UNTRACKED,)
-        return (analysis.index(obj, stmt.index),)
+        return (analysis.index(obj, index),)
 
 
 @func.dialect.register(key=KEY)
@@ -136,8 +146,34 @@ class _Func(interp.MethodTable):
     def call(
         self, analysis: ReferenceAnalysis, frame: ForwardFrame[Ref], stmt: func.Call
     ) -> tuple[Ref, ...]:
-        """Give each tracked result of a dynamic call `Unknown`."""
-        return analysis.unknown_results(stmt, "the result of a dynamic call")
+        """Run a closure that the kernel builds, and give any other call `Unknown`."""
+        closure = frame.get(stmt.callee)
+        if not isinstance(closure, Closure) or stmt.kwargs:
+            return analysis.unknown_results(stmt, "the result of a dynamic call")
+        args = frame.get_values(stmt.inputs)
+        result = analysis.apply(frame, stmt, closure.code, closure, args)
+        if any(owned_by(r, closure.code) for r in roots(result)):
+            return analysis.unknown_results(stmt, "a root that the closure allocates")
+        params = closure.code.body.blocks[0].args[1:]
+        mapping = {p: analysis.affine(a) for p, a in zip(params, stmt.inputs)}
+        return (analysis.in_caller_terms(stmt, closure.code, mapping, args, result),)
+
+    @interp.impl(func.Lambda)
+    def lambda_(
+        self, analysis: ReferenceAnalysis, frame: ForwardFrame[Ref], stmt: func.Lambda
+    ) -> tuple[Ref, ...]:
+        """Return a `Closure` that holds the references of the captured values."""
+        return (Closure(stmt, frame.get_values(stmt.captured)),)
+
+    @interp.impl(func.GetField)
+    def getfield(
+        self, analysis: ReferenceAnalysis, frame: ForwardFrame[Ref], stmt: func.GetField
+    ) -> tuple[Ref, ...]:
+        """Return the reference of a captured value of a closure."""
+        closure = frame.get(stmt.obj)
+        if isinstance(closure, Closure) and stmt.field < len(closure.captured):
+            return (closure.captured[stmt.field],)
+        return analysis.unknown_results(stmt, "a field of an unknown function")
 
 
 @scf.dialect.register(key=KEY)
@@ -154,3 +190,18 @@ class _Scf(interp.MethodTable):
         """Run the body until the carried references stop changing."""
         carried = frame.get_values(stmt.initializers)
         return analysis.run_loop(frame, stmt, stmt.body, carried)
+
+    @interp.impl(scf.IfElse)
+    def if_else(
+        self, analysis: ReferenceAnalysis, frame: ForwardFrame[Ref], stmt: scf.IfElse
+    ):
+        """Join the branches with kirin's rule, then leave the scope of the branches.
+
+        Kirin runs only one branch if the condition is a constant. That branch can
+        yield a place whose index the branch computes, so the result must leave the
+        scope of the statement.
+        """
+        results = ScfAbsint().if_else(analysis, frame, stmt)
+        if isinstance(results, tuple):
+            return tuple(analysis.leave(r, stmt) for r in results)
+        return results

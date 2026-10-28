@@ -1,6 +1,6 @@
 """Tests of the conversion from squin kernels to jeff dialect IR."""
 
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from kirin import ir, types
@@ -8,6 +8,7 @@ from kirin.dialects import ilist
 from kirin.ir.exception import ValidationErrorGroup
 
 from bloqade import squin
+from bloqade.jeff import types as jeff_types
 from bloqade.qubit import _interface as qstmt
 from bloqade.types import Qubit, MeasurementResult
 from bloqade.jeff.types import WireType, QuregType
@@ -375,8 +376,14 @@ def twice(q: Qubit) -> None:
 
 
 @squin.kernel
-def sliced(qs: ilist.IList[Qubit, Any]) -> None:
-    squin.h(qs[0:2][0])
+def flip_pair(qs: ilist.IList[Qubit, Literal[2]]) -> None:
+    squin.x(qs[0])
+    squin.x(qs[1])
+
+
+@squin.kernel
+def strided_to_a_call(qs: ilist.IList[Qubit, Literal[4]]) -> None:
+    flip_pair(qs[::2])
 
 
 @squin.kernel
@@ -544,7 +551,7 @@ def tuple_at_runtime(n: int, k: int) -> int:
         (passes_tuple, "passed to a call"),
         (over_list, "a loop over a value that is not a range"),
         (tuple_at_runtime, "a tuple read at a runtime index"),
-        (sliced, "a slice of a register"),
+        (strided_to_a_call, "a strided slice of a register passed to a call"),
         (escaped, "a value carried by a loop or branch"),
         (noisy, "jeff has no form for 'depolarize'"),
         (broadcast, "register of known length"),
@@ -560,6 +567,31 @@ def tuple_at_runtime(n: int, k: int) -> int:
 )
 def test_refusals(kernel, reason):
     refused(kernel, reason)
+
+
+@squin.kernel
+def rows_and_slices(
+    qss: ilist.IList[ilist.IList[Qubit, Literal[2]], Literal[3]],
+    qs: ilist.IList[Qubit, Literal[4]],
+) -> None:
+    squin.h(qs[0:2][0])
+    flip_pair(qs[1:3])
+    flip_pair(qss[2])
+    squin.cx(qss[0][1], qss[1][0])
+    for i in range(3):
+        squin.cx(qs[i], qs[i + 1])
+
+
+def test_rows_slices_and_ladders_convert():
+    """A register of registers is one flat register, and a slice moves as a block."""
+    mt = converted(rows_and_slices)
+    grid, line = mt.callable_region.blocks[0].args[1:]
+    assert grid.type == jeff_types.qureg(6) and line.type == jeff_types.qureg(4)
+    assert len(statements(mt, stmts.ExtractSlice)) == 2
+    assert len(statements(mt, stmts.InsertSlice)) == 2
+    (loop,) = statements(mt, stmts.For)
+    adds = [s for s in loop.body.walk() if isinstance(s, stmts.IntAdd)]
+    assert len(adds) == 1
 
 
 def test_a_literal_list_converts_to_gates_on_each_item():

@@ -10,7 +10,7 @@ import math
 
 from kirin import ir, types, interp
 from kirin.dialects import py, math as math_dialect, ilist
-from kirin.dialects.py import len as py_len
+from kirin.dialects.py import len as py_len, slice as py_slice
 from kirin.dialects.math import stmts as math_stmts
 from kirin.dialects.ilist import stmts as ilist_stmts
 
@@ -38,9 +38,13 @@ class _Constant(interp.MethodTable):
     def constant(
         self, emit: Linearize, frame: Frame, stmt: py.Constant
     ) -> interp.StatementResult[Value]:
-        """Emit a number, a bit, a list or a tuple, and give a range no value."""
+        """Emit a number, a bit, a list or a tuple, and give a range no value.
+
+        A slice and a `None` bound of a slice have no value either, because the
+        reference analysis already turned each read of a slice into a place.
+        """
         match stmt.value.unwrap():
-            case ilist.IList(data=range()):
+            case ilist.IList(data=range()) | slice() | None:
                 return (None,)
         return (_constant(frame, stmt.value.unwrap(), stmt.result.type),)
 
@@ -442,6 +446,18 @@ class _Indexing(interp.MethodTable):
         if (position := constant_int(stmt.index)) is not None:
             return (obj[position],)
         raise interp.InterpreterError(f"{stmt.obj} is not a tuple read at a constant")
+
+
+@py_slice.dialect.register(key=KEY)
+class _Slice(interp.MethodTable):
+    """A method table that gives a slice no jeff value."""
+
+    @interp.impl(py_slice.Slice)
+    def slice_(
+        self, emit: Linearize, frame: Frame, stmt: py_slice.Slice
+    ) -> interp.StatementResult[Value]:
+        """Give the slice no value, because the reference analysis reads its bounds."""
+        return (None,)
 
 
 @py.assign.dialect.register(key=KEY)
