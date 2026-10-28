@@ -19,7 +19,7 @@ returned wires from the return statement.
 from dataclasses import field, dataclass
 
 from kirin import ir, types
-from kirin.rewrite import Walk, Chain, Fixpoint, DeadCodeElimination
+from kirin.rewrite import Walk, Chain, DeadCodeElimination
 from kirin.dialects import py, scf, func, ilist
 from kirin.dialects.py import len as py_len
 from kirin.rewrite.abc import RewriteRule, RewriteResult
@@ -31,6 +31,7 @@ from bloqade.squin.wire.group import kernel as wire_kernel, reference_kernel
 from bloqade.squin.wire.types import RegisterType, is_linear
 from bloqade.squin.wire.traits import Twin
 from bloqade.squin.rewrite.wire.lower import packed_type, output_types
+from bloqade.squin.rewrite.wire.driver import CheckedFixpoint
 
 
 def squin_type(kind: types.TypeAttribute) -> types.TypeAttribute:
@@ -335,7 +336,11 @@ class FromWire:
     def rewrite(self, method: ir.Method) -> RewriteResult:
         """Run the statement rules, then the region and signature rules, then DCE."""
         statements = Walk(Chain(FromWireStatements(), FromWireCalls(self)))
-        result = Fixpoint(statements).rewrite(method.code)
+        result = CheckedFixpoint(statements).rewrite(method.code)
         regions = Walk(Chain(FromWireRegions(), FromWireSignature()))
-        result = Fixpoint(regions).rewrite(method.code).join(result)
-        return Fixpoint(Walk(DeadCodeElimination())).rewrite(method.code).join(result)
+        result = CheckedFixpoint(regions).rewrite(method.code).join(result)
+        return (
+            CheckedFixpoint(Walk(DeadCodeElimination()))
+            .rewrite(method.code)
+            .join(result)
+        )

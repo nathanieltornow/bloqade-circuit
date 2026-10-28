@@ -9,7 +9,6 @@ from kirin.rewrite import (
     Walk,
     Chain,
     Inline,
-    Fixpoint,
     DeadCodeElimination,
     CommonSubexpressionElimination,
 )
@@ -23,6 +22,7 @@ from bloqade.analysis.reference import Ref, Place, Members, Untracked, roots, di
 from bloqade.squin.analysis.reference import QubitReferenceAnalysis
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.rewrite.wire.lower import lower, layout_of
+from bloqade.squin.rewrite.wire.driver import CheckedFixpoint, reachable
 from bloqade.squin.rewrite.wire.promote import promote
 from bloqade.squin.rewrite.wire.normalize import (
     MapToLoop,
@@ -31,6 +31,8 @@ from bloqade.squin.rewrite.wire.normalize import (
     IndexInBranch,
     QubitIteration,
     BroadcastToLoop,
+    TupleProjection,
+    BoundListLengths,
 )
 from bloqade.squin.analysis.validation.wire.validation import WireValidation
 
@@ -104,9 +106,8 @@ class SquinToWire:
 
     A call stays a borrowing call if every qubit argument is one qubit or one
     whole register, if no two arguments overlap, and if the callee returns only
-    qubits that it allocates. Kirin's `Inline` rule inlines every other call. If
-    `assume_disjoint` is True, the converter trusts that the qubits of one gate
-    differ when the places cannot prove it.
+    qubits that it allocates. Kirin's `Inline` rule inlines every other call.
+    A public wire function requires distinct quantum arguments from its caller.
 
     If `partial` is True, a statement whose qubits the places can't name keeps
     reference semantics, and the rest of the kernel still becomes wire squin.
@@ -114,7 +115,7 @@ class SquinToWire:
     converter raises a `WireConversionError` for it.
     """
 
-    assume_disjoint: bool = False
+    max_iterations: int = 32
     partial: bool = False
     prepared: dict[ir.Method, ir.Method] = field(default_factory=dict, init=False)
     refs: dict[ir.SSAValue, Ref] = field(default_factory=dict, init=False)
@@ -133,18 +134,22 @@ class SquinToWire:
         if not method.dialects.data <= reference_kernel.data:
             raise ValueError("SquinToWire expects squin or native kernel dialects.")
         self.prepared, self.refs, self.report = {}, {}, []
+        if self.max_iterations < 1:
+            raise ValueError("The rewrite iteration limit must be positive.")
+        reachable(method, skip=lambda callee: callee is qalloc or is_library(callee))
         self.prepare(method)
         copies = list(self.prepared.values())
         layouts = {copy.code: layout_of(copy.code, self.refs) for copy in copies}
         for copy in copies:
-            reasons = lower(
-                copy, self.refs, self.prepared, self.assume_disjoint, self.partial
-            )
+            reasons = lower(copy, self.refs, self.prepared, self.partial, layouts)
             self.report += [f"'{copy.sym_name}': {reason}" for reason in reasons]
         for copy in copies:
+            CheckedFixpoint(
+                Walk(Chain(TupleProjection(), DeadCodeElimination()))
+            ).rewrite(copy.code)
             promote(copy, layouts[copy.code])
-            Fixpoint(Walk(CommonSubexpressionElimination())).rewrite(copy.code)
-            Fixpoint(Walk(DeadCodeElimination())).rewrite(copy.code)
+            CheckedFixpoint(Walk(CommonSubexpressionElimination())).rewrite(copy.code)
+            CheckedFixpoint(Walk(DeadCodeElimination())).rewrite(copy.code)
         for copy in copies:
             if left := remaining(copy):
                 message = (
@@ -171,8 +176,8 @@ class SquinToWire:
             return
         copy = kernel.similar()
         self.prepared[kernel] = copy
-        self.normalize(copy)
-        while True:
+        self.normalize(copy, self.max_iterations)
+        for _ in range(self.max_iterations):
             frame, _ = QubitReferenceAnalysis(copy.dialects).run(copy)
             rejected = InlineCalls(
                 lambda call: not self.borrowable(call, frame.entries)
@@ -182,13 +187,19 @@ class SquinToWire:
             )
             if not Walk(rules).rewrite(copy.code).has_done_something:
                 break
-            self.normalize(copy)
+            self.normalize(copy, self.max_iterations)
+        else:
+            raise WireConversionError(
+                f"Preparation of '{copy.sym_name}' did not converge within {self.max_iterations} iterations."
+            )
+        copy.verify()
+        copy.verify_type()
         self.refs.update(frame.entries)
         for callee in rejected.kept:
             self.prepare(callee)
 
     @staticmethod
-    def normalize(copy: ir.Method) -> None:
+    def normalize(copy: ir.Method, max_iterations: int = 32) -> None:
         """Inline the library calls of `copy`, run the structural rules, and infer types.
 
         An inlined body keeps the types of its callee, and some of them are `Any`.
@@ -203,9 +214,10 @@ class SquinToWire:
             IndexInBranch(),
             IndexInLoop(),
         )
-        Fixpoint(Walk(rules)).rewrite(copy.code)
-        Fixpoint(Walk(DeadCodeElimination())).rewrite(copy.code)
+        CheckedFixpoint(Walk(rules), max_iter=max_iterations).rewrite(copy.code)
+        CheckedFixpoint(Walk(DeadCodeElimination())).rewrite(copy.code)
         TypeInfer(copy.dialects)(copy)
+        Walk(BoundListLengths()).rewrite(copy.code)
 
     def borrowable(self, call: func.Invoke, refs: Mapping[ir.SSAValue, Ref]) -> bool:
         """Return True if `call` can stay a call that borrows its qubit arguments."""
@@ -218,8 +230,7 @@ class SquinToWire:
         for ref in qubits:
             if not (isinstance(ref, Place) and (ref.one_item or not ref.path)):
                 return False
-        if not self.assume_disjoint:
-            for k, a in enumerate(qubits):
-                if any(not disjoint(a, b) for b in qubits[k + 1 :]):
-                    return False
+        for k, a in enumerate(qubits):
+            if any(not disjoint(a, b) for b in qubits[k + 1 :]):
+                return False
         return _returns_only_fresh(call.callee)

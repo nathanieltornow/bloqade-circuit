@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from collections.abc import Mapping
 
 from kirin import ir, types
-from kirin.rewrite import Walk, Chain, Fixpoint, DeadCodeElimination
+from kirin.rewrite import Walk, Chain, DeadCodeElimination
 from kirin.dialects import py, scf, func
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
@@ -54,6 +54,7 @@ from bloqade.squin.analysis.reference import holds_qubits, qubit_register_length
 from bloqade.squin.rewrite.wire.index import index_value
 from bloqade.squin.rewrite.wire.lower import Layout
 from bloqade.squin.analysis.wire.slots import SlotAnalysis
+from bloqade.squin.rewrite.wire.driver import CheckedFixpoint
 from bloqade.analysis.reference.queries import flat, same_place
 from bloqade.analysis.reference.analysis import encloses
 
@@ -631,18 +632,18 @@ def promote(method: ir.Method, layout: Layout | None = None) -> RewriteResult:
     result = Walk(boundaries).rewrite(method.code).join(result)
     facts = analyze(method)
     forward = Forward(Scan(facts), facts.policy)
-    result = Fixpoint(Walk(forward)).rewrite(method.code).join(result)
+    result = CheckedFixpoint(Walk(forward)).rewrite(method.code).join(result)
     # The reads `qs[i]` of the promoted accesses are dead now, and loops still
     # carry the references that kirin's lowering added. Both would block the
     # materialization of the slots that they read.
     tidy = Chain(DeadCodeElimination(), DropInvariantReferences())
-    result = Fixpoint(Walk(tidy)).rewrite(method.code).join(result)
+    result = CheckedFixpoint(Walk(tidy)).rewrite(method.code).join(result)
     facts = analyze(method)
     scan, policy = Scan(facts), facts.policy
     ends = Chain(MaterializeStart(scan, policy), MaterializeEnd(scan, policy))
-    result = Fixpoint(Walk(ends)).rewrite(method.code).join(result)
+    result = CheckedFixpoint(Walk(ends)).rewrite(method.code).join(result)
     cleanup = Chain(DeadCodeElimination(), DropInvariantReferences(), DeadAllocations())
-    result = Fixpoint(Walk(cleanup)).rewrite(method.code).join(result)
+    result = CheckedFixpoint(Walk(cleanup)).rewrite(method.code).join(result)
     if layout is not None:
         retype(method, layout)
     return result

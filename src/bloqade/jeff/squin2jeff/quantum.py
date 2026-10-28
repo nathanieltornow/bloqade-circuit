@@ -1,91 +1,128 @@
-"""This module holds the rules that emit jeff gates, allocations and measurements."""
-
-# The squin gate statements and the kirin `py` statements derive from base classes
-# that a bare `@statement` decorates, which pyright reads as functions. A rule that
-# stacks `interp.impl` for several of them then fails the argument check.
-# pyright: reportArgumentType=false
+"""Emit Jeff quantum operations directly from squin wire operands."""
 
 from kirin import ir, interp
 
 from bloqade.qubit import stmts as qubit_stmts
 from bloqade.jeff.forms import GATES
-from bloqade.squin.gate import stmts as gate_stmts
+from bloqade.squin.gate import stmts as source_gates
+from bloqade.squin.wire import stmts as wire
 from bloqade.jeff.dialects import stmts
+from bloqade.squin.wire.twins import TWINS
+from bloqade.squin.wire.traits import Twin
 
-from .linearize import KEY, Frame, Value, Linearize
+from .emitter import KEY, Frame, WireEmitter
 
 
-@gate_stmts.dialect.register(key=KEY)
-class _Gates(interp.MethodTable):
-    """A method table that emits one jeff gate per qubit, or group, of a squin gate."""
+@wire.dialect.register(key=KEY)
+class _Wire(interp.MethodTable):
+    """Translate wire operations without consulting reference analysis."""
 
-    @interp.impl(gate_stmts.X)
-    @interp.impl(gate_stmts.Y)
-    @interp.impl(gate_stmts.Z)
-    @interp.impl(gate_stmts.H)
-    @interp.impl(gate_stmts.S)
-    @interp.impl(gate_stmts.T)
-    @interp.impl(gate_stmts.SqrtX)
-    @interp.impl(gate_stmts.SqrtY)
-    @interp.impl(gate_stmts.Rx)
-    @interp.impl(gate_stmts.Ry)
-    @interp.impl(gate_stmts.Rz)
-    @interp.impl(gate_stmts.U3)
-    @interp.impl(gate_stmts.CX)
-    @interp.impl(gate_stmts.CY)
-    @interp.impl(gate_stmts.CZ)
-    @interp.impl(gate_stmts.CCZ)
-    @interp.impl(gate_stmts.Swap)
-    def gate(
-        self, emit: Linearize, frame: Frame, stmt: ir.Statement
-    ) -> interp.StatementResult[Value]:
-        """Emit the gate with its angles in radians, since squin gives turns."""
-        form = GATES[type(stmt)]
-        angles = [emit.radians(frame, a) for a in stmt.args[: form.angles]]
-        adjoint = isinstance(
-            stmt, (gate_stmts.S, gate_stmts.T, gate_stmts.SqrtX, gate_stmts.SqrtY)
-        ) and bool(stmt.adjoint)
-        emit.gate(frame, form, stmt.args[form.angles :], angles, adjoint)
+    @interp.impl(wire.Alloc)
+    def alloc(self, emit: WireEmitter, frame: Frame, stmt: wire.Alloc):
+        """Allocate a Jeff wire."""
+        return (frame.push(stmts.Alloc()).result,)
+
+    @interp.impl(wire.AllocRegister)
+    def register(self, emit: WireEmitter, frame: Frame, stmt: wire.AllocRegister):
+        """Allocate a Jeff register of the requested size."""
+        return (frame.push(stmts.RegAlloc(frame.scalar(stmt.size))).result,)
+
+    @interp.impl(wire.Free)
+    def free(self, emit: WireEmitter, frame: Frame, stmt: wire.Free):
+        """Consume the emitted qubit at its explicit lifetime end."""
+        frame.push(stmts.Free(frame.scalar(stmt.wire)))
         return ()
+
+    @interp.impl(wire.FreeRegister)
+    def free_register(self, emit: WireEmitter, frame: Frame, stmt: wire.FreeRegister):
+        """Consume the emitted register at its explicit lifetime end."""
+        frame.push(stmts.RegFree(frame.scalar(stmt.register)))
+        return ()
+
+    @interp.impl(wire.Borrow)
+    def borrow(self, emit: WireEmitter, frame: Frame, stmt: wire.Borrow):
+        """Extract one qubit and return the register continuation first."""
+        made = frame.push(
+            stmts.Extract(frame.scalar(stmt.register), frame.scalar(stmt.index))
+        )
+        return made.result_reg, made.wire
+
+    @interp.impl(wire.Release)
+    def release(self, emit: WireEmitter, frame: Frame, stmt: wire.Release):
+        """Insert the borrowed qubit into its register position."""
+        return (
+            frame.push(
+                stmts.Insert(
+                    frame.scalar(stmt.register),
+                    frame.scalar(stmt.index),
+                    frame.scalar(stmt.wire),
+                )
+            ).result,
+        )
+
+    @interp.impl(wire.Length)
+    def length(self, emit: WireEmitter, frame: Frame, stmt: wire.Length):
+        """Read the register length and preserve its continuation."""
+        made = frame.push(stmts.RegLength(frame.scalar(stmt.register)))
+        return made.result_reg, made.length
+
+    @interp.impl(TWINS[qubit_stmts.Measure])
+    def measure(self, emit: WireEmitter, frame: Frame, stmt):
+        """Measure one qubit and return its continuation followed by its bit."""
+        made = frame.push(stmts.MeasureNd(frame.scalar(stmt.qubit)))
+        return made.result_wire, made.bit
+
+    @interp.impl(TWINS[qubit_stmts.Reset])
+    def reset(self, emit: WireEmitter, frame: Frame, stmt):
+        """Reset one qubit and return its continuation."""
+        return (frame.push(stmts.Reset(frame.scalar(stmt.qubit))).result,)
+
+    @interp.impl(TWINS[source_gates.X])
+    @interp.impl(TWINS[source_gates.Y])
+    @interp.impl(TWINS[source_gates.Z])
+    @interp.impl(TWINS[source_gates.H])
+    @interp.impl(TWINS[source_gates.S])
+    @interp.impl(TWINS[source_gates.T])
+    @interp.impl(TWINS[source_gates.SqrtX])
+    @interp.impl(TWINS[source_gates.SqrtY])
+    @interp.impl(TWINS[source_gates.Rx])
+    @interp.impl(TWINS[source_gates.Ry])
+    @interp.impl(TWINS[source_gates.Rz])
+    @interp.impl(TWINS[source_gates.U3])
+    @interp.impl(TWINS[source_gates.CX])
+    @interp.impl(TWINS[source_gates.CY])
+    @interp.impl(TWINS[source_gates.CZ])
+    @interp.impl(TWINS[source_gates.CCZ])
+    @interp.impl(TWINS[source_gates.Swap])
+    def gate(self, emit: WireEmitter, frame: Frame, stmt: ir.Statement):
+        """Convert turns to radians and map Jeff's target-first result order back to wire order."""
+        form = GATES[stmt.get_present_trait(Twin).source]
+        angles = tuple(emit.radians(frame, angle) for angle in stmt.args[: form.angles])
+        values = tuple(frame.scalar(value) for value in stmt.args[form.angles :])
+        controls, targets = values[: form.controls], values[form.controls :]
+        made = frame.push(
+            stmts.Gate(
+                targets,
+                controls,
+                angles,
+                gate_name=form.name,
+                adjoint=bool(getattr(stmt, "adjoint", False)),
+            )
+        )
+        count = len(targets)
+        return (*made.results[count:], *made.results[:count])
 
 
 @qubit_stmts.dialect.register(key=KEY)
-class _Qubits(interp.MethodTable):
-    """A method table that emits allocation, reset and measurement."""
-
-    @interp.impl(qubit_stmts.New)
-    def new(
-        self, emit: Linearize, frame: Frame, stmt: qubit_stmts.New
-    ) -> interp.StatementResult[Value]:
-        """Allocate a wire and make it the wire of the new root."""
-        frame.wires[stmt.result] = frame.push(stmts.Alloc()).result
-        return (None,)
-
-    @interp.impl(qubit_stmts.Reset)
-    def reset(
-        self, emit: Linearize, frame: Frame, stmt: qubit_stmts.Reset
-    ) -> interp.StatementResult[Value]:
-        """Reset each qubit of the list."""
-        emit.reset_qubits(frame, stmt.qubits)
-        return ()
-
-    @interp.impl(qubit_stmts.Measure)
-    def measure(
-        self, emit: Linearize, frame: Frame, stmt: qubit_stmts.Measure
-    ) -> interp.StatementResult[Value]:
-        """Measure and keep each qubit of the list, and return the bits."""
-        return (emit.measure(frame, stmt.qubits),)
+class _Predicates(interp.MethodTable):
+    """Translate classical predicates on measurement results."""
 
     @interp.impl(qubit_stmts.IsOne)
-    def is_one(
-        self, emit: Linearize, frame: Frame, stmt: qubit_stmts.IsOne
-    ) -> interp.StatementResult[Value]:
-        """Return the bits, because a jeff bit is one exactly when the qubit was."""
+    def one(self, emit: WireEmitter, frame: Frame, stmt):
+        """Use the measurement bits as their own tests for one."""
         return (frame.value(stmt.measurements),)
 
     @interp.impl(qubit_stmts.IsZero)
-    def is_zero(
-        self, emit: Linearize, frame: Frame, stmt: qubit_stmts.IsZero
-    ) -> interp.StatementResult[Value]:
-        """Return the negated bits."""
+    def zero(self, emit: WireEmitter, frame: Frame, stmt):
+        """Negate each measurement bit."""
         return (emit.negate(frame, stmt.measurements),)

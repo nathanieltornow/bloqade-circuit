@@ -27,3 +27,40 @@ def is_linear(kind: types.TypeAttribute) -> bool:
     if isinstance(kind, types.BottomType):
         return False
     return kind.is_subseteq(WireType) or kind.is_subseteq(RegisterType)
+
+
+def contains_linear(kind: types.TypeAttribute) -> bool:
+    """Return whether the type contains a wire or register at any depth."""
+    if is_linear(kind):
+        return True
+    if isinstance(kind, types.Union):
+        return any(contains_linear(member) for member in kind.types)
+    if isinstance(kind, types.TypeVar):
+        return contains_linear(kind.bound)
+    if isinstance(kind, types.Generic):
+        return any(contains_linear(member) for member in kind.vars) or (
+            kind.vararg is not None and contains_linear(kind.vararg.typ)
+        )
+    return False
+
+
+def linear_paths(kind: types.TypeAttribute) -> tuple[tuple[int, ...], ...]:
+    """Return the tuple paths of every wire and register in a supported type.
+
+    Quantum containers must have fixed tuple fields so each field has an owner.
+    """
+    if is_linear(kind):
+        return ((),)
+    if not contains_linear(kind):
+        return ()
+    if (
+        isinstance(kind, types.Generic)
+        and kind.is_subseteq(types.Tuple)
+        and kind.vararg is None
+    ):
+        return tuple(
+            (index, *path)
+            for index, member in enumerate(kind.vars)
+            for path in linear_paths(member)
+        )
+    raise ValueError("Quantum containers must use fixed tuple fields.")

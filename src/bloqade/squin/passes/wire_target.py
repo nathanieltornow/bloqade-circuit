@@ -45,7 +45,11 @@ class ConversionTarget(RewriteRule):
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Record operations that keep references or lack a supported wire form."""
         legal_dialect = (
-            node.dialect in CLASSICAL_DIALECTS or node.dialect is stmts.dialect
+            node.dialect in CLASSICAL_DIALECTS
+            or node.dialect is stmts.dialect
+            or isinstance(
+                node, (qubit.stmts.IsZero, qubit.stmts.IsOne, qubit.stmts.IsLost)
+            )
         )
         legal_values = not any(
             holds_qubits(value.type) for value in (*node.args, *node.results)

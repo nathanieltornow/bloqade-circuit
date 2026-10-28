@@ -15,10 +15,10 @@ carried block arguments, so each branch reads the outer wire itself. Each branch
 must then use the outer wire exactly once. A loop body must get every wire as a
 block argument, because the body runs more than once.
 
-`LinearityCheck` is a kirin forward analysis. Its fallback rule checks the
-results of every statement, and its `scf` rules also check the block arguments
-of each body. Kirin's `absint` rule for calls runs each callee, so the check also
-covers every wire function that the method calls.
+`LinearityCheck` is a kirin forward analysis.
+Its dispatch hook checks the results of every statement.
+Its method tables check tuple fields, calls, returns and control-flow boundaries.
+The call rule runs each callee through Kirin's interpreter machinery.
 
 The borrow rule: a register value holds a set of borrowed slots. `Borrow` adds
 its index, and `Release` removes it. A slot must not be borrowed twice. A register
@@ -27,21 +27,26 @@ passes it to a call. `BorrowCheck` is a kirin forward analysis over the lattice
 `Slots`.
 """
 
-from typing import Hashable
 from dataclasses import field, dataclass
 from collections.abc import Iterable
 
-from kirin import ir, interp
+from kirin import ir, types, interp
 from kirin.lattice import EmptyLattice, BoundedLattice
 from kirin.analysis import Forward
-from kirin.dialects import scf, func
+from kirin.dialects import py, scf, func
 from kirin.validation import ValidationPass, ValidationSuite
 from kirin.ir.exception import ValidationErrorGroup
 from kirin.analysis.forward import ForwardFrame
 
+from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
-from bloqade.squin.wire.types import RegisterType, is_linear
-from bloqade.analysis.reference.index import IndexAnalysis
+from bloqade.squin.wire.types import (
+    RegisterType,
+    is_linear,
+    linear_paths,
+    contains_linear,
+)
+from bloqade.analysis.reference.index import Affine, IndexAnalysis, same
 from bloqade.squin.analysis.validation.wire.position import PositionValidation
 from bloqade.squin.analysis.validation.wire.references import ReferenceValidation
 
@@ -111,19 +116,91 @@ class LinearityCheck(Forward[EmptyLattice]):
         """Return the top element for the method object."""
         return EmptyLattice.top()
 
+    def error(self, node: ir.IRNode, message: str) -> None:
+        """Record an ownership error at the operation that defines the value."""
+        self.add_validation_error(node, ir.ValidationError(node, message))
+
     def check(self, values: Iterable[ir.SSAValue], node: ir.IRNode) -> None:
-        """Record an error at `node` for each linear value of `values` that breaks the rule."""
+        """Check one consuming use per quantum tuple field along each execution path."""
         for value in values:
-            if not is_linear(value.type):
+            try:
+                paths = linear_paths(value.type)
+            except ValueError as error:
+                self.error(node, str(error))
                 continue
             region = _region_of(value)
             if region is None:
                 continue
-            reason = misuse([use.stmt for use in value.uses], region)
-            if reason is not None:
-                name = value.name or repr(value)
-                message = f"the linear value '{name}' {reason}"
-                self.add_validation_error(node, ir.ValidationError(node, message))
+            for path in paths:
+                users = []
+                for use in value.uses:
+                    user = use.stmt
+                    if path and isinstance(user, py.GetItem) and use.index == 0:
+                        index = constant_int(user.index)
+                        assert isinstance(value.type, types.Generic)
+                        size = len(value.type.vars)
+                        if index is None or not -size <= index < size:
+                            self.error(
+                                user,
+                                "A quantum tuple requires a constant index within its bounds.",
+                            )
+                            continue
+                        if index % size != path[0]:
+                            continue
+                        if user.result.type != value.type.vars[index % size]:
+                            self.error(
+                                user,
+                                "Tuple extraction must preserve the quantum field type.",
+                            )
+                    elif not (
+                        user.dialect is stmts.dialect
+                        or isinstance(
+                            user,
+                            (
+                                py.tuple.New,
+                                func.Invoke,
+                                func.Return,
+                                scf.For,
+                                scf.Yield,
+                            ),
+                        )
+                    ):
+                        self.error(
+                            user, f"'{user.name}' cannot consume a quantum value."
+                        )
+                    users.append(user)
+                if (reason := misuse(users, region)) is not None:
+                    suffix = "" if not path else f" at tuple field {path}"
+                    self.error(
+                        node,
+                        f"the linear value '{value.name or repr(value)}'{suffix} {reason}",
+                    )
+
+    def preserve(self, node, actual, declared):
+        """Require a boundary type to retain every quantum ownership path."""
+        try:
+            if linear_paths(actual) != linear_paths(declared):
+                self.error(node, "The boundary type must preserve every quantum field.")
+        except ValueError as error:
+            self.error(node, str(error))
+
+    def frame_eval(self, frame, node):
+        """Check results before dispatch so every operation checks ownership."""
+        if node.dialect is stmts.dialect and any(
+            isinstance(value.type, types.BottomType)
+            for value in (*node.args, *node.results)
+        ):
+            self.error(node, "A wire operation cannot use the impossible type Bottom.")
+        self.check(node.results, node)
+        return super().frame_eval(frame, node)
+
+    def flat(self, node, values):
+        """Require control-flow state to carry each quantum value separately."""
+        if any(
+            contains_linear(value.type) and not is_linear(value.type)
+            for value in values
+        ):
+            self.error(node, "Control flow requires separate wire and register values.")
 
     def frame_call(
         self,
@@ -135,15 +212,82 @@ class LinearityCheck(Forward[EmptyLattice]):
         """Check the parameters of the function `node`, then run its body."""
         trait = node.get_trait(ir.CallableStmtInterface)
         if trait is not None:
-            self.check(trait.get_callable_region(node).blocks[0].args[1:], node)
+            params = trait.get_callable_region(node).blocks[0].args[1:]
+            for value in params:
+                if contains_linear(value.type) and not is_linear(value.type):
+                    self.error(
+                        node,
+                        "Quantum function parameters must be separate wires or registers.",
+                    )
+            self.check(params, node)
+            if isinstance(node, func.Function):
+                output = node.signature.output
+                if isinstance(output, types.Generic) and output.is_subseteq(
+                    types.Tuple
+                ):
+                    if any(
+                        contains_linear(kind) and not is_linear(kind)
+                        for kind in output.vars
+                    ):
+                        self.error(
+                            node,
+                            "Quantum function outputs require a flat tuple of wires and registers.",
+                        )
         return super().frame_call(frame, node, *args, **kwargs)
 
     def eval_fallback(
         self, frame: ForwardFrame[EmptyLattice], node: ir.Statement
     ) -> tuple[EmptyLattice, ...]:
         """Check the results of a statement without a rule."""
-        self.check(node.results, node)
         return tuple(EmptyLattice.top() for _ in node.results)
+
+
+@py.tuple.dialect.register(key=KEY)
+class _TupleLinearity(interp.MethodTable):
+    """Check ownership types when an operation constructs a tuple."""
+
+    @interp.impl(py.tuple.New)
+    def new(self, check: LinearityCheck, frame, stmt: py.tuple.New):
+        """Require each tuple field to retain its constructing operand's type."""
+        expected = types.Generic(tuple, *(value.type for value in stmt.args))
+        if contains_linear(expected) and stmt.result.type != expected:
+            check.error(
+                stmt, "Tuple construction must preserve every quantum field type."
+            )
+        return (EmptyLattice.top(),)
+
+
+@func.dialect.register(key=KEY)
+class _FunctionLinearity(interp.MethodTable):
+    """Preserve quantum ownership through declared call and return types."""
+
+    @interp.impl(func.Invoke)
+    def invoke(self, check: LinearityCheck, frame, stmt: func.Invoke):
+        """Check call types and validate the callee with Kirin's call machinery."""
+        parameters = stmt.callee.callable_region.blocks[0].args[1:]
+        for argument, parameter in zip(stmt.inputs, parameters):
+            check.preserve(stmt, argument.type, parameter.type)
+        expected = stmt.callee.return_type
+        if contains_linear(expected) and stmt.result.type != expected:
+            check.error(
+                stmt, "A call result must preserve its declared quantum field types."
+            )
+        check.call(
+            stmt.callee.code,
+            EmptyLattice.top(),
+            *(EmptyLattice.top() for _ in parameters),
+        )
+        return (EmptyLattice.top(),)
+
+    @interp.impl(func.Return)
+    def return_(self, check: LinearityCheck, frame, stmt: func.Return):
+        """Require the function result type to retain its returned quantum fields."""
+        owner = stmt.parent_stmt
+        while owner is not None and not isinstance(owner, func.Function):
+            owner = owner.parent_stmt
+        if isinstance(owner, func.Function):
+            check.preserve(stmt, stmt.value.type, owner.signature.output)
+        return interp.ReturnValue(EmptyLattice.top())
 
 
 @scf.dialect.register(key=KEY)
@@ -158,8 +302,12 @@ class _Scf(interp.MethodTable):
         frame: ForwardFrame[EmptyLattice],
         stmt: ir.Statement,
     ) -> tuple[EmptyLattice, ...]:
-        """Check the statement, then run each body once."""
-        check.check(stmt.results, stmt)
+        """Check the state types, then run each body once."""
+        check.flat(stmt, stmt.results)
+        if isinstance(stmt, scf.For):
+            check.flat(stmt, stmt.initializers)
+            for value, argument in zip(stmt.initializers, stmt.body.blocks[0].args[1:]):
+                check.preserve(stmt, value.type, argument.type)
         for region in stmt.regions:
             if not region.blocks:
                 continue
@@ -174,7 +322,11 @@ class _Scf(interp.MethodTable):
     def yield_(
         self, check: LinearityCheck, frame: ForwardFrame[EmptyLattice], stmt: scf.Yield
     ) -> interp.YieldValue[EmptyLattice]:
-        """End a body."""
+        """Check yielded ownership against each declared region result."""
+        check.flat(stmt, stmt.values)
+        if stmt.parent_stmt is not None:
+            for value, result in zip(stmt.values, stmt.parent_stmt.results):
+                check.preserve(stmt, value.type, result.type)
         return interp.YieldValue(tuple(EmptyLattice.top() for _ in stmt.values))
 
 
@@ -215,7 +367,7 @@ class Slots(BoundedLattice["Slots"]):
     analysis cannot name the slots. That element is the top of the lattice.
     """
 
-    held: frozenset[Hashable] | None
+    held: frozenset[Affine] | None
 
     @classmethod
     def top(cls) -> "Slots":
@@ -320,6 +472,11 @@ class _Borrows(interp.MethodTable):
             return (Slots.top(), Slots.top())
         if key in held:
             check.error(stmt, "'borrow' takes a slot that is already borrowed")
+        elif any(same(key, previous) is not False for previous in held):
+            check.error(
+                stmt,
+                "'borrow' requires indices that provably differ from every outstanding borrow",
+            )
         return (Slots(held | {key}), Slots.top())
 
     @interp.impl(stmts.Release)

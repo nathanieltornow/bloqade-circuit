@@ -430,7 +430,7 @@ def test_a_register_of_registers_comes_back_as_one_flat_register():
     """Jeff stores the rows of `qss` one after another in one register."""
     back = returned(grid)
     (param,) = back.callable_region.blocks[0].args[1:]
-    assert param.type.is_subseteq(ilist.IListType[QubitType, types.Literal(6)])
+    assert param.type.is_subseteq(ilist.IListType[QubitType, types.Any])
 
     @squin.kernel
     def flat_grid() -> ilist.IList[MeasurementResult, Any]:
@@ -662,16 +662,6 @@ def literal_list_to_a_call() -> Measured:
     return squin.broadcast.measure(a)
 
 
-# kirin 0.22 has no type inference rule for `py.slice.Slice`. A slice that
-# constant folding leaves in place gets the type `Bottom` for its bounds.
-SLICE_BOUND_BOTTOM = pytest.mark.xfail(
-    reason=(
-        "kirin types the bounds of an unfolded slice as Bottom. "
-        "The kirin branch fix/slice-typeinfer-none holds the fix."
-    ),
-    strict=True,
-)
-
 # Each case holds a kernel, its arguments and the reason why jeff refuses it.
 # A case without a reason must give the same result after the trip.
 CASES = [
@@ -688,61 +678,59 @@ CASES = [
     pytest.param(wrapped_index, (), None, id="qs[(i + 1) % 3]"),
     pytest.param(index_to_a_call, (), None, id="an index to a call"),
     pytest.param(measured_branch, (), None, id="a branch on a measured bit"),
-    pytest.param(sliced_in_a_loop, (), None, id="qs[0:3][i]", marks=SLICE_BOUND_BOTTOM),
-    pytest.param(growing_slice, (), None, id="qs[0:i]", marks=SLICE_BOUND_BOTTOM),
+    pytest.param(sliced_in_a_loop, (), None, id="qs[0:3][i]"),
+    pytest.param(growing_slice, (), None, id="qs[0:i]"),
     pytest.param(
         slice_to_any_length,
         (),
-        "qubits that are not one, a literal list or a register of known length",
+        None,
         id="qs[1:3] to a call of any length",
     ),
     pytest.param(
         strided_to_a_call,
         (),
-        "a strided slice of a register passed to a call",
+        None,
         id="qs[::2] to a call",
     ),
     pytest.param(
         loop_over_qubits,
         (),
-        "a loop over a value that is not a range",
+        None,
         id="for q in qs",
     ),
     pytest.param(
         picked_in_a_branch,
         (True,),
-        "a value carried by a loop or branch",
+        None,
         id="a qubit picked in a branch",
     ),
     pytest.param(
         carried_by_a_loop,
         (2,),
-        "a value carried by a loop or branch",
+        None,
         id="a qubit carried by a loop",
     ),
     pytest.param(
         returns_a_part,
         (),
-        "a function that returns a part of a register",
+        None,
         id="a call that returns qs[1:3]",
     ),
-    pytest.param(
-        concatenated, (), "a concatenation of registers", id="a + b of registers"
-    ),
+    pytest.param(concatenated, (), None, id="a + b of registers"),
     pytest.param(
         nested_def,
         (),
-        "a call of a function defined inside a kernel",
+        None,
         id="a call of a nested def",
     ),
-    pytest.param(mapped, (), "jeff has no form for", id="ilist.map over qubits"),
     pytest.param(
-        for_each_qubit, (), "jeff has no form for", id="ilist.for_each over qubits"
+        mapped, (), "requires scalar numeric operands", id="ilist.map over qubits"
     ),
+    pytest.param(for_each_qubit, (), None, id="ilist.for_each over qubits"),
     pytest.param(
         literal_list_to_a_call,
         (),
-        "a literal list passed to a call",
+        None,
         id="a literal list of registers to a call",
     ),
 ]

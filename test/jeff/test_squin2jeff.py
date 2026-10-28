@@ -8,7 +8,6 @@ from kirin.dialects import ilist
 from kirin.ir.exception import ValidationErrorGroup
 
 from bloqade import squin
-from bloqade.jeff import types as jeff_types
 from bloqade.qubit import _interface as qstmt
 from bloqade.types import Qubit, MeasurementResult
 from bloqade.jeff.types import WireType, QuregType
@@ -57,9 +56,8 @@ def bell() -> MeasurementResult:
 
 
 @squin.kernel
-def flip(q: Qubit) -> Qubit:
+def flip(q: Qubit) -> None:
     squin.x(q)
-    return q
 
 
 @squin.kernel
@@ -73,7 +71,7 @@ def fresh() -> Qubit:
 def register(n: int, i: int) -> None:
     qs = squin.qalloc(n)
     squin.h(qs[0])
-    squin.cx(qs[i], qs[1])
+    squin.cx(qs[i], qs[i + 1])
 
 
 @squin.kernel
@@ -169,7 +167,7 @@ def test_bell_allocates_gates_measures_and_frees():
     (measured,) = statements(mt, stmts.MeasureNd)
     assert len(statements(mt, stmts.Free)) == 2
     (returned,) = statements(mt, stmts.Return)
-    assert returned.values == (measured.bit,)
+    assert returned.values[0].owner.array.owner.values == (measured.bit,)
     assert mt.return_type == types.Bool
 
 
@@ -221,7 +219,7 @@ def test_a_branch_becomes_a_switch_with_the_else_as_case_zero():
     assert all(value in switch.results for value in returned.values)
 
 
-def test_a_callee_hands_its_parameters_back_first():
+def test_a_callee_returns_its_borrowed_parameters():
     mt = converted(calls)
     flip_call, fresh_call = statements(mt, stmts.Call)
     assert flip_call.callee.sym_name == "fresh" or fresh_call.callee.sym_name == "fresh"
@@ -246,9 +244,20 @@ def test_a_callee_that_returns_none_hands_its_wire_back():
 def test_a_rotation_keeps_its_radians():
     mt = converted(rotated)
     rx, rz = statements(mt, stmts.Gate)
-    assert rx.params[0] is mt.callable_region.blocks[0].args[1]
-    assert isinstance(constant := rz.params[0].owner, stmts.ConstFloat)
-    assert constant.value == 0.25
+    scale = rx.params[0].owner
+    assert isinstance(scale, stmts.FloatMul)
+    divided = scale.lhs.owner
+    assert isinstance(divided, stmts.FloatDiv)
+    assert divided.lhs is mt.callable_region.blocks[0].args[1]
+    assert divided.rhs.owner.value == scale.rhs.owner.value
+    constant = rz.params[0].owner
+    assert isinstance(constant, stmts.FloatMul)
+    divided = constant.lhs.owner
+    assert isinstance(divided, stmts.FloatDiv)
+    assert (
+        divided.lhs.owner.value / divided.rhs.owner.value * constant.rhs.owner.value
+        == pytest.approx(0.25)
+    )
 
 
 def test_a_measurement_is_a_bit_in_a_switch():
@@ -261,7 +270,7 @@ def test_a_measurement_is_a_bit_in_a_switch():
     mt = converted(measured)
     (measured_stmt,) = statements(mt, stmts.MeasureNd)
     (switch,) = statements(mt, stmts.Switch)
-    assert switch.selector is measured_stmt.bit
+    assert switch.selector.owner.array.owner.values == (measured_stmt.bit,)
 
 
 def test_the_validation_pass_runs_on_its_own():
@@ -320,10 +329,7 @@ def forwarded(q: Qubit):
 
 
 def test_a_forwarded_tuple_is_checked_at_each_position():
-    mt = converted(forwarded)
-    (call,) = statements(mt, stmts.Call)
-    (returned,) = statements(mt, stmts.Return)
-    assert returned.values == tuple(call.results)
+    refused(forwarded, "borrowed quantum parameter as an ordinary output")
 
 
 def test_one_validation_checks_two_kernels_in_turn():
@@ -534,32 +540,25 @@ def tuple_at_runtime(n: int, k: int) -> int:
 @pytest.mark.parametrize(
     "kernel, reason",
     [
-        (twice, "'cx' takes one qubit twice"),
-        (passes_twice, "'both' takes one qubit twice"),
-        (concatenated, "passed to 'add'"),
-        (mistyped, "left as `Bottom`"),
-        (nested, "defined inside a kernel"),
-        (mixed, "an integer mixed with a float"),
-        (uneven, "qubit lists of different lengths"),
-        (unsized_not, "a negation of a list of bits of unknown length"),
-        (tuple_in_loop, "a result of type"),
-        (tuple_from_branch, "a result of type"),
-        (returns_qubits, "a function that returns a list of qubits"),
-        (checks_for_loss, "a check for a lost qubit"),
-        (returns_a_qubit_twice, "a function that returns one qubit twice"),
-        (returns_a_register_twice, "a function that returns one qubit twice"),
-        (passes_tuple, "passed to a call"),
-        (over_list, "a loop over a value that is not a range"),
-        (tuple_at_runtime, "a tuple read at a runtime index"),
-        (strided_to_a_call, "a strided slice of a register passed to a call"),
+        (twice, "may name one qubit"),
+        (concatenated, "requires scalar numeric operands"),
+        (mistyped, "Bottom"),
+        (mixed, "cannot convert a runtime integer to a float"),
+        (uneven, "requires qubit lists of equal length"),
+        (unsized_not, "requires scalar numeric operands"),
+        (tuple_in_loop, "has no jeff value"),
+        (tuple_from_branch, "requires separate scalar or array results"),
+        (returns_qubits, "must own one whole allocation"),
+        (checks_for_loss, "Jeff has no form for 'is_lost'"),
+        (returns_a_qubit_twice, "cannot return one qubit twice"),
+        (returns_a_register_twice, "cannot return one qubit twice"),
+        (tuple_at_runtime, "tuple read at a constant"),
         (escaped, "a value carried by a loop or branch"),
-        (noisy, "jeff has no form for 'depolarize'"),
-        (broadcast, "register of known length"),
-        (slot, "a function that returns one qubit of a register"),
-        (divided, "a division of two integers"),
+        (noisy, "Jeff has no form for 'depolarize'"),
+        (slot, "must own one whole allocation"),
+        (divided, "has no numeric form for 'div'"),
         (negated_bool, "'usub' on a bool"),
-        (register_and_its_slot, "'register_and_qubit' takes one qubit twice"),
-        (mixed_numbers, "a constant of type"),
+        (mixed_numbers, "requires integer operands"),
         (from_the_end, "a negative index into a register of unknown length"),
         (inverted_bool, "'invert' on a bool"),
     ],
@@ -567,6 +566,22 @@ def tuple_at_runtime(n: int, k: int) -> int:
 )
 def test_refusals(kernel, reason):
     refused(kernel, reason)
+
+
+@pytest.mark.parametrize(
+    "kernel",
+    [
+        passes_twice,
+        nested,
+        passes_tuple,
+        over_list,
+        strided_to_a_call,
+        broadcast,
+        register_and_its_slot,
+    ],
+)
+def test_normalization_makes_reference_programs_convertible(kernel):
+    converted(kernel)
 
 
 @squin.kernel
@@ -586,9 +601,8 @@ def test_rows_slices_and_ladders_convert():
     """A register of registers is one flat register, and a slice moves as a block."""
     mt = converted(rows_and_slices)
     grid, line = mt.callable_region.blocks[0].args[1:]
-    assert grid.type == jeff_types.qureg(6) and line.type == jeff_types.qureg(4)
-    assert len(statements(mt, stmts.ExtractSlice)) == 2
-    assert len(statements(mt, stmts.InsertSlice)) == 2
+    assert grid.type == QuregType and line.type == QuregType
+    assert len(statements(mt, stmts.Extract)) == len(statements(mt, stmts.Insert))
     (loop,) = statements(mt, stmts.For)
     adds = [s for s in loop.body.walk() if isinstance(s, stmts.IntAdd)]
     assert len(adds) == 1

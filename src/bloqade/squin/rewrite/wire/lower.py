@@ -19,8 +19,9 @@ a list. A list whose length the places don't give keeps its squin statement, and
 the reference check then reports it.
 """
 
+from typing import TypeVar
 from dataclasses import field, dataclass
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, MutableMapping
 
 from kirin import ir, types
 from kirin.rewrite import Walk, Chain
@@ -45,8 +46,10 @@ from bloqade.analysis.reference import (
 )
 from bloqade.squin.analysis.reference import qubit_items
 
+_S = TypeVar("_S", bound=ir.Statement)
 
-def _put(stmt: ir.Statement, before: ir.Statement) -> ir.Statement:
+
+def _put(stmt: _S, before: ir.Statement) -> _S:
     """Insert `stmt` before the statement `before` and return `stmt`."""
     stmt.insert_before(before)
     return stmt
@@ -130,14 +133,41 @@ def layout_of(code: ir.Statement, refs: Mapping[ir.SSAValue, Ref]) -> Layout:
     assert isinstance(code, func.Function)
     entry = code.body.blocks[0]
     borrowed = tuple(p for p in entry.args[1:] if linear_type(refs.get(p)) is not None)
+    if isinstance(code.signature.output, types.BottomType):
+        raise WireConversionError("The function return has the impossible type Bottom.")
     originals = output_types(code.signature.output)
     returned = entry.last_stmt
     assert isinstance(returned, func.Return)
     places = positions(refs.get(returned.value, Untracked()), len(originals))
+    owned = [ref for ref in places if not isinstance(ref, Untracked)]
+    for index, ref in enumerate(owned):
+        if not isinstance(ref, Place) or ref.path:
+            raise WireConversionError("A quantum return must own one whole allocation.")
+        if any(not disjoint(ref, other) for other in owned[index + 1 :]):
+            raise WireConversionError("A function cannot return one qubit twice.")
+        if any(not disjoint(ref, refs[param]) for param in borrowed):
+            raise WireConversionError(
+                "A function cannot return a borrowed quantum parameter as an ordinary output."
+            )
     outputs = [linear_type(r) or t for r, t in zip(places, originals, strict=True)]
     outputs += [linear_type(refs.get(p)) or p.type for p in borrowed]
     packed = code.signature.output.is_subseteq(types.Tuple) and bool(originals)
     return Layout(len(originals), packed, borrowed, tuple(outputs))
+
+
+def distinct_parameters(a: Place, b: Place) -> bool:
+    """Use the wire calling convention to separate distinct quantum parameters.
+
+    Call preparation proves separation at each retained call site.
+    A public wire function requires distinct quantum arguments from its caller.
+    """
+    return (
+        isinstance(a.root, ir.BlockArgument)
+        and isinstance(b.root, ir.BlockArgument)
+        and a.root is not b.root
+        and a.root.owner is b.root.owner
+        and isinstance(a.root.owner.parent_stmt, func.Function)
+    )
 
 
 @dataclass
@@ -147,13 +177,12 @@ class LowerTwins(RewriteRule):
     `refs` holds the places of the kernel before the lowering. A statement keeps
     reference semantics if the places don't count the qubits of a list, if a
     qubit has no place, or if two places of one group may name one qubit. The
-    last check trusts the user if `assume_disjoint` is True. If `partial` is
+    converter requires distinct quantum parameters at wire function entry. If `partial` is
     False, the rule raises a `WireConversionError` for such a statement.
     Otherwise it leaves the statement and adds the reason to `refusals`.
     """
 
     refs: Mapping[ir.SSAValue, Ref]
-    assume_disjoint: bool = False
     partial: bool = False
     refusals: list[str] = field(default_factory=list)
 
@@ -185,8 +214,8 @@ class LowerTwins(RewriteRule):
     def problem(self, node: ir.Statement, operands: list[ir.SSAValue]) -> str | None:
         """Return why `node` can't be lowered, or None if it can.
 
-        One group takes item `k` of each operand list. A list that the lowering
-        created, such as a returned register, has no places, and its items differ.
+        Each group takes item `k` from each operand list.
+        Every operand requires a reference fact that proves separation within its group.
         """
         found: list[tuple[Ref, ...] | None] = []
         for value in operands:
@@ -194,16 +223,20 @@ class LowerTwins(RewriteRule):
             if items is None and typed_length(value.type, 0) is None:
                 return f"the places don't count the qubits of '{node.name}'"
             found.append(items)
+        lengths = {len(items) for items in found if items is not None}
+        twin = TWINS[type(node)].get_present_trait(Twin)
+        if len(lengths) > 1 and not twin.truncate:
+            return f"'{node.name}' requires qubit lists of equal length"
         for items in found:
             for item in items or ():
                 if not (isinstance(item, Place) and item.one_item):
                     return f"a qubit of '{node.name}' has no place: {item!r}"
-        if self.assume_disjoint or any(items is None for items in found):
-            return None
+        if any(items is None for items in found):
+            return f"a qubit operand of '{node.name}' has no reference proof"
         for group in zip(*found):  # type: ignore[misc]
             for k, a in enumerate(group):
                 for b in group[k + 1 :]:
-                    if not disjoint(a, b):
+                    if not (disjoint(a, b) or distinct_parameters(a, b)):
                         return (
                             f"the places {a!r} and {b!r} of one '{node.name}' may "
                             "name one qubit"
@@ -261,15 +294,16 @@ class LowerCalls(RewriteRule):
     function. `refs` holds the places of every prepared copy.
     """
 
-    refs: Mapping[ir.SSAValue, Ref]
+    refs: MutableMapping[ir.SSAValue, Ref]
     kernels: Mapping[ir.Method, ir.Method]
+    layouts: Mapping[ir.Statement, Layout]
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Lower `node` if it calls a prepared kernel."""
         if not isinstance(node, func.Invoke) or node.callee not in self.kernels:
             return RewriteResult()
         callee = self.kernels[node.callee]
-        layout = layout_of(callee.code, self.refs)
+        layout = self.layouts[callee.code]
         passed = [self.refs.get(arg, Untracked()) for arg in node.inputs]
         inputs = [
             arg if linear_type(ref) is None else take(arg, ref, node)
@@ -291,7 +325,9 @@ class LowerCalls(RewriteRule):
         elif not layout.packed:
             node.result.replace_by(values[0])
         else:
-            node.result.replace_by(_put(py.tuple.New(tuple(values)), node).result)
+            packed = _put(py.tuple.New(tuple(values)), node).result
+            self.refs[packed] = self.refs.get(node.result, Untracked())
+            node.result.replace_by(packed)
         node.delete()
         return RewriteResult(has_done_something=True)
 
@@ -310,8 +346,9 @@ class LowerCalls(RewriteRule):
             items.append(item.result)
         return items
 
-    @staticmethod
-    def reference(value: ir.SSAValue, place: Ref, before: ir.Statement) -> ir.SSAValue:
+    def reference(
+        self, value: ir.SSAValue, place: Ref, before: ir.Statement
+    ) -> ir.SSAValue:
         """Return a reference for a returned wire or register, or `value` itself.
 
         A returned qubit gets a new `Reference` that the wire fills, so the rest of
@@ -321,6 +358,7 @@ class LowerCalls(RewriteRule):
         if value.type.is_subseteq(WireType):
             fresh = _put(stmts.Reference(), before)
             _put(stmts.Wrap(fresh.result, value), before)
+            self.refs[fresh.result] = place
             return fresh.result
         if value.type.is_subseteq(RegisterType):
             fresh = _put(stmts.ReferenceRegister(), before)
@@ -328,6 +366,7 @@ class LowerCalls(RewriteRule):
             size = types.Any if counted is None else types.Literal(len(counted))
             fresh.result.type = ilist.IListType[QubitType, size]
             _put(stmts.WrapRegister(fresh.result, value), before)
+            self.refs[fresh.result] = place
             return fresh.result
         return value
 
@@ -342,6 +381,7 @@ class LowerReturn(RewriteRule):
     """
 
     refs: Mapping[ir.SSAValue, Ref]
+    layout: Layout
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Lower `node` if it is the return of a function that holds qubits."""
@@ -350,7 +390,7 @@ class LowerReturn(RewriteRule):
         code = node.parent_stmt
         if not isinstance(code, func.Function):
             return RewriteResult()
-        layout = layout_of(code, self.refs)
+        layout = self.layout
         if layout.outputs == output_types(code.signature.output):
             return RewriteResult()
         if layout.positions == 0:
@@ -361,14 +401,13 @@ class LowerReturn(RewriteRule):
             values = list(made.args)
         else:
             return RewriteResult()
-        outs = [
-            (
-                value
-                if linear_type(ref := self.refs.get(value)) is None
-                else take(value, ref, node)
-            )  # type: ignore[arg-type]
-            for value in values
-        ]
+        outs = []
+        for value in values:
+            ref = self.refs.get(value)
+            if ref is not None and linear_type(ref) is not None:
+                outs.append(take(value, ref, node))
+            else:
+                outs.append(value)
         outs += [take(p, self.refs[p], node) for p in layout.borrowed]
         if not outs:
             packed = _put(func.ConstantNone(), node).result
@@ -457,8 +496,8 @@ def lower(
     method: ir.Method,
     refs: Mapping[ir.SSAValue, Ref],
     kernels: Mapping[ir.Method, ir.Method],
-    assume_disjoint: bool = False,
     partial: bool = False,
+    layouts: Mapping[ir.Statement, Layout] | None = None,
 ) -> list[str]:
     """Lower every qubit statement of `method` in place, with the places `refs`.
 
@@ -466,10 +505,15 @@ def lower(
     the lowered statements belong to it. It returns the reasons of the statements
     that keep reference semantics, which `partial` allows.
     """
+    layouts = layouts or {
+        copy.code: layout_of(copy.code, refs) for copy in kernels.values()
+    }
+    layout = layouts.get(method.code) or layout_of(method.code, refs)
     method.dialects = kernel
-    twins = LowerTwins(refs, assume_disjoint, partial)
-    rules = Chain(twins, LowerCalls(refs, kernels), LowerLength(refs))
+    facts = dict(refs)
+    twins = LowerTwins(facts, partial)
+    rules = Chain(twins, LowerCalls(facts, kernels, layouts), LowerLength(facts))
     Walk(rules).rewrite(method.code)
-    Walk(LowerReturn(refs)).rewrite(method.code)
-    Walk(LowerEntry(refs)).rewrite(method.code)
+    Walk(LowerReturn(facts, layout)).rewrite(method.code)
+    Walk(LowerEntry(facts)).rewrite(method.code)
     return twins.refusals
