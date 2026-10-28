@@ -1,4 +1,4 @@
-"""Convert squin kernels to wire squin and back with `SquinToWire` and `WireToSquin`."""
+"""Convert squin kernels to wire squin with explicit conversion and validation checks."""
 
 from dataclasses import field, dataclass
 from collections.abc import Mapping, Callable
