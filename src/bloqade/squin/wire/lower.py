@@ -19,7 +19,7 @@ a list. A list whose length the places don't give keeps its squin statement, and
 the reference check then reports it.
 """
 
-from dataclasses import dataclass
+from dataclasses import field, dataclass
 from collections.abc import Mapping, Sequence
 
 from kirin import ir, types
@@ -145,13 +145,18 @@ def layout_of(code: ir.Statement, refs: Mapping[ir.SSAValue, Ref]) -> Layout:
 class LowerTwins(RewriteRule):
     """Lower a squin statement that has a twin onto `Unwrap`, twin and `Wrap`.
 
-    `refs` holds the places of the kernel before the lowering. The rule raises a
-    `WireConversionError` if two places of one gate may name one qubit, unless
-    `assume_disjoint` is True.
+    `refs` holds the places of the kernel before the lowering. A statement keeps
+    reference semantics if the places don't count the qubits of a list, if a
+    qubit has no place, or if two places of one group may name one qubit. The
+    last check trusts the user if `assume_disjoint` is True. If `partial` is
+    False, the rule raises a `WireConversionError` for such a statement.
+    Otherwise it leaves the statement and adds the reason to `refusals`.
     """
 
     refs: Mapping[ir.SSAValue, Ref]
     assume_disjoint: bool = False
+    partial: bool = False
+    refusals: list[str] = field(default_factory=list)
 
     def items(
         self, value: ir.SSAValue, before: ir.Statement
@@ -178,27 +183,33 @@ class LowerTwins(RewriteRule):
             items.append(item.result)
         return items
 
-    def check_apart(self, node: ir.Statement, operands: list[ir.SSAValue]) -> None:
-        """Raise if two qubits of one group of `node` may be one qubit.
+    def problem(self, node: ir.Statement, operands: list[ir.SSAValue]) -> str | None:
+        """Return why `node` can't be lowered, or None if it can.
 
-        One group takes item `k` of each operand list. A reference that the lowering
+        One group takes item `k` of each operand list. A list that the lowering
         created, such as a returned register, has no places, and its items differ.
         """
-        if self.assume_disjoint:
-            return
-        found = [
-            qubit_items(self.refs[v]) if v in self.refs else None for v in operands
-        ]
-        if any(items is None for items in found):
-            return
+        found: list[tuple[Ref, ...] | None] = []
+        for value in operands:
+            items = qubit_items(self.refs[value]) if value in self.refs else None
+            if items is None and typed_length(value.type, 0) is None:
+                return f"the places don't count the qubits of '{node.name}'"
+            found.append(items)
+        for items in found:
+            for item in items or ():
+                if not (isinstance(item, Place) and item.one_item):
+                    return f"a qubit of '{node.name}' has no place: {item!r}"
+        if self.assume_disjoint or any(items is None for items in found):
+            return None
         for group in zip(*found):  # type: ignore[misc]
             for k, a in enumerate(group):
                 for b in group[k + 1 :]:
                     if not disjoint(a, b):
-                        raise WireConversionError(
+                        return (
                             f"the places {a!r} and {b!r} of one '{node.name}' may "
                             "name one qubit"
                         )
+        return None
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Lower `node` if it is a squin statement with a twin."""
@@ -208,10 +219,13 @@ class LowerTwins(RewriteRule):
         trait = twin.get_present_trait(Twin)
         fields = getattr(twin, "__kirin_stmt_fields")
         wires = dict(trait.wires)
-        lists = [self.items(getattr(node, source), node) for source in wires]
-        if any(items is None for items in lists):
+        reason = self.problem(node, [getattr(node, source) for source in wires])
+        if reason is not None:
+            if not self.partial:
+                raise WireConversionError(reason)
+            self.refusals.append(reason)
             return RewriteResult()
-        self.check_apart(node, [getattr(node, source) for source in wires])
+        lists = [self.items(getattr(node, source), node) for source in wires]
         classical = {
             name: getattr(node, name)
             for name in fields.std_args
@@ -398,22 +412,65 @@ class LowerLength(RewriteRule):
         return RewriteResult(has_done_something=True)
 
 
+@dataclass
+class LowerEntry(RewriteRule):
+    """Give a function one wire or register parameter for each qubit parameter.
+
+    The body keeps using a reference: a new `Reference` at the entry takes the
+    qubit from the wire parameter. Promotion later joins that reference with the
+    accesses of the body, wherever their places allow it. So every function has
+    the wire signature of its `Layout`, even if part of its body keeps reference
+    semantics. Run the rule after `LowerReturn`, so that the return also reads
+    the new reference.
+    """
+
+    refs: Mapping[ir.SSAValue, Ref]
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Rewrite the qubit parameters of `node` if it is a function."""
+        if not isinstance(node, func.Function):
+            return RewriteResult()
+        block = node.body.blocks[0]
+        first = block.first_stmt
+        assert first is not None
+        changed = False
+        for param in block.args[1:]:
+            kind = linear_type(self.refs.get(param))
+            if kind is None:
+                continue
+            # The body and the return read the new reference. Only the fill keeps
+            # reading the parameter, which becomes the wire.
+            if kind.is_subseteq(WireType):
+                fresh = _put(stmts.Reference(), first)
+                param.replace_by(fresh.result)
+                _put(stmts.Wrap(fresh.result, param), first)
+            else:
+                fresh = _put(stmts.ReferenceRegister(), first)
+                fresh.result.type = param.type
+                param.replace_by(fresh.result)
+                _put(stmts.WrapRegister(fresh.result, param), first)
+            param.type = kind
+            changed = True
+        return RewriteResult(has_done_something=changed)
+
+
 def lower(
     method: ir.Method,
     refs: Mapping[ir.SSAValue, Ref],
     kernels: Mapping[ir.Method, ir.Method],
     assume_disjoint: bool = False,
-) -> RewriteResult:
+    partial: bool = False,
+) -> list[str]:
     """Lower every qubit statement of `method` in place, with the places `refs`.
 
     The method moves `method` to the dialect group of wire squin first, because
-    the lowered statements belong to it.
+    the lowered statements belong to it. It returns the reasons of the statements
+    that keep reference semantics, which `partial` allows.
     """
     method.dialects = kernel
-    rules = Chain(
-        LowerTwins(refs, assume_disjoint),
-        LowerCalls(refs, kernels),
-        LowerLength(refs),
-    )
-    result = Walk(rules).rewrite(method.code)
-    return Walk(LowerReturn(refs)).rewrite(method.code).join(result)
+    twins = LowerTwins(refs, assume_disjoint, partial)
+    rules = Chain(twins, LowerCalls(refs, kernels), LowerLength(refs))
+    Walk(rules).rewrite(method.code)
+    Walk(LowerReturn(refs)).rewrite(method.code)
+    Walk(LowerEntry(refs)).rewrite(method.code)
+    return twins.refusals

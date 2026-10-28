@@ -8,8 +8,9 @@ rule has four parts:
 - `Wrap` must put back a place that is out.
 - No other statement may touch a place that is out, except statements that only
   build references, such as `qs[i]`.
-- A body must end with the same places out as it started with, and a function
-  must return with no place out.
+- A body must end with the same places out as it started with.
+- A function may return only while the qubits that are out leave through its
+  return value, as the wires of its borrowed parameters do.
 
 A `Reference` starts with its place out, and the `Wrap` right after it fills it.
 
@@ -23,7 +24,7 @@ from collections.abc import Mapping
 from kirin import ir, interp
 from kirin.lattice import EmptyLattice
 from kirin.analysis import Forward
-from kirin.dialects import scf, func
+from kirin.dialects import py, scf, func
 from kirin.validation import ValidationPass
 from kirin.analysis.forward import ForwardFrame
 
@@ -64,8 +65,13 @@ class ReferenceCheck(Forward[EmptyLattice]):
     keys = (KEY, "absint")
     lattice = EmptyLattice
     refs: Mapping[ir.SSAValue, Ref] = field(default_factory=dict)
-    out: list[Place] = field(default_factory=list, init=False)
-    """The places whose qubits travel as wires at the current statement."""
+    out: list[tuple[Place, ir.SSAValue | None]] = field(
+        default_factory=list, init=False
+    )
+    """The places whose qubits travel as wires, each with the wire that took it out.
+
+    A new `Reference` starts out without a wire.
+    """
 
     def initialize(self):
         """Start a run with no place out."""
@@ -112,7 +118,7 @@ class ReferenceCheck(Forward[EmptyLattice]):
             return self.results(node)
         for value in node.args:
             for ref in places_in(self.refs.get(value, Untracked())):
-                if any(not disjoint(ref, place) for place in self.out):
+                if any(not disjoint(ref, place) for place, _ in self.out):
                     self.error(
                         node, f"'{node.name}' touches a qubit that is out as a wire"
                     )
@@ -136,9 +142,9 @@ class _References(interp.MethodTable):
         place = check.place(stmt, stmt.args[0])
         if place is None:
             return check.results(stmt)
-        if any(not disjoint(place, other) for other in check.out):
+        if any(not disjoint(place, other) for other, _ in check.out):
             check.error(stmt, f"'{stmt.name}' takes a qubit that is already out")
-        check.out.append(place)
+        check.out.append((place, stmt.results[0]))
         return check.results(stmt)
 
     @interp.impl(stmts.Wrap)
@@ -153,7 +159,7 @@ class _References(interp.MethodTable):
         place = check.place(stmt, stmt.args[0])
         if place is None:
             return check.results(stmt)
-        for k, other in enumerate(check.out):
+        for k, (other, _) in enumerate(check.out):
             if same_place(place, other):
                 del check.out[k]
                 return check.results(stmt)
@@ -176,7 +182,7 @@ class _References(interp.MethodTable):
             )
         place = check.place(stmt, stmt.results[0])
         if place is not None:
-            check.out.append(place)
+            check.out.append((place, None))
         return check.results(stmt)
 
 
@@ -202,7 +208,7 @@ class _Regions(interp.MethodTable):
             with check.new_frame(stmt, has_parent_access=True) as inner:
                 check.frame_call_region(inner, stmt, region, *args)
             balanced = len(check.out) == len(before) and all(
-                any(same_place(a, b) for b in before) for a in check.out
+                any(same_place(a, b) for b, _ in before) for a, _ in check.out
             )
             if not balanced:
                 check.error(
@@ -244,8 +250,11 @@ class _Func(interp.MethodTable):
         frame: ForwardFrame[EmptyLattice],
         stmt: func.Return,
     ) -> interp.ReturnValue[EmptyLattice]:
-        """Record an error if a qubit is still out as a wire."""
-        if check.out:
+        """Record an error if a qubit is out as a wire that the return drops."""
+        returned = {stmt.value}
+        if isinstance(made := stmt.value.owner, py.tuple.New):
+            returned.update(made.args)
+        if any(wire not in returned for _, wire in check.out):
             check.error(stmt, "the function returns while qubits are out as wires")
         return interp.ReturnValue(EmptyLattice.top())
 

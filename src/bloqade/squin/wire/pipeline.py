@@ -136,11 +136,19 @@ class SquinToWire:
     qubits that it allocates. Kirin's `Inline` rule inlines every other call. If
     `assume_disjoint` is True, the converter trusts that the qubits of one gate
     differ when the places cannot prove it.
+
+    If `partial` is True, a statement whose qubits the places can't name keeps
+    reference semantics, and the rest of the kernel still becomes wire squin.
+    Each such statement adds one line to `report`. If `partial` is False, the
+    converter raises a `WireConversionError` for it.
     """
 
     assume_disjoint: bool = False
+    partial: bool = False
     prepared: dict[ir.Method, ir.Method] = field(default_factory=dict, init=False)
     refs: dict[ir.SSAValue, Ref] = field(default_factory=dict, init=False)
+    report: list[str] = field(default_factory=list, init=False)
+    """Hold one line for each statement that kept reference semantics."""
 
     def emit(self, method: ir.Method) -> ir.Method:
         """Return the wire squin method of `method`.
@@ -157,18 +165,25 @@ class SquinToWire:
         self.prepare(method)
         copies = list(self.prepared.values())
         layouts = {copy.code: layout_of(copy.code, self.refs) for copy in copies}
+        self.report = []
         for copy in copies:
-            lower(copy, self.refs, self.prepared, self.assume_disjoint)
+            reasons = lower(
+                copy, self.refs, self.prepared, self.assume_disjoint, self.partial
+            )
+            self.report += [f"'{copy.sym_name}': {reason}" for reason in reasons]
         for copy in copies:
             promote(copy, layouts[copy.code])
             Fixpoint(Walk(CommonSubexpressionElimination())).rewrite(copy.code)
             Fixpoint(Walk(DeadCodeElimination())).rewrite(copy.code)
         for copy in copies:
             if left := remaining(copy):
-                raise WireConversionError(
-                    f"'{copy.sym_name}' keeps statements without a wire form: "
+                message = (
+                    f"'{copy.sym_name}' keeps statements with reference semantics: "
                     + ", ".join(sorted(set(left)))
                 )
+                if not self.partial:
+                    raise WireConversionError(message)
+                self.report.append(message)
             WireValidation().check(copy)
         return self.prepared[method]
 

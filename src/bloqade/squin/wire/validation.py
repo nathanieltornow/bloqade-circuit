@@ -41,6 +41,7 @@ from kirin.analysis.forward import ForwardFrame
 from bloqade.constants import constant_int
 
 from . import stmts
+from .twins import TWINS
 from .types import RegisterType, is_linear
 from .reference_check import ReferenceValidation
 
@@ -423,10 +424,18 @@ class StructureValidation(ValidationPass[None]):
         return "squin wire structure"
 
     def run(self, method: ir.Method) -> tuple[None, list[ir.ValidationError]]:
-        """Return the error of `verify` or `verify_type`, if one of them fails."""
+        """Return the error of `verify` or `verify_type`, if one of them fails.
+
+        A squin statement on qubits that keeps reference semantics comes from an
+        inlined library kernel. Kirin's type check rejects such a statement on a
+        list of unknown length, although the squin kernel runs. So a method with
+        such statements gets `verify` only.
+        """
+        kept = any(type(node) in TWINS for node in method.callable_region.walk())
         try:
             method.verify()
-            method.verify_type()
+            if not kept:
+                method.verify_type()
         except ir.ValidationError as error:
             return None, [error]
         return None, []

@@ -73,13 +73,27 @@ class Facts:
     touched: Mapping[ir.Statement, set[Place]]
     blocked: set[ir.Statement]
     accessed: Mapping[Root, set[Place]]
+    pinned: set[Root]
+    pin_all: bool
+
+    @property
+    def policy(self) -> "SlotPolicy":
+        """Return the slot policy of this form of the kernel."""
+        return SlotPolicy(self.accessed, self.pinned, self.pin_all)
 
 
 def analyze(method: ir.Method) -> Facts:
     """Run `SlotAnalysis` on the current form of `method`."""
     analysis = SlotAnalysis(method.dialects)
     frame, _ = analysis.run(method)
-    return Facts(frame.entries, analysis.touched, analysis.blocked, analysis.accessed)
+    return Facts(
+        frame.entries,
+        analysis.touched,
+        analysis.blocked,
+        analysis.accessed,
+        analysis.pinned,
+        analysis.pin_all,
+    )
 
 
 def accessing(node: ir.Statement, takes: bool) -> ReferenceAccess | None:
@@ -124,9 +138,15 @@ class SlotPolicy:
     """Decide which places of a lowered kernel are slots.
 
     `accessed` maps each root to the places that the kernel touches in it.
+    `pinned` holds the roots that a blocking use touches. No slot of a pinned
+    root is promoted, as `mem2reg` promotes no slot with a blocking use. If
+    `pin_all` is True, a blocking use reads a reference that may name any qubit,
+    so no slot is promoted.
     """
 
     accessed: Mapping[Root, set[Place]]
+    pinned: set[Root] = frozenset()  # type: ignore[assignment]
+    pin_all: bool = False
 
     def scalar_root(self, root: Root) -> bool:
         """Return True if every place of `root` that the kernel touches is a slot.
@@ -151,6 +171,8 @@ class SlotPolicy:
         root that stays one register.
         """
         if not isinstance(ref, Place) or root_value(ref.root) is None:
+            return None
+        if self.pin_all or ref.root in self.pinned:
             return None
         if ref.one_item:
             return ref if self.scalar_root(ref.root) else None
@@ -440,11 +462,10 @@ def _local(root: Root, block: ir.Block) -> bool:
 
 @dataclass
 class MaterializeStart(RewriteRule):
-    """Turn the first `Unwrap` of a slot into its allocation or its parameter.
+    """Turn the first `Unwrap` of a slot that its block allocates into an allocation.
 
-    A slot whose root the block allocates gets an `Alloc` or an `AllocRegister`. A
-    qubit or register parameter of the function becomes a wire or register
-    parameter.
+    A single qubit gets an `Alloc`, and a register gets an `AllocRegister`. A
+    `Reference` gets nothing, because the `Wrap` right after it fills it.
     """
 
     scan: Scan
@@ -469,23 +490,10 @@ class MaterializeStart(RewriteRule):
                 assert isinstance(made, func.Invoke)
                 fresh = _put(stmts.AllocRegister(made.inputs[0]), node).result
             access.value(node).replace_by(fresh)
-        elif self.parameter(root, block) and len(root.uses) == 1:
-            root.type = linear_type(slot)
-            access.value(node).replace_by(root)
         else:
             return RewriteResult()
         node.delete()
         return RewriteResult(has_done_something=True)
-
-    @staticmethod
-    def parameter(root: Root, block: ir.Block) -> bool:
-        """Return True if `root` is a parameter of the function whose entry is `block`."""
-        return (
-            isinstance(root, ir.BlockArgument)
-            and root.owner is block
-            and root.index > 0
-            and isinstance(block.parent_stmt, func.Function)
-        )
 
 
 @dataclass
@@ -580,21 +588,21 @@ def promote(method: ir.Method, layout: Layout | None = None) -> RewriteResult:
     signature of its wire function.
     """
     facts = analyze(method)
-    accesses = RegisterAccesses(facts.refs, SlotPolicy(facts.accessed))
+    accesses = RegisterAccesses(facts.refs, facts.policy)
     result = Walk(accesses).rewrite(method.code)
     facts = analyze(method)
-    boundaries = Boundaries(facts, SlotPolicy(facts.accessed))
+    boundaries = Boundaries(facts, facts.policy)
     result = Walk(boundaries).rewrite(method.code).join(result)
     facts = analyze(method)
-    forward = Forward(Scan(facts), SlotPolicy(facts.accessed))
+    forward = Forward(Scan(facts), facts.policy)
     result = Fixpoint(Walk(forward)).rewrite(method.code).join(result)
     # The reads `qs[i]` of the promoted accesses are dead now, and loops still
-    # carry the references that kirin's lowering added. A parameter becomes a wire
-    # parameter only when its last use is the access that takes it out.
+    # carry the references that kirin's lowering added. Both would block the
+    # materialization of the slots that they read.
     tidy = Chain(DeadCodeElimination(), DropInvariantReferences())
     result = Fixpoint(Walk(tidy)).rewrite(method.code).join(result)
     facts = analyze(method)
-    scan, policy = Scan(facts), SlotPolicy(facts.accessed)
+    scan, policy = Scan(facts), facts.policy
     ends = Chain(MaterializeStart(scan, policy), MaterializeEnd(scan, policy))
     result = Fixpoint(Walk(ends)).rewrite(method.code).join(result)
     cleanup = Chain(DeadCodeElimination(), DropInvariantReferences(), DeadAllocations())
