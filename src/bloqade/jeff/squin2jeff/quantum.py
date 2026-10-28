@@ -15,7 +15,7 @@ from .emitter import KEY, Frame, WireEmitter
 
 @wire.dialect.register(key=KEY)
 class _Wire(interp.MethodTable):
-    """Translate wire operations without consulting reference analysis."""
+    """Translate explicit wire operands and results into Jeff operations."""
 
     @interp.impl(wire.Alloc)
     def alloc(self, emit: WireEmitter, frame: Frame, stmt: wire.Alloc):
@@ -111,6 +111,38 @@ class _Wire(interp.MethodTable):
         )
         count = len(targets)
         return (*made.results[count:], *made.results[:count])
+
+    @interp.impl(wire.Take)
+    @interp.impl(wire.Put)
+    @interp.impl(wire.TakeSlice)
+    @interp.impl(wire.PutSlice)
+    @interp.impl(wire.SplitRegister)
+    @interp.impl(wire.JoinRegister)
+    @interp.impl(wire.DiscardRegister)
+    def owned_register(self, emit: WireEmitter, frame: Frame, stmt: ir.Statement):
+        """Preserve the operands and results of an explicit register ownership operation."""
+        table = {
+            wire.Take: stmts.Extract,
+            wire.Put: stmts.Insert,
+            wire.TakeSlice: stmts.ExtractSlice,
+            wire.PutSlice: stmts.InsertSlice,
+            wire.SplitRegister: stmts.RegSplit,
+            wire.JoinRegister: stmts.RegJoin,
+            wire.DiscardRegister: stmts.RegFree,
+        }
+        made = frame.push(
+            table[type(stmt)](*(frame.scalar(value) for value in stmt.args))
+        )
+        return tuple(made.results)
+
+    @interp.impl(wire.PackRegister)
+    def pack(self, emit: WireEmitter, frame: Frame, stmt: wire.PackRegister):
+        """Create a Jeff register from its owned qubits in operand order."""
+        return (
+            frame.push(
+                stmts.RegCreate(tuple(frame.scalar(value) for value in stmt.wires))
+            ).result,
+        )
 
 
 @qubit_stmts.dialect.register(key=KEY)

@@ -208,4 +208,5 @@ def test_int_not_is_logical_on_bits():
     m = add(block, stmts.MeasureNd(w))
     add(block, stmts.Free(m.result_wire))
     negated = add(block, stmts.IntNot(m.bit)).result
+    negated.type = types.Bool
     assert run(method(block, negated, types.Bool, name="notbit")) is True

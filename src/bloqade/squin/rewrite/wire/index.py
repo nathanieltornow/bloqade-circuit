@@ -4,10 +4,12 @@ The converter names a register element with an integer expression over symbols.
 A symbol names an integer value or the iteration variable of an `scf.For` loop.
 """
 
+from collections.abc import Mapping
+
 from kirin import ir, types
 from kirin.dialects import py, scf
 
-from bloqade.analysis.reference.index import Sym, Iter, Affine
+from bloqade.analysis.indices import Sym, Iter, Affine
 
 
 def _integer(stmt: ir.Statement, before: ir.Statement) -> ir.SSAValue:
@@ -30,11 +32,15 @@ def symbol_value(symbol: Sym) -> ir.SSAValue:
     return symbol
 
 
-def index_value(index: Affine, before: ir.Statement) -> ir.SSAValue:
+def index_value(
+    index: Affine,
+    before: ir.Statement,
+    symbols: Mapping[Sym, ir.SSAValue] | None = None,
+) -> ir.SSAValue:
     """Insert the statements that compute `index` before `before`, and return it.
 
-    The sum takes each symbol times its coefficient, plus the constant. Common
-    subexpression elimination later merges equal sums.
+    The sum takes each symbol times its coefficient, plus the constant.
+    Structural rewrites supply replacement values for symbols whose owners they rebuild.
     """
     if (constant := index.constant) is not None:
         made = py.Constant(constant)
@@ -42,7 +48,11 @@ def index_value(index: Affine, before: ir.Statement) -> ir.SSAValue:
         return made.result
     total: ir.SSAValue | None = None
     for symbol, a in sorted(index.terms, key=lambda t: repr(t[0])):
-        term = symbol_value(symbol)
+        term = (
+            symbols[symbol]
+            if symbols is not None and symbol in symbols
+            else symbol_value(symbol)
+        )
         if a != 1:
             factor = py.Constant(a)
             factor.insert_before(before)

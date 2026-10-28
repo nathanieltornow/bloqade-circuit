@@ -103,33 +103,3 @@ def test_missing_handles_cannot_authorize_a_gate():
     gate = CX(controls.result, targets.result)
     with pytest.raises(WireConversionError, match="has no place"):
         LocalLowering(gate, Handles()).gate()
-
-
-def test_reused_reference_analysis_discards_index_facts_after_a_rewrite():
-    from kirin.rewrite import Walk
-
-    from bloqade.analysis.reference import Slot, disjoint
-    from bloqade.squin.analysis.reference import QubitReferenceAnalysis
-
-    method = ladder.similar()
-    SquinToWire.normalize(method)
-    analysis = QubitReferenceAnalysis(method.dialects)
-    before, _ = analysis.run(method)
-    reads = []
-
-    class CollectReads(RewriteRule):
-        def rewrite_Statement(self, node):
-            if isinstance(node, py.GetItem) and isinstance(
-                before.entries.get(node.result), Slot
-            ):
-                reads.append(node)
-            return RewriteResult()
-
-    Walk(CollectReads()).rewrite(method.code)
-    first = reads[0]
-    old = before.entries[first.result]
-    index = py.Constant(2)
-    index.insert_before(first)
-    first.index = index.result
-    after, _ = analysis.run(method)
-    assert disjoint(old, after.entries[first.result])

@@ -4,8 +4,6 @@ A wire is one qubit at one point in the program, and it has exactly one use. Eac
 statement consumes its input wires and returns new wires. The conversion passes live in `bloqade.squin.passes`.
 """
 
-from bloqade.squin.analysis.wire import reference_impl as reference_impl
-
 from . import twins as twins
 from .group import kernel as kernel
 from .stmts import (

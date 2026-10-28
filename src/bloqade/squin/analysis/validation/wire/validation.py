@@ -40,13 +40,13 @@ from kirin.analysis.forward import ForwardFrame
 
 from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
+from bloqade.analysis.indices import Slice, Affine, IndexAnalysis, same
 from bloqade.squin.wire.types import (
     RegisterType,
     is_linear,
     linear_paths,
     contains_linear,
 )
-from bloqade.analysis.reference.index import Affine, IndexAnalysis, same
 from bloqade.squin.analysis.validation.wire.position import PositionValidation
 from bloqade.squin.analysis.validation.wire.references import ReferenceValidation
 
@@ -359,6 +359,13 @@ BORROW_KEY = "squin.wire.borrows"
 
 
 @dataclass(frozen=True)
+class Hole:
+    """Identify empty elements whose qubits have transferred ownership out of the register."""
+
+    selection: Affine | Slice
+
+
+@dataclass(frozen=True)
 class Slots(BoundedLattice["Slots"]):
     """Hold the borrowed slots of one register value.
 
@@ -367,7 +374,9 @@ class Slots(BoundedLattice["Slots"]):
     analysis cannot name the slots. That element is the top of the lattice.
     """
 
-    held: frozenset[Affine] | None
+    held: frozenset[Affine | Slice | Hole] | None
+    length: Affine | None = None
+    unreachable: bool = False
 
     @classmethod
     def top(cls) -> "Slots":
@@ -376,31 +385,53 @@ class Slots(BoundedLattice["Slots"]):
 
     @classmethod
     def bottom(cls) -> "Slots":
-        """Return the element of a register without a borrowed slot."""
-        return cls(frozenset())
+        """Return the unreachable state that precedes every concrete register state."""
+        return cls(frozenset(), unreachable=True)
 
     def is_subseteq(self, other: "Slots") -> bool:
         """Return True if `other` holds every slot of `self`."""
+        if self.unreachable:
+            return True
+        if other.unreachable:
+            return False
         if other.held is None:
             return True
-        return self.held is not None and self.held <= other.held
+        return (
+            self.held is not None
+            and self.held <= other.held
+            and (other.length is None or self.length == other.length)
+        )
 
     def join(self, other: "Slots") -> "Slots":
         """Return the slots that either element holds."""
+        if self.unreachable:
+            return other
+        if other.unreachable:
+            return self
         if self.held is None or other.held is None:
             return Slots(None)
-        return Slots(self.held | other.held)
+        return Slots(
+            self.held | other.held, self.length if self.length == other.length else None
+        )
 
     def meet(self, other: "Slots") -> "Slots":
-        """Return the slots that both elements hold."""
+        """Intersect hole information and retain compatible length constraints."""
+        if self.unreachable or other.unreachable:
+            return Slots.bottom()
         if self.held is None:
             return other
         if other.held is None:
             return self
-        return Slots(self.held & other.held)
+        if (
+            self.length is not None
+            and other.length is not None
+            and self.length != other.length
+        ):
+            return Slots.bottom()
+        return Slots(self.held & other.held, self.length or other.length)
 
 
-EMPTY = Slots.bottom()
+EMPTY = Slots(frozenset())
 
 
 @dataclass
@@ -461,35 +492,131 @@ class BorrowCheck(Forward[Slots]):
 class _Borrows(interp.MethodTable):
     """Track the borrowed slots through `Borrow` and `Release`."""
 
+    @interp.impl(stmts.Take)
     @interp.impl(stmts.Borrow)
     def borrow(
         self, check: BorrowCheck, frame: ForwardFrame[Slots], stmt: stmts.Borrow
     ) -> tuple[Slots, ...]:
         """Add the index to the borrowed slots of the register."""
         held = frame.get(stmt.register).held
-        key = check.indices.of(stmt.index)
+        key = (
+            Hole(check.indices.of(stmt.index))
+            if isinstance(stmt, stmts.Take)
+            else check.indices.of(stmt.index)
+        )
         if held is None:
             return (Slots.top(), Slots.top())
         if key in held:
             check.error(stmt, "'borrow' takes a slot that is already borrowed")
-        elif any(same(key, previous) is not False for previous in held):
+        elif any(not separated(key, previous) for previous in held):
             check.error(
                 stmt,
                 "'borrow' requires indices that provably differ from every outstanding borrow",
             )
-        return (Slots(held | {key}), Slots.top())
+        return (Slots(held | {key}, frame.get(stmt.register).length), Slots.top())
 
+    @interp.impl(stmts.Put)
     @interp.impl(stmts.Release)
     def release(
         self, check: BorrowCheck, frame: ForwardFrame[Slots], stmt: stmts.Release
     ) -> tuple[Slots, ...]:
         """Remove a slot only when its index matches a recorded borrow."""
         held = frame.get(stmt.register).held
-        key = check.indices.of(stmt.index)
+        key = (
+            Hole(check.indices.of(stmt.index))
+            if isinstance(stmt, stmts.Put)
+            else check.indices.of(stmt.index)
+        )
         if held is not None and key in held:
-            return (Slots(held - {key}),)
+            return (Slots(held - {key}, frame.get(stmt.register).length),)
         check.error(stmt, "'release' requires a matching borrowed index")
         return (Slots.top(),)
+
+    @interp.impl(stmts.AllocRegister)
+    def alloc(self, check: BorrowCheck, frame, stmt: stmts.AllocRegister):
+        """Record the length of a newly allocated complete register."""
+        return (Slots(frozenset(), check.indices.of(stmt.size)),)
+
+    @interp.impl(stmts.PackRegister)
+    def pack(self, check: BorrowCheck, frame, stmt: stmts.PackRegister):
+        """Record the number of consumed qubits in the new register."""
+        return (Slots(frozenset(), Affine(len(stmt.wires))),)
+
+    @interp.impl(stmts.Length)
+    def length(self, check: BorrowCheck, frame, stmt: stmts.Length):
+        """Preserve holes and record a known length for later slice checks."""
+        state = frame.get(stmt.register)
+        if state.length is not None:
+            check.indices.cache[stmt.result] = state.length
+        return state, Slots.top()
+
+    @interp.impl(stmts.SplitRegister)
+    def split(self, check: BorrowCheck, frame, stmt: stmts.SplitRegister):
+        """Require a complete register and compute the two result lengths."""
+        check.expect_empty(frame, stmt, stmt.args)
+        at = check.indices.of(stmt.index)
+        length = frame.get(stmt.register).length
+        return Slots(frozenset(), at), Slots(
+            frozenset(), None if length is None else length - at
+        )
+
+    @interp.impl(stmts.JoinRegister)
+    def join(self, check: BorrowCheck, frame, stmt: stmts.JoinRegister):
+        """Require complete registers and add their known lengths."""
+        check.expect_empty(frame, stmt, stmt.args)
+        a, b = frame.get(stmt.first).length, frame.get(stmt.second).length
+        return (Slots(frozenset(), None if a is None or b is None else a + b),)
+
+    @interp.impl(stmts.TakeSlice)
+    def take_slice(self, check: BorrowCheck, frame, stmt: stmts.TakeSlice):
+        """Record a contiguous hole and the extracted register's length."""
+        state = frame.get(stmt.register)
+        size = check.indices.of(stmt.length)
+        key = Hole(Slice(check.indices.of(stmt.start), 1, size))
+        if state.held is None:
+            return Slots.top(), Slots(frozenset(), size)
+        if any(not separated(key, held) for held in state.held):
+            check.error(
+                stmt, "A slice extraction overlaps an outstanding register hole."
+            )
+        return Slots(state.held | {key}, state.length), Slots(frozenset(), size)
+
+    @interp.impl(stmts.PutSlice)
+    def put_slice(self, check: BorrowCheck, frame, stmt: stmts.PutSlice):
+        """Require a complete slice that exactly fills one recorded hole."""
+        check.expect_empty(frame, stmt, (stmt.slice_register,))
+        state = frame.get(stmt.register)
+        size = frame.get(stmt.slice_register).length
+        key = Hole(Slice(check.indices.of(stmt.start), 1, size))
+        if state.held is not None and size is not None and key in state.held:
+            return (Slots(state.held - {key}, state.length),)
+        check.error(stmt, "A slice insertion must match an empty range and its length.")
+        return (Slots.top(),)
+
+    @interp.impl(stmts.DiscardRegister)
+    def discard(self, check: BorrowCheck, frame, stmt: stmts.DiscardRegister):
+        """Permit moved-out elements and require every outstanding borrow to return."""
+        held = frame.get(stmt.register).held
+        if held is None or any(not isinstance(hole, Hole) for hole in held):
+            check.error(
+                stmt, "A discarded register must restore every borrowed element."
+            )
+        return ()
+
+
+def separated(a: Affine | Slice | Hole, b: Affine | Slice | Hole) -> bool:
+    """Prove that two element or contiguous slice holes do not overlap."""
+    a = a.selection if isinstance(a, Hole) else a
+    b = b.selection if isinstance(b, Hole) else b
+    if isinstance(a, Affine) and isinstance(b, Affine):
+        return same(a, b) is False
+    left = a if isinstance(a, Slice) else Slice(a, 1, Affine(1))
+    right = b if isinstance(b, Slice) else Slice(b, 1, Affine(1))
+    if left.length is None or right.length is None:
+        return False
+    gap_a = (left.start + left.length - right.start).constant
+    gap_b = (right.start + right.length - left.start).constant
+    return (gap_a is not None and gap_a <= 0) or (gap_b is not None and gap_b <= 0)
 
 
 @scf.dialect.register(key=BORROW_KEY)

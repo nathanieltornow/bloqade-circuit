@@ -9,8 +9,7 @@ a load and a store connect values to memory. `Unwrap` takes the qubit of a
 reference out as a wire, and `Wrap` puts a wire back. `UnwrapRegister` and
 `WrapRegister` do the same for a whole register. `Reference` and
 `ReferenceRegister` create a reference without a qubit, which the next `Wrap`
-fills. The promotion passes remove these statements wherever the reference
-analysis can name the place of each reference.
+fills. The ordered converter resolves these transfers from source definitions and current wire values.
 """
 
 from kirin import ir, types
@@ -164,3 +163,78 @@ class ReferenceRegister(ir.Statement):
 
     name = "reference_register"
     result: ir.ResultValue = info.result(QubitListType)
+
+
+@statement(dialect=dialect)
+class Take(ir.Statement):
+    """Move one qubit out of a register and leave its element empty."""
+
+    register: ir.SSAValue = info.argument(RegisterType)
+    index: ir.SSAValue = info.argument(types.Int)
+    register_out: ir.ResultValue = info.result(RegisterType)
+    wire: ir.ResultValue = info.result(WireType)
+
+
+@statement(dialect=dialect)
+class Put(ir.Statement):
+    """Fill an empty register element with an owned qubit."""
+
+    register: ir.SSAValue = info.argument(RegisterType)
+    index: ir.SSAValue = info.argument(types.Int)
+    wire: ir.SSAValue = info.argument(WireType)
+    register_out: ir.ResultValue = info.result(RegisterType)
+
+
+@statement(dialect=dialect)
+class PackRegister(ir.Statement):
+    """Consume qubits and form a register in operand order."""
+
+    wires: tuple[ir.SSAValue, ...] = info.argument(WireType)
+    result: ir.ResultValue = info.result(RegisterType)
+
+
+@statement(dialect=dialect)
+class SplitRegister(ir.Statement):
+    """Divide a complete register at an index into two owned registers."""
+
+    register: ir.SSAValue = info.argument(RegisterType)
+    index: ir.SSAValue = info.argument(types.Int)
+    before: ir.ResultValue = info.result(RegisterType)
+    after: ir.ResultValue = info.result(RegisterType)
+
+
+@statement(dialect=dialect)
+class JoinRegister(ir.Statement):
+    """Consume two complete registers and concatenate their qubits."""
+
+    first: ir.SSAValue = info.argument(RegisterType)
+    second: ir.SSAValue = info.argument(RegisterType)
+    result: ir.ResultValue = info.result(RegisterType)
+
+
+@statement(dialect=dialect)
+class TakeSlice(ir.Statement):
+    """Move a contiguous range into an owned register and leave its source elements empty."""
+
+    register: ir.SSAValue = info.argument(RegisterType)
+    start: ir.SSAValue = info.argument(types.Int)
+    length: ir.SSAValue = info.argument(types.Int)
+    register_out: ir.ResultValue = info.result(RegisterType)
+    slice_register: ir.ResultValue = info.result(RegisterType)
+
+
+@statement(dialect=dialect)
+class PutSlice(ir.Statement):
+    """Fill an empty contiguous range with the qubits of an owned register."""
+
+    register: ir.SSAValue = info.argument(RegisterType)
+    start: ir.SSAValue = info.argument(types.Int)
+    slice_register: ir.SSAValue = info.argument(RegisterType)
+    register_out: ir.ResultValue = info.result(RegisterType)
+
+
+@statement(dialect=dialect)
+class DiscardRegister(ir.Statement):
+    """Consume a register and free its remaining qubits, including registers with moved-out elements."""
+
+    register: ir.SSAValue = info.argument(RegisterType)

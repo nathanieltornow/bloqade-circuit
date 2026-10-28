@@ -5,8 +5,8 @@ constant integer. Each symbol `s` is an integer parameter or the iteration varia
 of a loop or a map. Indices such as `i`, `i + 1`, `2*i + 1` and `n - 1 - i` are
 affine, and `i * i` and `i % 2` are not.
 
-Affine indices let the reference analysis tell `qs[i]` and `qs[i + 1]` apart. Two
-affine indices are equal when their difference is 0, and that check is cheap.
+The converter and wire validators use these expressions to compare register indices.
+Two affine indices are equal when their difference is zero.
 """
 
 from __future__ import annotations
@@ -242,8 +242,8 @@ def python_slice(
         return None
     bounds = (start, stop)
     if size is not None and all(b is None or b.constant is not None for b in bounds):
-        constants = (None if b is None else b.const for b in bounds)
-        items = range(size)[slice(*constants, step)]
+        first, last = (None if b is None else b.const for b in bounds)
+        items = range(size)[slice(first, last, step)]
         return Slice(Affine(items.start), items.step, Affine(len(items)))
     if step < 0:
         return None

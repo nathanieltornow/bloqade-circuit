@@ -12,12 +12,13 @@ from kirin.dialects import py, scf, func
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade.qubit import stmts as qubit_stmts, qalloc
+from bloqade.types import holds_qubits
 from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
+from bloqade.analysis.indices import Affine
 from bloqade.squin.wire.types import WireType, RegisterType, is_linear
 from bloqade.squin.wire.traits import Threads
-from bloqade.analysis.reference.index import Affine
-from bloqade.squin.analysis.reference import holds_qubits
+from bloqade.squin.wire.ownership import owns_inputs
 from bloqade.squin.rewrite.wire.handles import (
     Handle,
     Handles,
@@ -215,7 +216,7 @@ class Origins(RewriteRule):
             node, (stmts.Unwrap, stmts.UnwrapRegister, stmts.Wrap, stmts.WrapRegister)
         ):
             self.reference_access(node)
-        elif isinstance(node, stmts.Borrow):
+        elif isinstance(node, (stmts.Borrow, stmts.Take)):
             register = self.handles.get(node.register)
             self.handles.values[node.register_out] = register
             self.handles.values[node.wire] = (
@@ -237,6 +238,19 @@ class Origins(RewriteRule):
                 "A release must restore the qubit from its register slot.",
             )
             self.handles.values[node.register_out] = register
+        elif isinstance(
+            node,
+            (
+                stmts.Put,
+                stmts.PackRegister,
+                stmts.JoinRegister,
+                stmts.SplitRegister,
+                stmts.TakeSlice,
+                stmts.PutSlice,
+            ),
+        ):
+            for value in node.results:
+                self.handles.values[value] = Handle(value, RegisterType)
         elif isinstance(node, func.Invoke):
             self.observer(node)
             inner = Origins(
@@ -280,7 +294,7 @@ class Origins(RewriteRule):
         parameters = [
             arg
             for arg in self.method.callable_region.blocks[0].args[1:]
-            if is_linear(arg.type)
+            if is_linear(arg.type) and not owns_inputs(self.method)
         ]
         outputs = result if isinstance(result, tuple) else (result,)
         if self.positions and len(outputs) < len(parameters):
@@ -321,7 +335,11 @@ class Origins(RewriteRule):
             zip(node.results, end.values, block.args[1:], initial)
         ):
             actual = self.handles.get(value)
-            if is_linear(argument.type):
+            if (
+                is_linear(argument.type)
+                and self.method is not None
+                and not owns_inputs(self.method)
+            ):
                 self.expect(
                     end,
                     actual,
@@ -347,7 +365,11 @@ class Origins(RewriteRule):
             zip(node.results, left.values, right.values)
         ):
             first, second = self.handles.get(a), self.handles.get(b)
-            if is_linear(result.type):
+            if (
+                is_linear(result.type)
+                and self.method is not None
+                and not owns_inputs(self.method)
+            ):
                 self.expect(
                     node,
                     second,

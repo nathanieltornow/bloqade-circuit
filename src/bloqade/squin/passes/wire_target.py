@@ -14,10 +14,10 @@ from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade import qubit
 from bloqade.squin import gate, noise
+from bloqade.types import holds_qubits
 from bloqade.squin.wire import stmts
 from bloqade.native.dialects import gate as native_gate
 from bloqade.squin.wire.group import kernel, reference_kernel
-from bloqade.squin.analysis.reference import holds_qubits
 
 REFERENCE_STATEMENTS = (
     stmts.Unwrap,

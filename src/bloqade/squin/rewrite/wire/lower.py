@@ -12,11 +12,11 @@ from kirin.dialects import py, func, ilist
 
 from bloqade.types import QubitType
 from bloqade.squin.wire import stmts
+from bloqade.analysis.indices import Sym, Affine
 from bloqade.squin.wire.twins import TWINS
 from bloqade.squin.wire.types import WireType, RegisterType
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.traits import Twin
-from bloqade.analysis.reference.index import Sym, Affine
 from bloqade.squin.rewrite.wire.handles import Handle, Handles, Unknown, distinct
 from bloqade.squin.rewrite.wire.normalize import BroadcastToLoop
 

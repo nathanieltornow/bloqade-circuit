@@ -1,5 +1,6 @@
 """Check ordered conversion, independent validation and partial reference lifetimes."""
 
+import sys
 from typing import Literal
 
 import pytest
@@ -12,7 +13,6 @@ from bloqade import squin
 from bloqade.jeff import WireToJeff
 from bloqade.types import Qubit
 from bloqade.squin.wire import WireConversionError, stmts
-from bloqade.analysis.reference import ReferenceAnalysis
 from bloqade.squin.passes.squin_to_wire import SquinToWire, remaining
 from bloqade.squin.passes.wire_to_squin import WireToSquin
 from bloqade.squin.analysis.validation.wire import WireValidation
@@ -20,12 +20,19 @@ from bloqade.squin.analysis.validation.wire import WireValidation
 
 @pytest.fixture
 def forbid_reference_analysis(monkeypatch):
-    def forbidden(*args, **kwargs):
-        raise AssertionError(
-            "Wire conversion must resolve definitions during rewriting."
-        )
+    class Guard:
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname in {
+                "bloqade.analysis.reference",
+                "bloqade.squin.analysis.reference",
+                "bloqade.jeff.analysis.wire",
+            }:
+                raise AssertionError(
+                    "Wire conversion must use explicit values and local definitions."
+                )
+            return None
 
-    monkeypatch.setattr(ReferenceAnalysis, "run", forbidden)
+    monkeypatch.setattr(sys, "meta_path", [Guard(), *sys.meta_path])
 
 
 @pytest.mark.parametrize("kernel, args, expected", CASES)
