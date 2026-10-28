@@ -103,7 +103,8 @@ A register remains one allocation, including when every access uses a constant i
 
 An unsupported use prevents promotion of its whole allocation.
 An unknown blocking reference prevents promotion of every allocation.
-The conversion target rejects the method if any references remain.
+Partial conversion preserves these references and can still promote independent allocations.
+Complete conversion rejects any references that remain.
 
 ### The forward state
 
@@ -182,7 +183,7 @@ Cleanup uses `CheckedFixpoint` and has no role in choosing wire connections or l
 
 | Check | Required property |
 | --- | --- |
-| `StructureValidation` | Every method passes Kirin's structure and type checks. |
+| `StructureValidation` | Every method passes Kirin's structure and type checks, including partial conversions. |
 | `LinearityValidation` | Each wire, register and quantum tuple field has one use on each execution path. |
 | `BorrowValidation` | Each release matches a borrowed index, and registers leave each boundary with every slot restored. |
 | `PositionValidation` | Loop yields and call return suffixes continue their inputs in order, and releases restore the original qubits. |
@@ -206,8 +207,8 @@ A public entry point that returns such an alias causes conversion to fail.
 Complete conversion checks every prepared method, including its nested regions.
 The conversion target rejects source quantum operations, reference transfers and reference types inside containers or signatures.
 It also rejects unresolved calls and operations from unsupported dialects.
-Every public conversion must complete fully.
-Unsupported operations and unresolved reference accesses cause conversion to fail.
+`partial=True` keeps unsupported reference operations and reports them.
+Partial conversion still requires every validation check to pass.
 
 ## Public pass boundaries
 
@@ -219,7 +220,7 @@ Tuple projection resolves the temporary tuples that lowering constructs.
 Promotion computes a read-only plan after lowering finishes its structural changes.
 The final target check and validation suite cover every converted function.
 A failed conversion leaves the source methods unchanged.
-Repeated calls clear the converter's preparation state.
+Repeated calls clear the converter's preparation state and diagnostics.
 
 `CheckedFixpoint` reports an error if rewriting reaches its iteration limit.
 The default limit is 32 iterations.

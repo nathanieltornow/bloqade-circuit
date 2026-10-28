@@ -2,7 +2,7 @@
 
 The target accepts wire operations and classical operations from the source
 dialect group. Every operand, result and block argument must exclude qubit
-references. Any violation causes the public converter to fail.
+references. Partial conversion reports the same violations and keeps them.
 """
 
 from dataclasses import field, dataclass
