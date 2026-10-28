@@ -12,17 +12,16 @@ from kirin import ir, types
 from kirin.dialects import py, ilist
 from kirin.dialects.py import slice as py_slice
 
-from bloqade.types import QubitType
+from bloqade.types import QubitType, holds_qubits
 from bloqade.constants import constant_int
-from bloqade.squin.wire.types import WireType, RegisterType, contains_linear
-from bloqade.analysis.reference.index import (
+from bloqade.analysis.indices import (
     Slice,
     Affine,
     IndexAnalysis,
     same,
     python_slice,
 )
-from bloqade.squin.analysis.reference import holds_qubits
+from bloqade.squin.wire.types import WireType, RegisterType, contains_linear
 
 
 def quantum_type(kind: types.TypeAttribute) -> types.TypeAttribute | None:
@@ -146,6 +145,15 @@ def merge(left: Descriptor, right: Descriptor) -> Descriptor:
     return Unknown(
         None if a is None or b is None else frozenset(a | b),
         "a value carried by a loop or branch",
+    )
+
+
+def known(value: Descriptor) -> bool:
+    """Return whether every member identifies a concrete quantum location."""
+    return (
+        isinstance(value, Handle)
+        or isinstance(value, tuple)
+        and all(known(item) for item in value)
     )
 
 

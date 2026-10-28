@@ -12,7 +12,7 @@ from bloqade.squin.gate import stmts as gates
 from bloqade.squin.wire import WireConversionError, stmts, twins
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
-from bloqade.squin.rewrite.wire.promote import Conversion
+from bloqade.squin.rewrite.wire.prepare import Conversion
 from bloqade.squin.analysis.validation.wire import WireValidation
 
 
@@ -176,4 +176,68 @@ def test_a_pure_observer_of_a_reference_blocks_its_promotion():
     compare = py.cmp.Eq(observed, observed)
     compare.insert_before(transfers[0])
     with pytest.raises(WireConversionError, match="Unsupported reference operation"):
+        Conversion(method, SquinToWire().convert).run()
+
+
+def test_promotion_visits_each_prepared_statement_once(monkeypatch):
+    """Check the driver's order while boundary rules move scheduled body statements."""
+    from test_roundtrip import nested
+
+    from bloqade.squin.rewrite.wire import prepare, promote
+
+    expected = []
+    visited = []
+    run = prepare.promote
+    rewrite = promote.Promote.rewrite_Statement
+
+    def record_input(method, locations, allocations):
+        expected.extend(method.code.walk())
+        return run(method, locations, allocations)
+
+    def record_visit(rule, node):
+        assert node is expected[len(visited)]
+        visited.append(node)
+        children = [child for region in node.regions for child in region.walk()]
+        result = rewrite(rule, node)
+        assert all(child.parent_block is not None for child in children)
+        return result
+
+    monkeypatch.setattr(prepare, "promote", record_input)
+    monkeypatch.setattr(promote.Promote, "rewrite_Statement", record_visit)
+    method = SquinToWire().emit(nested)
+    assert visited == expected
+    assert len(set(visited)) == len(visited)
+    WireValidation().check(method)
+
+
+@squin.kernel
+def one_captured_register(n: int):
+    active = squin.qalloc(2)
+    outside = squin.qalloc(1)
+    for _ in range(n):
+        squin.x(active[0])
+        local = squin.qubit.new()
+        squin.x(local)
+    squin.x(outside[0])
+    return squin.broadcast.measure(active), squin.broadcast.measure(outside)
+
+
+@pytest.mark.parametrize("n", [0, 1, 2])
+def test_a_loop_carries_only_the_allocations_that_its_body_uses(n):
+    """Keep unused outer allocations outside the loop and free local allocations inside it."""
+    method = SquinToWire().emit(one_captured_register)
+    loop = next(node for node in method.code.walk() if isinstance(node, scf.For))
+    assert len(loop.initializers) == 1
+    assert isinstance(loop.initializers[0].owner, stmts.AllocRegister)
+    assert constant_int(loop.initializers[0].owner.size) == 2
+    assert len([node for node in loop.body.walk() if isinstance(node, stmts.Free)]) == 1
+    assert simulate(WireToSquin().emit(method), n) == [[n % 2, 0], [1]]
+
+
+def test_a_boundary_rejects_an_outstanding_register_borrow():
+    """Require the register's complete state before passing it into a loop or branch."""
+    method = lowered(branch_then_loop)
+    wrap = next(node for node in method.code.walk() if isinstance(node, stmts.Wrap))
+    wrap.delete()
+    with pytest.raises(WireConversionError, match="every borrowed element"):
         Conversion(method, SquinToWire().convert).run()

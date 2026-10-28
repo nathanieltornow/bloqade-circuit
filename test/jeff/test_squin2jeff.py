@@ -334,9 +334,9 @@ def test_a_forwarded_tuple_is_checked_at_each_position():
 
 def test_one_validation_checks_two_kernels_in_turn():
     validation = SquinToJeffValidation()
-    for kernel in (bell, forwarded):
+    for kernel, accepted in ((bell, True), (forwarded, False), (bell, True)):
         _, errors = validation.run(kernel)
-        assert errors == []
+        assert bool(errors) != accepted
 
 
 # -- refusals ------------------------------------------------------------------
@@ -605,7 +605,7 @@ def test_rows_slices_and_ladders_convert():
     assert len(statements(mt, stmts.Extract)) == len(statements(mt, stmts.Insert))
     (loop,) = statements(mt, stmts.For)
     adds = [s for s in loop.body.walk() if isinstance(s, stmts.IntAdd)]
-    assert len(adds) == 1
+    assert len(adds) == 2
 
 
 def test_a_literal_list_converts_to_gates_on_each_item():

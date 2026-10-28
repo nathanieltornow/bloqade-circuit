@@ -16,12 +16,13 @@ signature rule turns each wire parameter back into a qubit parameter and drops t
 returned wires from the return statement.
 """
 
+from typing import Any, TypeVar
 from dataclasses import field, dataclass
 
 from kirin import ir, types
 from kirin.rewrite import Walk, Chain, DeadCodeElimination
 from kirin.dialects import py, scf, func, ilist
-from kirin.dialects.py import len as py_len
+from kirin.dialects.py import len as py_len, slice as py_slice
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade.qubit import stmts as qubit_stmts, qalloc
@@ -30,6 +31,7 @@ from bloqade.squin.wire import stmts
 from bloqade.squin.wire.group import kernel as wire_kernel, reference_kernel
 from bloqade.squin.wire.types import RegisterType, is_linear
 from bloqade.squin.wire.traits import Twin
+from bloqade.squin.wire.ownership import KEY as OWNED, owns_inputs
 from bloqade.squin.rewrite.wire.lower import packed_type, output_types
 from bloqade.squin.rewrite.wire.driver import CheckedFixpoint
 
@@ -40,20 +42,27 @@ def squin_type(kind: types.TypeAttribute) -> types.TypeAttribute:
         return ilist.IListType[QubitType, types.Any]
     if is_linear(kind):
         return QubitType
+    if isinstance(kind, types.Generic) and kind.is_subseteq(types.Tuple):
+        return types.Generic(tuple, *(squin_type(member) for member in kind.vars))
     return kind
 
 
-def _kept_outputs(signature: func.Signature) -> tuple[types.TypeAttribute, ...]:
+def _kept_outputs(
+    signature: func.Signature, owned: bool = False
+) -> tuple[types.TypeAttribute, ...]:
     """Return the ordinary output types of a wire function with `signature`.
 
     The wire function returns one wire for each linear parameter after them.
     """
-    borrowed = sum(is_linear(kind) for kind in signature.inputs)
+    borrowed = 0 if owned else sum(is_linear(kind) for kind in signature.inputs)
     outputs = output_types(signature.output)
     return tuple(squin_type(kind) for kind in outputs[: len(outputs) - borrowed])
 
 
-def _put(stmt: ir.Statement, before: ir.Statement) -> ir.Statement:
+_S = TypeVar("_S", bound=ir.Statement)
+
+
+def _put(stmt: _S, before: ir.Statement) -> _S:
     """Insert `stmt` before the statement `before` and return `stmt`."""
     stmt.insert_before(before)
     return stmt
@@ -72,11 +81,46 @@ class FromWireStatements(RewriteRule):
             call = _put(func.Invoke((node.size,), callee=qalloc), node)
             call.result.type = qalloc.return_type
             node.result.replace_by(call.result)
-        elif isinstance(node, stmts.Borrow):
+        elif isinstance(node, (stmts.Borrow, stmts.Take)):
             item = _put(py.GetItem(node.register, node.index), node)
             item.result.type = QubitType
             node.wire.replace_by(item.result)
             node.register_out.replace_by(node.register)
+        elif isinstance(node, stmts.Put):
+            one = _put(py.Constant(1), node).result
+            stop = _put(py.Add(node.index, one), node).result
+            middle = _put(ilist.New((node.wire,), elem_type=QubitType), node).result
+            node.register_out.replace_by(
+                _splice(node.register, node.index, stop, middle, node)
+            )
+        elif isinstance(node, stmts.PackRegister):
+            node.result.replace_by(
+                _put(ilist.New(node.wires, elem_type=QubitType), node).result
+            )
+        elif isinstance(node, stmts.JoinRegister):
+            node.result.replace_by(_put(py.Add(node.first, node.second), node).result)
+        elif isinstance(node, stmts.SplitRegister):
+            zero = _put(py.Constant(0), node).result
+            one = _put(py.Constant(1), node).result
+            length = _put(py_len.Len(node.register), node).result
+            head = _put(py_slice.Slice(zero, node.index, one), node).result
+            tail = _put(py_slice.Slice(node.index, length, one), node).result
+            node.before.replace_by(_put(py.GetItem(node.register, head), node).result)
+            node.after.replace_by(_put(py.GetItem(node.register, tail), node).result)
+        elif isinstance(node, stmts.TakeSlice):
+            stop = _put(py.Add(node.start, node.length), node).result
+            one = _put(py.Constant(1), node).result
+            part = _put(py_slice.Slice(node.start, stop, one), node).result
+            node.slice_register.replace_by(
+                _put(py.GetItem(node.register, part), node).result
+            )
+            node.register_out.replace_by(node.register)
+        elif isinstance(node, stmts.PutSlice):
+            length = _put(py_len.Len(node.slice_register), node).result
+            stop = _put(py.Add(node.start, length), node).result
+            node.register_out.replace_by(
+                _splice(node.register, node.start, stop, node.slice_register, node)
+            )
         elif isinstance(node, stmts.Release):
             node.register_out.replace_by(node.register)
         elif isinstance(node, stmts.Length):
@@ -94,7 +138,9 @@ class FromWireStatements(RewriteRule):
                 node.args[0].owner, (stmts.Reference, stmts.ReferenceRegister)
             ):
                 return RewriteResult()
-        elif not isinstance(node, (stmts.Free, stmts.FreeRegister)):
+        elif not isinstance(
+            node, (stmts.Free, stmts.FreeRegister, stmts.DiscardRegister)
+        ):
             return RewriteResult()
         node.delete()
         return RewriteResult(has_done_something=True)
@@ -122,7 +168,7 @@ class FromWireStatements(RewriteRule):
         """
         fields = getattr(twin.source, "__kirin_stmt_fields")
         wires = dict(twin.wires)
-        kwargs: dict[str, object] = {}
+        kwargs: dict[str, Any] = {}
         for name in fields.std_args:
             if name in wires:
                 qubit = getattr(node, wires[name])
@@ -231,12 +277,18 @@ class FromWireCalls(RewriteRule):
         """Rewrite `node` if it calls a wire squin method."""
         if not isinstance(node, func.Invoke) or node.callee.dialects is not wire_kernel:
             return RewriteResult()
+        assert isinstance(node.callee.code, func.Function)
         signature = node.callee.code.signature
+        owned = owns_inputs(node.callee)
         squin_kernel = self.convert.kernel_of(node.callee)
         call = _put(func.Invoke(node.inputs, callee=squin_kernel), node)
-        kept = _kept_outputs(signature)
+        kept = _kept_outputs(signature, owned)
         call.result.type = packed_type(kept)
-        borrowed = [a for a, k in zip(node.inputs, signature.inputs) if is_linear(k)]
+        borrowed = (
+            []
+            if owned
+            else [a for a, k in zip(node.inputs, signature.inputs) if is_linear(k)]
+        )
         total = len(kept) + len(borrowed)
 
         def output(k: int, before: ir.Statement) -> ir.SSAValue:
@@ -278,7 +330,7 @@ class FromWireSignature(RewriteRule):
         outputs = output_types(signature.output)
         if not any(is_linear(k) for k in (*signature.inputs, *outputs)):
             return RewriteResult()
-        kept = _kept_outputs(signature)
+        kept = _kept_outputs(signature, node.attributes.get(OWNED) == ir.PyAttr(True))
         block = node.body.blocks[0]
         returned = block.last_stmt
         assert isinstance(returned, func.Return)
@@ -337,6 +389,11 @@ class FromWire:
         """Run the statement rules, then the region and signature rules, then DCE."""
         statements = Walk(Chain(FromWireStatements(), FromWireCalls(self)))
         result = CheckedFixpoint(statements).rewrite(method.code)
+        if owns_inputs(method):
+            result = Walk(FromWireSignature()).rewrite(method.code).join(result)
+            result = Walk(ReferenceTypes()).rewrite(method.code).join(result)
+            method.code.attributes.pop(OWNED)
+            return result
         regions = Walk(Chain(FromWireRegions(), FromWireSignature()))
         result = CheckedFixpoint(regions).rewrite(method.code).join(result)
         return (
@@ -344,3 +401,38 @@ class FromWire:
             .rewrite(method.code)
             .join(result)
         )
+
+
+def _splice(
+    reg: ir.SSAValue,
+    start: ir.SSAValue,
+    stop: ir.SSAValue,
+    middle: ir.SSAValue,
+    before: ir.Statement,
+) -> ir.SSAValue:
+    """Return `reg` with `middle` in place of the slots from `start` to `stop`."""
+    zero, one = _put(py.Constant(0), before).result, _put(py.Constant(1), before).result
+    (length := py_len.Len(reg)).insert_before(before)
+    (head_slice := py_slice.Slice(zero, start, one)).insert_before(before)
+    (head := py.indexing.GetItem(reg, head_slice.result)).insert_before(before)
+    (tail_slice := py_slice.Slice(stop, length.result, one)).insert_before(before)
+    (tail := py.indexing.GetItem(reg, tail_slice.result)).insert_before(before)
+    (front := py.binop.Add(head.result, middle)).insert_before(before)
+    (whole := py.binop.Add(front.result, tail.result)).insert_before(before)
+    return whole.result
+
+
+class ReferenceTypes(RewriteRule):
+    """Retype explicit owned state after quantum operations become reference operations."""
+
+    def rewrite_Block(self, node: ir.Block) -> RewriteResult:
+        """Convert each region parameter to its corresponding reference type."""
+        for value in node.args:
+            value.type = squin_type(value.type)
+        return RewriteResult()
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Convert each remaining result type before reference type inference."""
+        for value in node.results:
+            value.type = squin_type(value.type)
+        return RewriteResult()

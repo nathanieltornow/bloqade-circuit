@@ -3,7 +3,7 @@
 from kirin import ir
 from kirin.dialects import py
 
-from bloqade.analysis.reference.index import (
+from bloqade.analysis.indices import (
     Iter,
     Slice,
     Affine,

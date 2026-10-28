@@ -15,7 +15,7 @@ from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.rewrite.wire.lower import Contract
 from bloqade.squin.rewrite.wire.driver import CheckedFixpoint, reachable
-from bloqade.squin.rewrite.wire.promote import (
+from bloqade.squin.rewrite.wire.prepare import (
     Conversion,
     InlineRequired,
     ReferencesRequired,
@@ -78,7 +78,8 @@ def remaining(method: ir.Method) -> list[str]:
 class SquinToWire:
     """Convert squin functions using checked call contracts and ordered wire values.
 
-    Complete conversion visits each normalized function once after resolving required inlining.
+    Preparation creates explicit transfers after resolving required inlining.
+    Promotion visits each prepared statement once in source order.
     Partial conversion can retry private copies to preserve allocations with unsupported uses.
     Every returned method passes wire validation, and failures preserve all source methods.
     """

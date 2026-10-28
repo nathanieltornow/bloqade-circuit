@@ -20,11 +20,10 @@ from kirin.decl import info, statement
 from kirin.dialects import ilist
 
 from bloqade.qubit import stmts as qubit_stmts
-from bloqade.types import QubitType
+from bloqade.types import QubitType, holds_qubits
 from bloqade.squin.gate import stmts as gate_stmts
 from bloqade.squin.noise import stmts as noise_stmts
 from bloqade.native.dialects.gate import stmts as native_stmts
-from bloqade.squin.analysis.reference import holds_qubits
 
 from .types import WireType
 from .traits import Twin, Noise, Threads, Unitary, Measurement, Preparation
@@ -171,6 +170,7 @@ def make_twin(definition: TwinDefinition) -> type[ir.Statement]:
     }
     for name, field in arguments.items():
         target = wires.get(name, name)
+        assert target is not None
         annotations[target] = ir.SSAValue
         namespace[target] = info.argument(WireType if name in wires else field.type)
     for wire in wires.values():

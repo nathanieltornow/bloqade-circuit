@@ -21,10 +21,9 @@ reconstructed = WireToSquin().emit(wired)
 | `squin.rewrite.wire` | Normalize source operations and construct explicit wire values. |
 | `squin.analysis.validation.wire` | Check structure, ownership and qubit continuity. |
 | `squin.passes` | Run conversion, cleanup and validation on private method copies. |
-| `squin.analysis.wire` | Supply reference-analysis registrations for other consumers of the wire dialect. |
 
 The converter and wire validators never run `ReferenceAnalysis`, `QubitReferenceAnalysis` or `SlotAnalysis`.
-The conversion tests replace `ReferenceAnalysis.run` with a function that fails to enforce this boundary.
+The conversion tests reject imports of the removed reference-analysis modules.
 
 ## Transfers and gate semantics
 
@@ -57,7 +56,7 @@ Wrap(b, vb)
 
 `Unwrap` transfers access from a reference to a wire.
 `Wrap` restores access to that reference.
-The ordered converter immediately resolves these transfers against its current wire values.
+A later promotion walk resolves these transfers against its current wire values.
 Complete conversion requires every reference transfer to disappear.
 `SquinToWire.lower` exposes the executable transfer form for inspection and testing.
 
@@ -83,30 +82,39 @@ The region also records its local allocations so it can free them at exit.
 The shared index utility represents integer expressions as sums of symbols with constant integer coefficients.
 It proves that `i` equals `i + 0` and differs from `i + 1`.
 The converter uses this arithmetic for indices, slices and call result lengths.
-The utility's module lives under `analysis.reference.index`.
-It never invokes the reference-analysis interpreter.
+The utility lives in `analysis.indices`.
 
 ## Pass contracts
 
 | Stage | Kirin mechanism | Required result |
 | --- | --- | --- |
 | Normalize | `Inline`, `RewriteRule`, `Walk`, `CheckedFixpoint`, `TypeInfer` | Expose source gates and normalize closures, maps and selected indices. |
-| Convert | `OrderedPromotion`, `RewriteRule`, `Walk` | Resolve definitions, lower operations locally and thread current values through structured regions. |
-| Clean up | Tuple projection, dead-code elimination and common-subexpression elimination | Remove dead source references and redundant conversion scaffolding. |
+| Prepare | `LowerTransfers`, `RewriteRule`, `Walk` | Resolve source locations and construct explicit transfers around gates, calls and returns. |
+| Promote | `CollectCaptures`, `Promote`, `RewriteRule`, `Walk` | Collect region captures, then replace transfers in source order. |
+| Clean up | Tuple projection and dead-code elimination | Remove obsolete source references and allocations. |
 | Check | `ConversionTarget`, `ValidationPass`, `ValidationSuite` | Enforce complete conversion and every wire ownership contract. |
 
-The converter applies these actions in source order:
+`rewrite.wire.prepare` owns source normalization decisions, call contracts and partial-conversion retries.
+`rewrite.wire.promote` consumes prepared transfers and source locations.
+Its state holds the selected allocations, region maps, boundary captures and replacement index symbols.
+A capture identifies an allocation that a region uses from an enclosing scope.
 
-1. Record allocation and alias definitions in `Handles`.
-2. Construct local transfers around each supported gate or call.
-3. Resolve each transfer with the current allocation value.
-4. Convert each structured body with its own current-value map.
-5. Construct the return values and free the remaining local allocations.
+The promotion driver uses `Walk(Promote(state), region_first=True)` once.
+This Kirin driver schedules each statement before its nested bodies.
+It records the worklist before the first rewrite.
+Every promotion rule must preserve source statements that still await their visit.
+The boundary rule moves the original regions and changes their yield operands in place.
+New wire operations already satisfy the output representation and need no promotion visit.
 
-`Walk` visits one region at a time.
-The rule for an enclosing loop or conditional owns the visit to its nested bodies.
-Local lowerings return their newly constructed statements in construction order.
-The converter visits that list immediately because Kirin's walker snapshots its original worklist.
+The preparation walk can expand a runtime broadcast into a new loop.
+It visits those new statements before promotion records its worklist.
+The capture collector then records each boundary's external allocations in deterministic source order.
+The collector follows explicit source locations through enclosing region boundaries.
+
+The current-value map belongs to the region that contains the next scheduled statement.
+Each transfer updates that map together with its IR change.
+Each region terminator frees its remaining local allocations.
+The independent validation passes check the completed result.
 
 A whole-allocation unwrap consumes the current value and marks the entry empty.
 A matching wrap stores the next current value.
@@ -115,17 +123,16 @@ An element wrap emits `Release` and removes that outstanding index.
 Every simultaneous operand needs a proof that it names a distinct qubit.
 Every simultaneous register borrow needs a proof that its index differs from outstanding indices.
 
-Unknown-length broadcasts become loops during the same conversion visit.
+Unknown-length broadcasts become loops during preparation.
 Each iteration lowers a singleton broadcast through the same gate rule.
 Measurement broadcasts carry their classical result list through the loop.
 
 ## Loops and branches
 
-The loop rule carries every available outer allocation through extra loop parameters.
-This includes allocations that the loop leaves unchanged.
-The rule creates these parameters before visiting the loop body.
+The loop rule carries the allocations that its body captures through extra loop parameters.
+The header rule creates these parameters and the loop results before the driver visits the body.
 The body starts with the parameters as its current values.
-Its final current values become extra yield operands.
+The yield rule reads the final current values when the driver reaches the original terminator.
 The loop results become the enclosing region's current values.
 For zero iterations, the loop returns its initial values.
 
@@ -140,8 +147,8 @@ r_after = For(indices, initial=r0):
 FreeRegister(r_after)
 ```
 
-Each branch starts with a separate copy of the incoming current values.
-Both branches yield each outer allocation at the same result position.
+Each branch starts with a separate map of the captured incoming values.
+Both branches yield each captured allocation at the same result position.
 The conditional's results become the enclosing region's current values.
 Every register must contain all its borrowed elements at these boundaries.
 
@@ -197,7 +204,8 @@ If an unresolved use can name any allocation, the retry preserves every allocati
 A gate that touches a preserved allocation preserves all its operand allocations.
 Partial conversion still runs every wire validation pass.
 
-The ordered rewrite visits each normalized statement once during one conversion attempt.
+Promotion visits each prepared statement once during one conversion attempt.
+Preparation and capture collection each perform their own traversal.
 Normalization, required inlining, partial retries, cleanup and validation can each perform additional traversals.
 `max_iterations` limits normalization and conversion retries to 32 by default.
 A failure leaves the source method and its source callees unchanged.
@@ -254,10 +262,44 @@ The Jeff emitter rejects noise channels, qubit-loss tests and gates without a re
 It rejects dynamic list construction, tuple-valued region state and runtime tuple indices.
 It also rejects arithmetic that requires integer-to-float conversion in Jeff.
 
+## Jeff import through wires
+
+```python
+from bloqade.jeff import JeffToWire
+
+imported = JeffToWire().emit(jeff)
+reconstructed = WireToSquin().emit(imported)
+```
+
+`JeffToSquin` runs this same route through `JeffToWire` and `WireToSquin`.
+Jeff import validates the source and converts private copies of the reachable functions.
+Local rewrite rules translate classical operations, structured regions and quantum operations.
+The converter rejects recursive call graphs.
+
+Imported functions use consuming quantum parameters.
+Their `squin.wire.owned` marker requires explicit quantum outputs and permits changes in result positions.
+The wire validators still enforce linear uses and correct register ownership.
+Source squin conversion retains its borrowed-parameter convention.
+
+`Take` and `Put` move a qubit out of a register and fill an empty register element.
+`TakeSlice` and `PutSlice` move contiguous register ranges.
+`PackRegister`, `SplitRegister` and `JoinRegister` construct and partition registers.
+`DiscardRegister` frees the elements that remain in a register.
+An outstanding `Borrow` requires a matching `Release` before discard.
+
+The complete round-trip tests run every conversion stage explicitly:
+
+```python
+wired = SquinToWire().emit(source)
+jeff = WireToJeff().emit(wired)
+imported = JeffToWire().emit(jeff)
+reconstructed = WireToSquin().emit(imported)
+```
+
 ## Verification and limits
 
 ```sh
-uv run --locked pytest -q test/squin/wire test/analysis/reference test/jeff
+uv run --locked pytest -q test/squin/wire test/analysis test/jeff
 ```
 
 The tests compare source execution with execution after conversion and reconstruction.
@@ -271,4 +313,5 @@ Complete conversion can reject a valid source program when it cannot prove opera
 Public quantum parameters require distinct input qubits.
 Recursion and arbitrary control-flow graphs exceed the current conversion contract.
 The conversion tests have no expected-failure markers.
-The pipeline has no gate cancellation, angle merging or qubit reuse pass.
+The pipeline performs conversion and removes obsolete source references.
+It omits common-subexpression elimination, gate cancellation, angle merging and qubit reuse.

@@ -49,6 +49,7 @@ def test_direct_emission_needs_no_reference_conversion(monkeypatch, n, flag):
     assert first.code.print_str() == second.code.print_str()
     assert wire.code.print_str() == before
     assert roundtrips(first)
+    monkeypatch.undo()
     back = JeffToSquin().emit(first)
     assert as_python(simulate(back, n, flag)) == as_python(simulate(program, n, flag))
     call = next(node for node in first.code.walk() if isinstance(node, stmts.Call))

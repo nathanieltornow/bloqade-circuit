@@ -27,11 +27,10 @@ from kirin.dialects.py import cmp, len as py_len, assertion
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 from kirin.dialects.ilist import stmts as ilist_stmts
 
-from bloqade.types import QubitType
+from bloqade.types import QubitType, holds_qubits
 from bloqade.constants import constant_int
 from bloqade.squin.wire.twins import TWINS
 from bloqade.squin.wire.traits import Twin
-from bloqade.squin.analysis.reference import holds_qubits
 from bloqade.squin.rewrite.wire.handles import typed_length
 
 _S = TypeVar("_S", bound=ir.Statement)
