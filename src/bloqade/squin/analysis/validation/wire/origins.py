@@ -3,7 +3,6 @@
 from dataclasses import field, dataclass
 
 from kirin import ir, interp
-from kirin.analysis import Forward
 from kirin.dialects import py, scf, func
 from kirin.analysis.forward import ForwardFrame
 
@@ -14,13 +13,14 @@ from bloqade.squin.wire.types import is_linear
 from bloqade.squin.wire.traits import Threads
 from bloqade.squin.wire.ownership import KEY as OWNED
 
+from .calls import CachedCalls
 from .identities import Handle, Origin
 
 KEY = "squin.wire.positions"
 
 
 @dataclass
-class PositionAnalysis(Forward[Origin]):
+class PositionAnalysis(CachedCalls[Origin]):
     """Follow allocation origins in Kirin frames and report positional contract failures."""
 
     keys = (KEY,)

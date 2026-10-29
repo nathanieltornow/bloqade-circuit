@@ -17,6 +17,7 @@ block argument, because the body runs more than once.
 Its dispatch hook checks the results of every statement.
 Its method tables check tuple fields, calls, returns and control-flow boundaries.
 The call rule runs each callee through Kirin's interpreter machinery.
+`CachedCalls` runs each callee once for each list of abstract arguments.
 
 The borrow rule: a register value holds a set of borrowed slots. `Borrow` adds
 its index, and `Release` removes it. A slot must not be borrowed twice. A register
@@ -30,7 +31,6 @@ from collections.abc import Iterable
 
 from kirin import ir, types, interp
 from kirin.lattice import EmptyLattice, BoundedLattice
-from kirin.analysis import Forward
 from kirin.dialects import py, scf, func
 from kirin.validation import ValidationPass, ValidationSuite
 from kirin.ir.exception import ValidationErrorGroup
@@ -46,6 +46,7 @@ from bloqade.squin.wire.types import (
     contains_linear,
 )
 from bloqade.squin.wire.errors import UnresolvedBorrowSeparation
+from bloqade.squin.analysis.validation.wire.calls import CachedCalls
 from bloqade.squin.analysis.validation.wire.position import PositionValidation
 
 KEY = "squin.wire.linearity"
@@ -104,7 +105,7 @@ def _region_of(value: ir.SSAValue) -> ir.Region | None:
 
 
 @dataclass
-class LinearityCheck(Forward[EmptyLattice]):
+class LinearityCheck(CachedCalls[EmptyLattice]):
     """Record a validation error for each linear value that breaks the use rule."""
 
     keys = (KEY, "absint")
@@ -433,7 +434,7 @@ EMPTY = Slots(frozenset())
 
 
 @dataclass
-class BorrowCheck(Forward[Slots]):
+class BorrowCheck(CachedCalls[Slots]):
     """Record a validation error for each register that breaks the borrow rule."""
 
     keys = (BORROW_KEY, "absint")

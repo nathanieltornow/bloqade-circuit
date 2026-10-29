@@ -72,3 +72,41 @@ def test_duplicate_quantum_returns_fail_before_materialization(kernel):
     with pytest.raises(WireConversionError, match="cannot return one qubit twice"):
         SquinToWire().emit(kernel)
     assert kernel.code.print_str() == before
+
+
+@squin.kernel
+def flip(q: Qubit):
+    squin.x(q)
+
+
+def twice(callee):
+    @squin.kernel
+    def caller(q: Qubit):
+        callee(q)
+        callee(q)
+
+    return caller
+
+
+def test_validation_interprets_each_callee_once(monkeypatch):
+    from collections import Counter
+
+    from kirin.interp.abc import InterpreterABC
+
+    from bloqade.squin.analysis.validation.wire import WireValidation
+
+    top = flip
+    for _ in range(4):
+        top = twice(top)
+    wired = SquinToWire().emit(top)
+    visits = Counter()
+    frame_call = InterpreterABC.frame_call
+
+    def record(interpreter, frame, node, *args, **kwargs):
+        visits[type(interpreter).__name__, node] += 1
+        return frame_call(interpreter, frame, node, *args, **kwargs)
+
+    monkeypatch.setattr(InterpreterABC, "frame_call", record)
+    WireValidation().check(wired)
+    assert len(visits) == 3 * 5
+    assert set(visits.values()) == {1}
