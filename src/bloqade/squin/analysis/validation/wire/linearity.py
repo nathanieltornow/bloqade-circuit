@@ -35,6 +35,9 @@ from bloqade.squin.analysis.validation.wire.calls import CachedCalls
 KEY = "squin.wire.linearity"
 """Name the registry key of the method tables of `LinearityCheck`."""
 
+QUANTUM_CONSUMERS = (py.tuple.New, func.Invoke, func.Return, scf.For, scf.Yield)
+"""The statements outside the wire dialect that can take a quantum operand."""
+
 
 def _anchor(stmt: ir.Statement, region: ir.Region) -> ir.Statement | None:
     """Return the statement of `region` that holds `stmt`, or None if none holds it."""
@@ -143,7 +146,9 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
                     self.error(
                         user, "Tuple extraction must preserve the quantum field type."
                     )
-            elif not consumes_quantum(user):
+            elif not (
+                user.dialect is stmts.dialect or isinstance(user, QUANTUM_CONSUMERS)
+            ):
                 self.error(user, f"'{user.name}' cannot consume a quantum value.")
             users.append(user)
         return users
@@ -228,13 +233,6 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
     ) -> tuple[EmptyLattice, ...]:
         """Check the results of a statement without a rule."""
         return tuple(EmptyLattice.top() for _ in node.results)
-
-
-def consumes_quantum(user: ir.Statement) -> bool:
-    """Check whether the statement `user` can take a quantum value as an operand."""
-    return user.dialect is stmts.dialect or isinstance(
-        user, (py.tuple.New, func.Invoke, func.Return, scf.For, scf.Yield)
-    )
 
 
 @py.tuple.dialect.register(key=KEY)

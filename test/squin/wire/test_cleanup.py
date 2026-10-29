@@ -5,7 +5,8 @@ from test_roundtrip import simulate
 
 from bloqade import squin
 from bloqade.types import Qubit
-from bloqade.squin.passes.squin_to_wire import SquinToWire, target_violations
+from bloqade.squin.passes.wire_target import ConversionTarget
+from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
 
 
@@ -39,7 +40,7 @@ def test_nested_control_flow_emits_complete_wire_methods(n, flag):
     converter = SquinToWire()
     wired = converter.emit(branch_in_loop)
     assert all(
-        target_violations(contract.method) == []
+        ConversionTarget.check(contract.method) == []
         for contract in converter.contracts.values()
     )
     assert simulate(WireToSquin().emit(wired), n, flag) == simulate(

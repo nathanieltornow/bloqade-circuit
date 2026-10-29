@@ -10,7 +10,8 @@ from bloqade import squin
 from bloqade.types import Qubit
 from bloqade.squin.wire import WireConversionError
 from bloqade.squin.emit.wire import EmitWire
-from bloqade.squin.passes.squin_to_wire import SquinToWire, target_violations
+from bloqade.squin.passes.wire_target import ConversionTarget
+from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
 from bloqade.squin.analysis.validation.wire import WireValidation
 
@@ -35,7 +36,7 @@ def test_emission_visits_each_source_statement_once_and_preserves_source(monkeyp
         assert all(visits[node] == 1 for node in nodes)
         assert source.code.print_str() == before
         assert all(set(value.uses) == previous for value, previous in uses.items())
-        assert not target_violations(wired)
+        assert not ConversionTarget.check(wired)
         WireValidation().check(wired)
         reconstructed = WireToSquin().emit(wired)
         assert simulate(reconstructed, 1, True) == [1, 1, 1, 0]

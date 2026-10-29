@@ -16,11 +16,6 @@ from bloqade.squin.analysis.validation.wire import WireValidation
 from bloqade.squin.analysis.validation.wire.stages import SourceValidation, check_stage
 
 
-def target_violations(method: ir.Method) -> list[str]:
-    """Return the operations and parameters that violate the complete wire conversion target."""
-    return ConversionTarget.check(method)
-
-
 @dataclass
 class SquinToWire:
     """Emit source methods once and require complete, validated wire results."""
@@ -72,7 +67,7 @@ class SquinToWire:
         method = contract.method
         Fixpoint(Walk(DeadCodeElimination())).rewrite(method.code)
         infer_wire_types(method)
-        if violations := target_violations(method):
+        if violations := ConversionTarget.check(method):
             raise WireConversionError(
                 f"'{method.sym_name}' violates the wire conversion target at: "
                 + ", ".join(sorted(set(violations))),
