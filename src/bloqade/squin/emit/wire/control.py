@@ -45,6 +45,10 @@ class ControlFlow(interp.MethodTable):
                 body.output.args.append_from(value.type) for value in incoming
             )
             body.current = dict(zip(roots, wires, strict=True))
+            # The loop must own the body block before the body is emitted. Only then
+            # does `IndexAnalysis` give the loop index its range, which symbolic slices
+            # such as `qs[0:i]` need. `scf.For` reads its result count from the body
+            # terminator, so a temporary yield stands in for the final yield.
             provisional = body.push(scf.Yield(*body.output.args[1:]))
             made = scf.For(iterable, ir.Region(body.output), *classical, *incoming)
             made.attributes.update(stmt.attributes)

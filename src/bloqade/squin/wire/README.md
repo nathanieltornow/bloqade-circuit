@@ -25,8 +25,6 @@ reconstructed = WireToSquin().emit(wired)
 
 `SquinToWire.emit()` reads the source method and constructs a separate output method.
 It converts user callees first and supplies their checked contracts to the caller's emitter.
-A contract records input types, ordinary result types and borrowed parameter positions.
-It also records known fresh-register lengths in terms of the callee's integer parameters.
 Each callee must pass the same conversion target and validation.
 
 `SourceValidation` checks source structure, types, region forms and static calls before emission.
@@ -34,7 +32,9 @@ Emission visits each source statement once per method conversion.
 Kirin's region interpreter controls statement order and fills the frame after each operation.
 Standard library wrappers execute through nested emission frames with shared output and wire state.
 Each library call interprets its wrapper body once.
+The frame's `site` names the user call, and every operation of the wrapper takes that call's source location.
 Validation, type inference and cleanup perform their own traversals.
+Wire validation interprets each callee once for each list of abstract arguments.
 The full pipeline has no established linear-time bound.
 The pinned Kirin version requires literal tuple-index hints during output type inference.
 
@@ -53,6 +53,7 @@ An SSA value names one compiler value with one definition.
 | `current` | Map each allocation identity to its latest wire or register value. |
 | `local_roots` | Record allocations that this region must free unless the function returns them. |
 | `output` | Hold the emitted block and its arguments. |
+| `site` | Name the user call that runs a library wrapper. It is None in user code. |
 
 A `Location` identifies an allocation and an optional element or slice.
 Its root is the emitted allocation result or a function parameter.
@@ -121,6 +122,7 @@ Operations with shortest-list semantics use the minimum length.
 The loop handler reads every available outer allocation from `current`.
 It creates output parameters for classical loop state and those allocations.
 It attaches the output loop before interpreting its body so integer indices can use the loop's range.
+A temporary yield gives the loop its result count until the body supplies the final yield.
 The body's frame starts with those parameters as its current wire values.
 Kirin interprets the source body once.
 The handler then emits a yield with the final classical values and current wires.
@@ -162,8 +164,49 @@ For a source call `answer = f(q, n)`, the wire convention is:
 answer, q1 = call f_wire(q0, n)
 ```
 
+`Layout` reads this convention from the source signature.
+It gives the borrowed parameter positions, the ordinary result count and the tuple packing of the source return.
+The caller reads the type of each wire result from the callee's inferred signature.
+`Contract` holds the callee's wire method and the static length of each fresh register result.
+A length is an affine expression in the callee's integer parameters.
+The caller replaces those parameters with its own arguments, so `qalloc(n)` in the callee gives a known length at a call with a constant `n`.
+
 The caller consumes its current inputs and restores them from the borrowed-parameter suffix.
 Calls on register elements use `Borrow` and `Release` around the call.
+The helper below borrows `q`, and its loop carries the wire of `q`:
+
+```python
+@squin.kernel
+def kick(q: Qubit, k: int) -> int:
+    for _ in range(k):
+        squin.x(q)
+    return k + 1
+
+
+@squin.kernel
+def main():
+    qs = squin.qalloc(2)
+    return kick(qs[1], 3)
+```
+
+```text
+func kick(q: Wire, k: int) -> tuple[int, Wire]:
+    q_end = For(range(0, k), initial=q):
+        q_iter = iteration_argument
+        q_next = X(q_iter)
+        Yield(q_next)
+    Return(tuple(k + 1, q_end))
+
+func main() -> int:
+    r0 = AllocRegister(2)
+    r1, q0 = Borrow(r0, 1)
+    result = call kick(q0, 3)
+    total = result[0]
+    q1 = result[1]
+    r2 = Release(r1, 1, q1)
+    FreeRegister(r2)
+    Return(total)
+```
 Each fresh quantum result creates a new allocation identity in the caller.
 Two calls to the same allocating function create distinct identities.
 
@@ -177,7 +220,7 @@ Each conversion error retains its operation, source location and failed conditio
 
 The conversion driver rejects recursive calls.
 A failed conversion leaves the source method and its callees unchanged.
-Repeated public conversions clear the method and contract caches.
+Repeated public conversions clear the contract cache.
 
 ## Validation contracts
 
@@ -197,6 +240,8 @@ Its `Origin` lattice stores exact allocation identities and tuple fields in Kiri
 An unknown origin records insufficient information to prove continuity.
 The analysis follows operation continuations and checks loop yields, branch results and borrowed return suffixes.
 It checks each callee and gives every call's fresh outputs distinct identities.
+`CachedCalls` reuses the result of a call with the same callee and abstract arguments.
+Each analysis records its errors at callee nodes, so a reused result loses no error.
 
 Quantum tuple fields require constant indices within their bounds.
 Tuple construction, extraction, calls and region boundaries must preserve quantum field types.
