@@ -45,9 +45,9 @@ def packed_type(outputs: Sequence[types.TypeAttribute]) -> types.TypeAttribute:
 class Layout:
     """Describe the wire results that the signature of a source function implies."""
 
-    borrowed: tuple[int, ...]
+    borrowed_positions: tuple[int, ...]
     """The argument positions of the quantum parameters."""
-    ordinary: int
+    ordinary_count: int
     """The number of ordinary source results."""
     packed: bool
     """Whether the source function returns its ordinary results as one tuple."""
@@ -55,25 +55,27 @@ class Layout:
     @classmethod
     def of(cls, signature: func.Signature) -> Layout:
         """Read the layout from the signature of a source function."""
-        ordinary = len(output_types(signature.output))
-        borrowed = tuple(
+        ordinary_count = len(output_types(signature.output))
+        borrowed_positions = tuple(
             i
             for i, kind in enumerate(signature.inputs)
             if quantum_type(kind) is not None
         )
         packed = (
-            ordinary > 0
+            ordinary_count > 0
             and isinstance(signature.output, types.Generic)
             and signature.output.is_subseteq(types.Tuple)
         )
-        return cls(borrowed, ordinary, packed)
+        return cls(borrowed_positions, ordinary_count, packed)
 
-    def results(self, output: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:
+    def result_types(
+        self, output: types.TypeAttribute
+    ) -> tuple[types.TypeAttribute, ...]:
         """Return the type of each wire result for the wire output type `output`.
 
         A single wire result keeps its own type, even if that type is a tuple.
         """
-        count = self.ordinary + len(self.borrowed)
+        count = self.ordinary_count + len(self.borrowed_positions)
         kinds = (output,) if count == 1 else output_types(output)
         if len(kinds) != count:
             raise ValueError(
