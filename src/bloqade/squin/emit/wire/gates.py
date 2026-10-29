@@ -13,7 +13,7 @@ from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.traits import Twin
 
 from .base import EmitWire, WireFrame
-from .values import Location
+from .values import View, Whole, Location, select, is_qubit
 from .control import resume, carry_wires, yield_wires
 
 
@@ -61,9 +61,7 @@ def emit_gate(emit: EmitWire, frame: WireFrame, source: ir.Statement):
     outputs = [[] for _ in trait.results]
     # Each step takes the next qubit of every operand, like Python's `zip`.
     for qubits in zip(*operand_items):
-        if not all(
-            isinstance(location, Location) and location.scalar for location in qubits
-        ):
+        if not all(is_qubit(location) for location in qubits):
             raise WireConversionError(
                 f"A qubit of '{source.name}' has no place in a known allocation.",
                 source,
@@ -85,7 +83,9 @@ def broadcast_loop(emit: EmitWire, frame: WireFrame, source: ir.Statement, opera
     """Emit indexed gate applications and collect classical results in loop-carried lists."""
     trait = TWINS[type(source)].get_present_trait(Twin)
     if not all(
-        isinstance(value, Location) and not value.scalar or isinstance(value, tuple)
+        isinstance(value, (Whole, View))
+        and not is_qubit(value)
+        or isinstance(value, tuple)
         for value in operands
     ):
         raise WireConversionError(
@@ -97,7 +97,7 @@ def broadcast_loop(emit: EmitWire, frame: WireFrame, source: ir.Statement, opera
             "A runtime broadcast cannot index a heterogeneous quantum container.",
             source,
         )
-    registers = cast(tuple[Location, ...], operands)
+    registers = cast(tuple[Whole | View, ...], operands)
     size = broadcast_length(frame, source, lengths, trait.truncate)
     elements = tuple(
         getattr(source, source_field).type.vars[0] for source_field, _ in trait.results
@@ -117,7 +117,7 @@ def broadcast_loop(emit: EmitWire, frame: WireFrame, source: ir.Statement, opera
         roots = carry_wires(frame, body)
         incoming = tuple(frame.latest[root] for root in roots)
         qubits = tuple(
-            register.select(Affine.of(index), source) for register in registers
+            select(register, Affine.of(index), source) for register in registers
         )
         values = scalar_gate(emit, body, source, qubits)
         collected = []

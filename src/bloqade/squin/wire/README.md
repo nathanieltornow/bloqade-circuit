@@ -57,12 +57,17 @@ An SSA value names one compiler value with one definition.
 | `output` | Hold the emitted block and its arguments. |
 | `site` | Name the user call that runs a library wrapper. It is None in user code. |
 
-A `Location` identifies an allocation and an optional element or slice.
-Its `root` is the emitted allocation result, a call result or a function parameter.
-Its `root_length` records the known size of the whole allocation.
-Its `selection` names one element or one slice of the root.
-Its `shape` records nested register dimensions.
-Its `length` property gives the number of items in the selected view.
+A `Location` is one of three forms, and each form has a `root`.
+The root is the emitted allocation result, a call result or a function parameter.
+
+| Form | Meaning | Example |
+| --- | --- | --- |
+| `Whole(root, size, shape)` | A standalone qubit or a whole register. | `q`, `qs` |
+| `Element(root, index)` | One qubit of a register. | `qs[i]` |
+| `View(root, span, shape)` | A slice of a register or a row of a nested register. | `qs[1:3]`, `grid[1]` |
+
+`select` and `select_slice` in `values.py` derive an `Element` or a `View` from a `Whole` or a `View`.
+The `length` property of a `Whole` or a `View` gives its number of items.
 The frame keeps locations stable while `latest` changes after each quantum operation.
 An alias copies its operand's frame entry.
 An index selects from that entry using the already emitted integer operand.
@@ -84,7 +89,7 @@ The operation tables live in `squin.emit.wire`:
 | `references.py` | Resolve qubit references in allocations, aliases, lists, tuples, additions, lengths and indexing. |
 | `control.py` | Convert loop and branch regions through Kirin's region interpreter. |
 | `gates.py` | Emit wire gates and runtime broadcast loops. |
-| `values.py` | Define locations and compose element and slice selections. |
+| `values.py` | Define the location forms and select elements, slices and rows. |
 
 ## Gates and allocation lifetimes
 

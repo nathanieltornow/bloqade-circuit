@@ -12,7 +12,7 @@ from bloqade.analysis.indices import Affine
 from bloqade.squin.wire.errors import WireConversionError
 
 from .base import EmitWire, WireFrame, index_of
-from .values import Value, Location, contains_location
+from .values import Value, Whole, Location, select, select_slice, contains_location
 
 
 @qubit.dialect.register(key="emit.squin_wire")
@@ -25,7 +25,7 @@ class Qubits(interp.MethodTable):
         root = frame.push(stmts.Alloc()).results[0]
         frame.latest[root] = root
         frame.local_roots.append(root)
-        return (Location(root),)
+        return (Whole(root),)
 
 
 @py.assign.dialect.register(key="emit.squin_wire")
@@ -118,7 +118,7 @@ def slice_item(container: Value, index: ir.SSAValue, stmt: py.GetItem) -> Value:
     """Return the meaning of `container[index]` for the emitted slice `index`."""
     start, stop, step = slice_bounds(index, stmt)
     if isinstance(container, Location):
-        return container.select_slice(start, stop, step, stmt)
+        return select_slice(container, start, stop, step, stmt)
     if isinstance(container, tuple) and all(
         bound is None or bound.constant is not None for bound in (start, stop)
     ):
@@ -138,7 +138,7 @@ def element_item(
     """Return the meaning of `container[index]` for the emitted integer `index`."""
     position = index_of(index)
     if isinstance(container, Location):
-        return container.select(position, stmt)
+        return select(container, position, stmt)
     if isinstance(container, tuple):
         item = position.constant
         if item is not None and -len(container) <= item < len(container):

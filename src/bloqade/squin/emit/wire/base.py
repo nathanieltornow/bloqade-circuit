@@ -13,13 +13,13 @@ from kirin.dialects.py.len import Len
 
 from bloqade.types import holds_qubits
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Iter, Slice, Affine, IndexAnalysis
+from bloqade.analysis.indices import Iter, Affine, IndexAnalysis
 from bloqade.squin.wire.twins import TWINS
 from bloqade.squin.wire.types import WireType
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.signature import Contract
 
-from .values import Value, Location, contains_location
+from .values import View, Value, Whole, Element, Location, select, contains_location
 
 StatementT = TypeVar("StatementT", bound=ir.Statement)
 
@@ -156,8 +156,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
         """Return the wire value of a location for an operation that consumes it.
 
         A whole allocation leaves `latest` until `restore` puts its next value back.
-        A register element emits a `Borrow`, and `restore` emits the matching `Release`.
-        Each of them emits the element index again from `location.selection`.
+        An element emits a `Borrow`, and `restore` emits the matching `Release`.
+        Each of them emits the element index again from `location.index`.
         """
         value = frame.latest.get(location.root)
         if value is None:
@@ -165,29 +165,26 @@ class EmitWire(EmitABC[WireFrame, Value]):
                 "Emission requires an available wire at this operation.",
                 frame.current_stmt,
             )
-        if isinstance(location.selection, Affine):
-            node = frame.push(
-                stmts.Borrow(value, self.emit_affine(frame, location.selection))
-            )
-            frame.latest[location.root] = node.results[0]
-            return node.results[1]
-        if location.selection is not None:
-            raise WireConversionError(
-                "A whole-register operation requires a whole allocation.",
-                frame.current_stmt,
-            )
-        del frame.latest[location.root]
-        return value
+        match location:
+            case Element(root, index):
+                node = frame.push(stmts.Borrow(value, self.emit_affine(frame, index)))
+                frame.latest[root] = node.results[0]
+                return node.results[1]
+            case View():
+                raise WireConversionError(
+                    "A whole-register operation requires a whole allocation.",
+                    frame.current_stmt,
+                )
+            case Whole(root):
+                del frame.latest[root]
+                return value
 
     def restore(self, frame: WireFrame, location: Location, value: ir.SSAValue) -> None:
         """Record the next value of a location after the operation that consumed it."""
-        if isinstance(location.selection, Affine):
+        if isinstance(location, Element):
             register = frame.latest[location.root]
-            value = frame.push(
-                stmts.Release(
-                    register, self.emit_affine(frame, location.selection), value
-                )
-            ).results[0]
+            index = self.emit_affine(frame, location.index)
+            value = frame.push(stmts.Release(register, index, value)).results[0]
         frame.latest[location.root] = value
 
     def length_value(self, frame: WireFrame, value: Value) -> ir.SSAValue:
@@ -202,27 +199,30 @@ class EmitWire(EmitABC[WireFrame, Value]):
         """
         if isinstance(value, tuple):
             return self.emit_affine(frame, Affine(len(value)))
-        if isinstance(value, Location):
-            if value.length is not None and (
-                value.length.constant is not None or isinstance(value.selection, Slice)
-            ):
-                return self.emit_affine(frame, value.length)
-            if value.selection is not None:
+        match value:
+            case View(length=length) if length is not None:
+                return self.emit_affine(frame, length)
+            case View() | Element():
                 raise WireConversionError(
                     "The register view requires a known length.", frame.current_stmt
                 )
-            node = frame.push(stmts.Length(frame.latest[value.root]))
-            frame.latest[value.root] = node.results[0]
-            return node.results[1]
+            case Whole(length=length) if (
+                length is not None and length.constant is not None
+            ):
+                return self.emit_affine(frame, length)
+            case Whole(root):
+                node = frame.push(stmts.Length(frame.latest[root]))
+                frame.latest[root] = node.results[0]
+                return node.results[1]
         return frame.push(Len(self.classical_value(frame, value))).results[0]
 
     def known_items(self, value: Value, at: ir.Statement) -> tuple[Value, ...] | None:
         """Return the item meanings of a container whose length is known, or None."""
         if isinstance(value, tuple):
             return value
-        if isinstance(value, Location) and value.length is not None:
+        if isinstance(value, (Whole, View)) and value.length is not None:
             if (count := value.length.constant) is not None:
-                return tuple(value.select(Affine(i), at) for i in range(max(0, count)))
+                return tuple(select(value, Affine(i), at) for i in range(max(0, count)))
         return None
 
     def eval_fallback(self, frame: WireFrame, node: ir.Statement):
