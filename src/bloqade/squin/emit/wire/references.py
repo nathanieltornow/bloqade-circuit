@@ -1,7 +1,7 @@
 """Resolve qubit references in allocations, aliases, containers, lengths and indexing."""
 
 from kirin import ir, types, interp
-from kirin.dialects import py, ilist
+from kirin.dialects import py, func, ilist
 from kirin.dialects.py import len as py_len, slice as py_slice
 
 from bloqade import qubit
@@ -155,17 +155,9 @@ def slice_bounds(
     """Read supported slice bounds from an emitted slice operation."""
     node = value.owner
     if isinstance(node, py_slice.Slice):
-        start = (
-            None
-            if node.start.type.is_subseteq(types.NoneType)
-            else index_of(node.start)
-        )
-        stop = (
-            None if node.stop.type.is_subseteq(types.NoneType) else index_of(node.stop)
-        )
-        step = (
-            1 if node.step.type.is_subseteq(types.NoneType) else constant_int(node.step)
-        )
+        start = None if is_none(node.start) else index_of(node.start)
+        stop = None if is_none(node.stop) else index_of(node.stop)
+        step = 1 if is_none(node.step) else constant_int(node.step)
     elif isinstance(node, py.Constant) and isinstance(
         sliced := node.value.unwrap(), slice
     ):
@@ -179,3 +171,18 @@ def slice_bounds(
             "A quantum slice requires a nonzero constant step.", at
         )
     return start, stop, step
+
+
+def is_none(value: ir.SSAValue) -> bool:
+    """Check whether `value` is the constant `None`.
+
+    The check reads the constant itself first. A kernel without constant folding
+    gives its constants the type `Bottom`, and `Bottom` passes every subtype test.
+    """
+    owner = value.owner
+    if isinstance(owner, func.ConstantNone):
+        return True
+    if isinstance(owner, py.Constant):
+        return owner.value.unwrap() is None
+    kind = value.type
+    return not isinstance(kind, types.BottomType) and kind.is_subseteq(types.NoneType)
