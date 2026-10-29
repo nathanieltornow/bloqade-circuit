@@ -18,7 +18,9 @@ from .values import Value, contains_location
 
 
 @contextmanager
-def region(emit: EmitWire, frame: WireFrame, node: ir.Statement) -> Iterator[WireFrame]:
+def body_frame(
+    emit: EmitWire, frame: WireFrame, node: ir.Statement
+) -> Iterator[WireFrame]:
     """Open the frame of a body that `node` owns inside `frame`.
 
     The body can read the source values of `frame` and keeps its library call site.
@@ -96,7 +98,7 @@ class ControlFlow(interp.MethodTable):
         )
         iterable = emit.classical_value(frame, frame.get(stmt.iterable))
         source_args = stmt.body.blocks[0].args
-        with region(emit, frame, stmt) as body:
+        with body_frame(emit, frame, stmt) as body:
             arguments = list(initial)
             index = body.output.args.append_from(
                 source_args[0].type, source_args[0].name
@@ -143,7 +145,7 @@ class ControlFlow(interp.MethodTable):
         roots = tuple(frame.latest)
         bodies, yields = [], []
         for source in (stmt.then_body, stmt.else_body):
-            with region(emit, frame, stmt) as body:
+            with body_frame(emit, frame, stmt) as body:
                 arguments = tuple(
                     body.output.args.append_from(arg.type, arg.name)
                     for arg in source.blocks[0].args
