@@ -29,10 +29,16 @@ class WireFrame(EmitFrame[Value]):
     output: ir.Block = field(default_factory=ir.Block)
     current: dict[ir.SSAValue, ir.SSAValue] = field(default_factory=dict)
     local_roots: list[ir.SSAValue] = field(default_factory=list)
+    site: func.Invoke | None = None
+    """The user call that runs the library wrapper of this frame, or None in user code.
+
+    Each operation that a library wrapper emits takes its source location from this
+    call, so that diagnostics point at user code.
+    """
 
     def push(self, node: StatementT) -> StatementT:
-        """Append an operation and retain the current source operation's diagnostic location."""
-        source = self.code if isinstance(self.code, func.Invoke) else self.current_stmt
+        """Append an operation and give it the source location of the current operation."""
+        source = self.site or self.current_stmt
         if source is not None and source.source is not None:
             node.source = replace(source.source)
         self.output.stmts.append(node)

@@ -35,13 +35,18 @@ from bloqade.squin.wire.signature import (
 from .base import EmitWire, WireFrame, index_of
 from .values import Value, Location, contains_location
 
+LIBRARIES = ("bloqade.squin.stdlib", "bloqade.qubit.stdlib", "bloqade.native.stdlib")
+"""The modules whose kernels wrap source quantum operations for users."""
+
 
 def is_library(method: ir.Method) -> bool:
-    """Recognize library kernels whose bodies define source quantum operations."""
+    """Check whether `method` is a kernel of a module in `LIBRARIES`.
+
+    The emitter runs the body of a library kernel at each call. It keeps an explicit
+    call for every other kernel.
+    """
     module = method.mod.__name__ if method.mod is not None else ""
-    return method is not qubit.qalloc and module.startswith(
-        ("bloqade.squin.stdlib", "bloqade.qubit.stdlib", "bloqade.native.stdlib")
-    )
+    return module.startswith(LIBRARIES)
 
 
 @ssacfg.dialect.register(key="emit.squin_wire")
@@ -119,14 +124,14 @@ class Functions(interp.MethodTable):
         self, emit: EmitWire, frame: WireFrame, stmt: func.Return
     ) -> interp.ReturnValue[Value]:
         """Return ordinary results and borrowed parameters, then free local allocations."""
-        if isinstance(frame.code, func.Invoke):
-            return interp.ReturnValue(frame.get(stmt.value))
-        function = emit.source.code
-        assert isinstance(function, func.Function)
-        if stmt.parent_stmt is not function:
+        if stmt.parent_stmt is not frame.code:
             raise WireConversionError(
                 "Wire conversion requires a function-level return.", stmt
             )
+        if frame.site is not None:
+            return interp.ReturnValue(frame.get(stmt.value))
+        function = emit.source.code
+        assert isinstance(function, func.Function)
         layout = Layout.of(function.signature)
         parameters = function.body.blocks[0].args[1:]
         borrowed = [cast(Location, frame.get(parameters[i])) for i in layout.borrowed]
@@ -170,6 +175,7 @@ class Functions(interp.MethodTable):
     @interp.impl(func.Invoke)
     def invoke(self, emit: EmitWire, frame: WireFrame, stmt: func.Invoke):
         """Allocate a register, run a library wrapper or call a converted function."""
+        # `qalloc` builds its register with a list map, which the emitter cannot run.
         if stmt.callee is qubit.qalloc:
             size = emit.classical(frame, frame.get(stmt.inputs[0]))
             root = frame.push(stmts.AllocRegister(size)).results[0]
@@ -180,8 +186,10 @@ class Functions(interp.MethodTable):
                 length = Affine(max(0, length.const))
             return (Location(root, length, shape=register_shape(stmt.result.type)),)
         if is_library(stmt.callee):
-            context = frame.code if isinstance(frame.code, func.Invoke) else stmt
-            with emit.new_frame(context) as body:
+            # The wrapper emits into the caller's block and continues the caller's
+            # wires. Its allocations live until the caller's region ends.
+            with emit.new_frame(stmt.callee.code) as body:
+                body.site = frame.site or stmt
                 body.output = frame.output
                 body.current = frame.current
                 body.local_roots = frame.local_roots

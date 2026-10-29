@@ -3,7 +3,7 @@
 from collections import Counter
 
 import pytest
-from kirin.dialects import py, func
+from kirin.dialects import py, scf, func
 from test_roundtrip import nested, simulate
 
 from bloqade import squin
@@ -136,3 +136,22 @@ def test_a_call_result_has_the_inferred_type_of_its_callee():
     assert all(isinstance(use.stmt, py.GetItem) for use in call.result.uses)
     assert call.result.type == callee.return_type
     assert sorted(map(str, fields)) == sorted(map(str, callee.return_type.vars))
+
+
+@squin.kernel
+def runtime_flip(n: int):
+    qs = squin.qalloc(n)
+    squin.broadcast.x(qs)
+
+
+def test_library_operations_take_the_location_of_the_user_call():
+    call = next(
+        node
+        for node in runtime_flip.code.walk()
+        if isinstance(node, func.Invoke) and node.callee.sym_name == "x"
+    )
+    wired = SquinToWire().emit(runtime_flip)
+    loop = next(node for node in wired.code.walk() if isinstance(node, scf.For))
+    sources = [node.source for node in loop.walk()]
+    assert call.source is not None and len(sources) > 1
+    assert {None if s is None else s.lineno for s in sources} == {call.source.lineno}

@@ -5,7 +5,6 @@ from dataclasses import field, dataclass
 from kirin import ir
 from kirin.rewrite import Walk, Fixpoint, DeadCodeElimination
 
-from bloqade.qubit import qalloc
 from bloqade.squin.emit.wire import EmitWire
 from bloqade.squin.wire.group import reference_kernel
 from bloqade.squin.wire.errors import WireConversionError
@@ -51,7 +50,7 @@ class SquinToWire:
         try:
             checked = check_stage(source, SourceValidation)
             for callee in sorted(checked.callees, key=lambda item: item.sym_name or ""):
-                if callee is not qalloc and not is_library(callee):
+                if not is_library(callee):
                     self.convert(callee)
             contract = EmitWire(source.dialects, source, self.contracts).emit_method()
             output = contract.method

@@ -1,7 +1,7 @@
 """Emit gate twins and runtime broadcasts with explicit register borrows."""
 
 from kirin import ir, types
-from kirin.dialects import py, scf, func, ilist
+from kirin.dialects import py, scf, ilist
 from kirin.dialects.py import assertion
 from kirin.dialects.ilist import stmts as ilist_stmts
 
@@ -110,8 +110,8 @@ def broadcast_loop(emit: EmitWire, frame: WireFrame, source: ir.Statement, opera
         ]
         for name, _ in trait.results
     )
-    context = frame.code if isinstance(frame.code, func.Invoke) else source
-    with emit.new_frame(context, has_parent_access=True) as body:
+    with emit.new_frame(source, has_parent_access=True) as body:
+        body.site = frame.site
         body.current_stmt = source
         index = body.output.args.append_from(types.Int, "i")
         lists = tuple(

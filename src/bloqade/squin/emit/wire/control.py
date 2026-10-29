@@ -30,6 +30,7 @@ class ControlFlow(interp.MethodTable):
         incoming = tuple(frame.current[root] for root in roots)
         iterable = emit.classical(frame, frame.get(stmt.iterable))
         with emit.new_frame(stmt, has_parent_access=True) as body:
+            body.site = frame.site
             body.current_stmt = stmt
             arguments = list(initial)
             index = body.output.args.append_from(
@@ -84,6 +85,7 @@ class ControlFlow(interp.MethodTable):
         bodies, yields = [], []
         for region in (stmt.then_body, stmt.else_body):
             with emit.new_frame(stmt, has_parent_access=True) as body:
+                body.site = frame.site
                 body.current_stmt = stmt
                 arguments = tuple(
                     body.output.args.append_from(arg.type, arg.name)
