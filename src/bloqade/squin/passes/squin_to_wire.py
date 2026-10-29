@@ -26,13 +26,14 @@ def remaining(method: ir.Method) -> list[str]:
 class SquinToWire:
     """Emit source methods once and require complete, validated wire results."""
 
-    prepared: dict[ir.Method, ir.Method] = field(default_factory=dict, init=False)
     contracts: dict[ir.Method, Contract] = field(default_factory=dict, init=False)
+    """The validated wire function of each converted source method."""
     active: set[ir.Method] = field(default_factory=set, init=False)
+    """The source methods whose conversion is in progress, used to reject recursion."""
 
     def emit(self, method: ir.Method) -> ir.Method:
         """Build verified wire IR while preserving the source and its callees."""
-        self.prepared, self.contracts, self.active = {}, {}, set()
+        self.contracts, self.active = {}, set()
         if not method.dialects.data <= reference_kernel.data:
             raise ValueError("SquinToWire expects squin or native kernel dialects.")
         return self.convert(method).method
@@ -63,7 +64,6 @@ class SquinToWire:
                     output.code,
                 )
             WireValidation().check(output)
-            self.prepared[source] = output
             self.contracts[source] = contract
             return contract
         finally:

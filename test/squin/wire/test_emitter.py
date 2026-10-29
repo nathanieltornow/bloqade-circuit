@@ -3,9 +3,11 @@
 from collections import Counter
 
 import pytest
+from kirin.dialects import py, func
 from test_roundtrip import nested, simulate
 
 from bloqade import squin
+from bloqade.types import Qubit
 from bloqade.squin.emit.wire import EmitWire
 from bloqade.squin.passes.squin_to_wire import SquinToWire, remaining
 from bloqade.squin.passes.wire_to_squin import WireToSquin
@@ -105,3 +107,32 @@ def returns_typed_tuple_from_branch(flag: bool, n: int) -> tuple[int, int]:
 def test_return_unpacks_known_tuple_fields_from_regions(flag, expected):
     wired = SquinToWire().emit(returns_typed_tuple_from_branch)
     assert simulate(WireToSquin().emit(wired), flag, 5) == expected
+
+
+@squin.kernel
+def measured(q: Qubit):
+    return squin.measure(q)
+
+
+@squin.kernel
+def calls_measured():
+    q = squin.qubit.new()
+    return measured(q)
+
+
+def test_a_call_result_has_the_inferred_type_of_its_callee():
+    converter = SquinToWire()
+    converter.emit(calls_measured)
+    callee = converter.contracts[measured].method
+    emitted = EmitWire(
+        calls_measured.dialects, calls_measured, converter.contracts
+    ).emit_method()
+    call = next(
+        node
+        for node in emitted.method.callable_region.walk()
+        if isinstance(node, func.Invoke)
+    )
+    fields = [use.stmt.results[0].type for use in call.result.uses]
+    assert all(isinstance(use.stmt, py.GetItem) for use in call.result.uses)
+    assert call.result.type == callee.return_type
+    assert sorted(map(str, fields)) == sorted(map(str, callee.return_type.vars))

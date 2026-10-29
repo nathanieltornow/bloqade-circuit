@@ -1,5 +1,6 @@
 """Emit functions and resolve source reference expressions through Kirin method tables."""
 
+import math
 from typing import cast
 from dataclasses import replace
 
@@ -24,7 +25,12 @@ from bloqade.squin.wire.errors import (
     UnsupportedCallContract,
     UnresolvedArgumentSeparation,
 )
-from bloqade.squin.wire.signature import Contract, packed_type, output_types
+from bloqade.squin.wire.signature import (
+    Layout,
+    Contract,
+    packed_type,
+    output_types,
+)
 
 from .base import EmitWire, WireFrame, index_of
 from .values import Value, Location, contains_location
@@ -45,30 +51,21 @@ class Regions(ssacfg.Concrete):
 
 @func.dialect.register(key="emit.squin_wire")
 class Functions(interp.MethodTable):
-    """Emit function boundaries and calls with explicit borrowed-parameter results."""
+    """Emit function boundaries and calls in the calling convention of `Layout`."""
 
     @interp.impl(func.Function)
     def function(self, emit: EmitWire, frame: WireFrame, stmt: func.Function):
-        """Create output arguments, interpret the source body and construct its output method."""
+        """Create the wire arguments, emit the source body and build the wire method."""
         if isinstance(stmt.signature.output, types.BottomType):
             raise WireConversionError(
                 "The function return has the impossible type Bottom.", stmt
             )
+        layout = Layout.of(stmt.signature)
         inputs = tuple(quantum_type(kind) or kind for kind in stmt.signature.inputs)
-        ordinary = tuple(
-            quantum_type(kind) or kind for kind in output_types(stmt.signature.output)
-        )
-        borrowed = tuple(
-            i
-            for i, kind in enumerate(stmt.signature.inputs)
-            if quantum_type(kind) is not None
-        )
-        signature = func.Signature(
-            inputs, packed_type((*ordinary, *(inputs[i] for i in borrowed)))
-        )
-        frame.output.args.append_from(
-            types.MethodType[list(inputs), signature.output],
-            stmt.body.blocks[0].args[0].name,
+        # The emitted body decides the output type, so the self argument gets its
+        # final type after the body.
+        this = frame.output.args.append_from(
+            types.Any, stmt.body.blocks[0].args[0].name
         )
         arguments = []
         for source, kind in zip(stmt.body.blocks[0].args[1:], inputs, strict=True):
@@ -79,22 +76,16 @@ class Functions(interp.MethodTable):
             shape = register_shape(source.type)
             length = None
             if shape and all(size is not None for size in shape):
-                count = 1
-                for size in shape:
-                    assert size is not None
-                    count *= size
-                length = Affine(count)
-            location = Location(argument, length, shape=shape)
-            arguments.append(location)
+                length = Affine(math.prod(cast(tuple[int, ...], shape)))
+            arguments.append(Location(argument, length, shape=shape))
             frame.current[argument] = argument
         returned = emit.frame_call(frame, stmt, None, *arguments)
         assert isinstance(returned, tuple)
-        assert all(isinstance(value, ir.SSAValue) for value in returned)
-        returned = cast(tuple[ir.SSAValue, ...], returned)
         signature = func.Signature(
-            inputs, packed_type(tuple(value.type for value in returned))
+            inputs,
+            packed_type(tuple(cast(ir.SSAValue, value).type for value in returned)),
         )
-        frame.output.args[0].type = types.MethodType[list(inputs), signature.output]
+        this.type = types.MethodType[list(inputs), signature.output]
         code = stmt.from_stmt(stmt, regions=[ir.Region(frame.output)])
         code.source = None if stmt.source is None else replace(stmt.source)
         code.signature = signature
@@ -114,26 +105,12 @@ class Functions(interp.MethodTable):
         end = stmt.body.blocks[0].last_stmt
         assert isinstance(end, func.Return)
         value = frame.get(end.value)
-        values = value if isinstance(value, tuple) else (value,)
-        lengths = tuple(
-            value.length if isinstance(value, Location) else None for value in values
-        )
-        parameters = set(frame.output.args[1:])
-        lengths = tuple(
-            length if length is not None and length.symbols() <= parameters else None
-            for length in lengths
-        )
-        if not any(length is not None for length in lengths):
-            lengths = (None,) * len(ordinary)
+        fields = value if layout.packed and isinstance(value, tuple) else (value,)
+        if len(fields) != layout.ordinary:
+            fields = (None,) * layout.ordinary
+        parameters = frozenset(frame.output.args[1:])
         emit.result = Contract(
-            method,
-            inputs,
-            tuple(value.type for value in returned[: len(ordinary)]),
-            borrowed,
-            lengths,
-            isinstance(stmt.signature.output, types.Generic)
-            and stmt.signature.output.is_subseteq(types.Tuple)
-            and bool(ordinary),
+            method, tuple(static_length(field, parameters) for field in fields)
         )
         return ()
 
@@ -141,7 +118,7 @@ class Functions(interp.MethodTable):
     def return_(
         self, emit: EmitWire, frame: WireFrame, stmt: func.Return
     ) -> interp.ReturnValue[Value]:
-        """Return owned outputs and borrowed parameters, then end local allocation lifetimes."""
+        """Return ordinary results and borrowed parameters, then free local allocations."""
         if isinstance(frame.code, func.Invoke):
             return interp.ReturnValue(frame.get(stmt.value))
         function = emit.source.code
@@ -150,17 +127,13 @@ class Functions(interp.MethodTable):
             raise WireConversionError(
                 "Wire conversion requires a function-level return.", stmt
             )
-        borrowed = [
-            frame.get(arg)
-            for arg in function.body.blocks[0].args[1:]
-            if quantum_type(arg.type) is not None
-        ]
-        borrowed_roots = {
-            value.root for value in borrowed if isinstance(value, Location)
-        }
+        layout = Layout.of(function.signature)
+        parameters = function.body.blocks[0].args[1:]
+        borrowed = [cast(Location, frame.get(parameters[i])) for i in layout.borrowed]
+        borrowed_roots = {location.root for location in borrowed}
         results: list[ir.SSAValue] = []
         seen = set()
-        for value in ordinary_values(emit, frame, function, stmt):
+        for value in ordinary_values(emit, frame, function, stmt, layout):
             if isinstance(value, Location):
                 if value.selection is not None:
                     raise UnsupportedCallContract(
@@ -183,9 +156,7 @@ class Functions(interp.MethodTable):
                 )
             else:
                 results.append(emit.classical(frame, value))
-        for value in borrowed:
-            assert isinstance(value, Location)
-            results.append(emit.take(frame, value))
+        results.extend(emit.take(frame, location) for location in borrowed)
         frame.finish()
         if not results:
             packed = frame.push(func.ConstantNone()).results[0]
@@ -198,7 +169,7 @@ class Functions(interp.MethodTable):
 
     @interp.impl(func.Invoke)
     def invoke(self, emit: EmitWire, frame: WireFrame, stmt: func.Invoke):
-        """Allocate a register or emit a call using its checked callee contract."""
+        """Allocate a register, run a library wrapper or call a converted function."""
         if stmt.callee is qubit.qalloc:
             size = emit.classical(frame, frame.get(stmt.inputs[0]))
             root = frame.push(stmts.AllocRegister(size)).results[0]
@@ -218,96 +189,114 @@ class Functions(interp.MethodTable):
                     body, stmt.callee.code, None, *frame.get_values(stmt.inputs)
                 )
             return (result,)
-        if any(value.type.is_subseteq(types.Tuple) for value in stmt.inputs):
-            raise UnsupportedCallContract(
-                "Wire calls require separate arguments for tuple fields.", stmt
-            )
-        contract = emit.contracts[stmt.callee]
-        values = frame.get_values(stmt.inputs)
-        locations = [values[i] for i in contract.borrowed]
-        for i, location in enumerate(locations):
-            if not isinstance(location, Location) or not (
-                location.scalar or location.selection is None
-            ):
-                raise UnsupportedCallContract(
-                    "A call requires whole registers or individual qubits.", stmt
-                )
-            for other in locations[i + 1 :]:
-                if not isinstance(other, Location) or not separated(location, other):
-                    raise UnresolvedArgumentSeparation(
-                        "Call arguments require separate quantum locations.", stmt
-                    )
-        inputs = tuple(
-            (
-                emit.take(frame, value)
-                if i in contract.borrowed and isinstance(value, Location)
-                else emit.classical(frame, value)
-            )
-            for i, value in enumerate(values)
+        return (call(emit, frame, stmt),)
+
+
+def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
+    """Call a converted function and continue the borrowed qubits with its results."""
+    if any(value.type.is_subseteq(types.Tuple) for value in stmt.inputs):
+        raise UnsupportedCallContract(
+            "Wire calls require separate arguments for tuple fields.", stmt
         )
-        call = frame.push(func.Invoke(inputs, callee=contract.method))
-        call.result.type = packed_type(contract.outputs)
-        if len(contract.outputs) <= 1:
-            outputs = [call.result][: len(contract.outputs)]
-        else:
-            outputs = []
-            for i, kind in enumerate(contract.outputs):
-                at = frame.push(py.Constant(i)).results[0]
-                item = frame.push(py.GetItem(call.result, at))
-                item.results[0].type = kind
-                outputs.append(item.results[0])
-        count = len(contract.ordinary)
-        for location, result in zip(locations, outputs[count:], strict=True):
-            assert isinstance(location, Location)
-            emit.restore(frame, location, result)
-        parameters = contract.method.callable_region.blocks[0].args[1:]
-        mapping: dict[Sym, Affine] = {
-            parameter: index_of(emit.classical(frame, value))
-            for parameter, value in zip(parameters, values, strict=True)
-            if parameter.type.is_subseteq(types.Int)
-        }
-        ordinary = []
-        for result, kind, length in zip(
-            outputs[:count], contract.ordinary, contract.lengths, strict=True
+    callee = stmt.callee.code
+    assert isinstance(callee, func.Function)
+    layout = Layout.of(callee.signature)
+    contract = emit.contracts[stmt.callee]
+    values = frame.get_values(stmt.inputs)
+    locations = [values[i] for i in layout.borrowed]
+    for i, location in enumerate(locations):
+        if not isinstance(location, Location) or not (
+            location.scalar or location.selection is None
         ):
-            if kind in (WireType, RegisterType):
-                length = None if length is None else length.substitute(mapping)
-                if length is not None and length.constant is not None:
-                    length = Affine(max(0, length.const))
-                ordinary.append(Location(result, length))
-                frame.current[result] = result
-                frame.local_roots.append(result)
-            else:
-                ordinary.append(result)
-        if contract.packed:
-            return (tuple(ordinary),)
-        return (
-            ordinary[0] if ordinary else frame.push(func.ConstantNone()).results[0],
+            raise UnsupportedCallContract(
+                "A call requires whole registers or individual qubits.", stmt
+            )
+        for other in locations[i + 1 :]:
+            if not isinstance(other, Location) or not separated(location, other):
+                raise UnresolvedArgumentSeparation(
+                    "Call arguments require separate quantum locations.", stmt
+                )
+    borrowed = cast(list[Location], locations)
+    inputs = tuple(
+        (
+            emit.take(frame, cast(Location, value))
+            if i in layout.borrowed
+            else emit.classical(frame, value)
         )
+        for i, value in enumerate(values)
+    )
+    made = frame.push(func.Invoke(inputs, callee=contract.method))
+    made.result.type = contract.method.return_type
+    kinds = layout.results(made.result.type)
+    if len(kinds) <= 1:
+        outputs = (made.result,)[: len(kinds)]
+    else:
+        outputs = unpack(frame, made.result, kinds)
+    for location, result in zip(borrowed, outputs[layout.ordinary :], strict=True):
+        emit.restore(frame, location, result)
+    parameters = contract.method.callable_region.blocks[0].args[1:]
+    mapping: dict[Sym, Affine] = {
+        parameter: index_of(emit.classical(frame, value))
+        for parameter, value in zip(parameters, values, strict=True)
+        if parameter.type.is_subseteq(types.Int)
+    }
+    ordinary: list[Value] = []
+    for result, length in zip(
+        outputs[: layout.ordinary], contract.lengths, strict=True
+    ):
+        if result.type not in (WireType, RegisterType):
+            ordinary.append(result)
+            continue
+        if length is not None:
+            length = length.substitute(mapping)
+            if length.constant is not None:
+                length = Affine(max(0, length.const))
+        ordinary.append(Location(result, length))
+        frame.current[result] = result
+        frame.local_roots.append(result)
+    if layout.packed:
+        return tuple(ordinary)
+    return ordinary[0] if ordinary else frame.push(func.ConstantNone()).results[0]
+
+
+def static_length(value: Value, parameters: frozenset[ir.SSAValue]) -> Affine | None:
+    """Return the length of a returned register if the parameters determine it."""
+    if isinstance(value, Location) and value.length is not None:
+        if value.length.symbols() <= parameters:
+            return value.length
+    return None
+
+
+def unpack(
+    frame: WireFrame, packed: ir.SSAValue, kinds: tuple[types.TypeAttribute, ...]
+) -> tuple[ir.SSAValue, ...]:
+    """Read each field of the tuple value `packed` and give it the type in `kinds`."""
+    fields = []
+    for i, kind in enumerate(kinds):
+        index = frame.push(py.Constant(i)).results[0]
+        item = frame.push(py.GetItem(packed, index))
+        item.results[0].type = kind
+        fields.append(item.results[0])
+    return tuple(fields)
 
 
 def ordinary_values(
-    emit: EmitWire, frame: WireFrame, function: func.Function, stmt: func.Return
-):
-    """Read ordinary source results according to the declared function result layout."""
-    kinds = output_types(function.signature.output)
-    if not kinds:
+    emit: EmitWire,
+    frame: WireFrame,
+    function: func.Function,
+    stmt: func.Return,
+    layout: Layout,
+) -> tuple[Value, ...]:
+    """Split the returned source value into the ordinary results of `layout`."""
+    if not layout.ordinary:
         return ()
     value = frame.get(stmt.value)
-    if isinstance(
-        function.signature.output, types.Generic
-    ) and function.signature.output.is_subseteq(types.Tuple):
-        if isinstance(value, tuple):
-            return value
-        packed = emit.classical(frame, value)
-        fields = []
-        for i, kind in enumerate(kinds):
-            index = frame.push(py.Constant(i)).result
-            item = frame.push(py.GetItem(packed, index))
-            item.result.type = kind
-            fields.append(item.result)
-        return tuple(fields)
-    return (value,)
+    if not layout.packed:
+        return (value,)
+    if isinstance(value, tuple):
+        return value
+    kinds = output_types(function.signature.output)
+    return unpack(frame, emit.classical(frame, value), kinds)
 
 
 def separated(left: Location, right: Location) -> bool:

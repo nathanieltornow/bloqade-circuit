@@ -38,7 +38,9 @@ def branch_in_loop(n: int, flag: bool):
 def test_nested_control_flow_emits_complete_wire_methods(n, flag):
     converter = SquinToWire()
     wired = converter.emit(branch_in_loop)
-    assert all(remaining(method) == [] for method in converter.prepared.values())
+    assert all(
+        remaining(contract.method) == [] for contract in converter.contracts.values()
+    )
     assert simulate(WireToSquin().emit(wired), n, flag) == simulate(
         branch_in_loop, n, flag
     )

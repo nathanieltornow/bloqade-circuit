@@ -1,11 +1,22 @@
-"""Describe wire function results and borrowed parameter positions."""
+"""Describe the calling convention of converted wire functions.
+
+A source function borrows each quantum parameter. Its wire function returns the
+ordinary source results first. Then it returns each quantum parameter in
+declaration order, so that the caller gets the updated qubits back. For example,
+the source call `answer = f(q, n)` becomes `answer, q_next = f_wire(q_current, n)`.
+"""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Sequence
 
 from kirin import ir, types
+from kirin.dialects import func
 
 from bloqade.analysis.indices import Affine
+
+from .types import quantum_type
 
 
 def output_types(output: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:
@@ -31,17 +42,59 @@ def packed_type(outputs: Sequence[types.TypeAttribute]) -> types.TypeAttribute:
 
 
 @dataclass(frozen=True)
+class Layout:
+    """Describe the wire results that the signature of a source function implies."""
+
+    borrowed: tuple[int, ...]
+    """The argument positions of the quantum parameters."""
+    ordinary: int
+    """The number of ordinary source results."""
+    packed: bool
+    """Whether the source function returns its ordinary results as one tuple."""
+
+    @classmethod
+    def of(cls, signature: func.Signature) -> Layout:
+        """Read the layout from the signature of a source function."""
+        ordinary = len(output_types(signature.output))
+        borrowed = tuple(
+            i
+            for i, kind in enumerate(signature.inputs)
+            if quantum_type(kind) is not None
+        )
+        packed = (
+            ordinary > 0
+            and isinstance(signature.output, types.Generic)
+            and signature.output.is_subseteq(types.Tuple)
+        )
+        return cls(borrowed, ordinary, packed)
+
+    def results(self, output: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:
+        """Return the type of each wire result for the wire output type `output`.
+
+        A single wire result keeps its own type, even if that type is a tuple.
+        """
+        count = self.ordinary + len(self.borrowed)
+        kinds = (output,) if count == 1 else output_types(output)
+        if len(kinds) != count:
+            raise ValueError(
+                f"The wire output type {output} must have {count} results."
+            )
+        return kinds
+
+
+@dataclass(frozen=True)
 class Contract:
-    """Describe a converted function's ordinary results and borrowed-parameter suffix."""
+    """Hold what a caller needs from a converted function.
+
+    The inferred signature of `method` gives the type of every wire result.
+    """
 
     method: ir.Method
-    inputs: tuple[types.TypeAttribute, ...]
-    ordinary: tuple[types.TypeAttribute, ...]
-    borrowed: tuple[int, ...]
+    """The converted wire function."""
     lengths: tuple[Affine | None, ...]
-    packed: bool
+    """The static length of each ordinary result, in result order.
 
-    @property
-    def outputs(self) -> tuple[types.TypeAttribute, ...]:
-        """Return all wire result types in their declared order."""
-        return self.ordinary + tuple(self.inputs[i] for i in self.borrowed)
+    A length is an affine expression in the integer parameters of `method`. The
+    caller replaces those parameters with its own arguments. An entry is None for
+    a classical result and for a register of unknown length.
+    """
