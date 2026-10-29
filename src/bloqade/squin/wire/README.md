@@ -76,7 +76,8 @@ The operation tables live in `squin.emit.wire`:
 | File | Responsibility |
 | --- | --- |
 | `base.py` | Define the emitter, frame and operations on current wires. |
-| `methods.py` | Emit functions and calls, and interpret source reference expressions. |
+| `functions.py` | Emit function boundaries, library wrappers and calls. |
+| `references.py` | Resolve source qubit references and copy classical operations. |
 | `control.py` | Convert loop and branch regions through Kirin's region interpreter. |
 | `gates.py` | Emit wire gates and runtime broadcast loops. |
 | `values.py` | Define locations and compose element and slice selections. |

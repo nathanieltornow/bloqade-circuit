@@ -9,8 +9,8 @@ from bloqade.squin.emit.wire import EmitWire
 from bloqade.squin.wire.group import reference_kernel
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.signature import Contract
-from bloqade.squin.emit.wire.methods import is_library
 from bloqade.squin.passes.wire_target import ConversionTarget
+from bloqade.squin.emit.wire.functions import is_library
 from bloqade.squin.passes.wire_typeinfer import infer_wire_types
 from bloqade.squin.analysis.validation.wire import WireValidation
 from bloqade.squin.analysis.validation.wire.stages import SourceValidation, check_stage

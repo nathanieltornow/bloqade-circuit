@@ -1,12 +1,17 @@
 """Emit structured regions once with explicit incoming and outgoing wire values."""
 
 from kirin import ir, interp
-from kirin.dialects import scf
+from kirin.dialects import scf, ssacfg
 
 from bloqade.squin.wire.errors import WireConversionError
 
 from .base import EmitWire, WireFrame
 from .values import contains_location
+
+
+@ssacfg.dialect.register(key="emit.squin_wire")
+class Regions(ssacfg.Concrete):
+    """Use Kirin's region interpreter to visit each source statement in order."""
 
 
 @scf.dialect.register(key="emit.squin_wire")

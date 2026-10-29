@@ -64,6 +64,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
     source: ir.Method
     contracts: Mapping[ir.Method, Contract]
     result: Contract | None = field(default=None, init=False)
+    """The contract of the emitted method, which the function handler sets at its end."""
 
     def initialize_frame(
         self, node: ir.Statement, *, has_parent_access: bool = False
@@ -129,8 +130,12 @@ class EmitWire(EmitABC[WireFrame, Value]):
         node.results[0].type = types.Int
         return node.results[0]
 
-    def take(self, frame: WireFrame, location: Location) -> ir.SSAValue:
-        """Consume a whole current value or borrow one selected register element."""
+    def acquire(self, frame: WireFrame, location: Location) -> ir.SSAValue:
+        """Return the wire value of a location for an operation that consumes it.
+
+        A whole allocation leaves `current` until `restore` puts its next value back.
+        A register element emits a `Borrow`, and `restore` emits the matching `Release`.
+        """
         value = frame.current.get(location.root)
         if value is None:
             raise WireConversionError(
@@ -152,7 +157,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
         return value
 
     def restore(self, frame: WireFrame, location: Location, value: ir.SSAValue) -> None:
-        """Record an updated whole value or restore an element to its register."""
+        """Record the next value of a location after the operation that consumed it."""
         if isinstance(location.selection, Affine):
             register = frame.current[location.root]
             value = frame.push(

@@ -24,7 +24,7 @@ def scalar_gate(
     twin = TWINS[type(source)]
     trait = twin.get_present_trait(Twin)
     inputs = {
-        name: emit.take(frame, location)
+        name: emit.acquire(frame, location)
         for (_, name), location in zip(trait.wires, locations, strict=True)
     }
     fields = getattr(twin, "__kirin_stmt_fields")
