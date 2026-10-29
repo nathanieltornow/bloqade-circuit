@@ -52,7 +52,7 @@ def test_call_results_keep_borrowed_roots_and_distinguish_fresh_roots():
 
 def test_register_origins_resolve_negative_indices_and_reject_invalid_elements():
     register = Handle("register", RegisterType, Affine(3))
-    assert register.pick(Affine(-1)) == register.pick(Affine(2))
-    assert register.pick(Affine(3)) == Origin.top()
-    assert register.pick(Affine(-4)) == Origin.top()
-    assert Handle("wire", WireType).pick(Affine(0)) == Origin.top()
+    assert register.element(Affine(-1)) == register.element(Affine(2))
+    assert register.element(Affine(3)) == Origin.top()
+    assert register.element(Affine(-4)) == Origin.top()
+    assert Handle("wire", WireType).element(Affine(0)) == Origin.top()

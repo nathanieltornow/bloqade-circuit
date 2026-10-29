@@ -41,13 +41,13 @@ class Moved:
 class Slots(BoundedLattice["Slots"]):
     """Hold the unavailable slots of one register value.
 
-    `held` holds the affine index of each borrowed slot and a `Moved` entry for each
+    `unavailable` holds the affine index of each borrowed slot and a `Moved` entry for each
     moved element or range. Equal expressions, such as `i` and `i + 0`, have the
-    same key. If `held` is None, the analysis cannot name the slots. That element
+    same key. If `unavailable` is None, the analysis cannot name the slots. That element
     is the top of the lattice.
     """
 
-    held: frozenset[Affine | Moved] | None
+    unavailable: frozenset[Affine | Moved] | None
     length: Affine | None = None
     """The number of elements of the register, or None if it is unknown."""
     unreachable: bool = False
@@ -69,11 +69,11 @@ class Slots(BoundedLattice["Slots"]):
             return True
         if other.unreachable:
             return False
-        if other.held is None:
+        if other.unavailable is None:
             return True
         return (
-            self.held is not None
-            and self.held <= other.held
+            self.unavailable is not None
+            and self.unavailable <= other.unavailable
             and (other.length is None or self.length == other.length)
         )
 
@@ -83,19 +83,20 @@ class Slots(BoundedLattice["Slots"]):
             return other
         if other.unreachable:
             return self
-        if self.held is None or other.held is None:
+        if self.unavailable is None or other.unavailable is None:
             return Slots(None)
         return Slots(
-            self.held | other.held, self.length if self.length == other.length else None
+            self.unavailable | other.unavailable,
+            self.length if self.length == other.length else None,
         )
 
     def meet(self, other: "Slots") -> "Slots":
         """Return the slots that both elements hold, with a compatible length."""
         if self.unreachable or other.unreachable:
             return Slots.bottom()
-        if self.held is None:
+        if self.unavailable is None:
             return other
-        if other.held is None:
+        if other.unavailable is None:
             return self
         if (
             self.length is not None
@@ -103,7 +104,7 @@ class Slots(BoundedLattice["Slots"]):
             and self.length != other.length
         ):
             return Slots.bottom()
-        return Slots(self.held & other.held, self.length or other.length)
+        return Slots(self.unavailable & other.unavailable, self.length or other.length)
 
 
 EMPTY = Slots(frozenset())
@@ -136,20 +137,20 @@ class BorrowCheck(CachedCalls[Slots]):
         node: ir.Statement,
         values: Iterable[ir.SSAValue],
     ) -> None:
-        """Record an error at `node` for each register of `values` with a borrowed slot."""
+        """Record an error at `node` for each register of `values` with an unavailable slot."""
         for value in values:
             if not value.type.is_subseteq(RegisterType):
                 continue
-            held = frame.get(value).held
-            if held is None:
+            unavailable = frame.get(value).unavailable
+            if unavailable is None:
                 self.error(
                     node, f"'{node.name}' takes a register with unknown borrowed slots"
                 )
-            elif held:
+            elif unavailable:
                 self.error(node, f"'{node.name}' takes a register with borrowed slots")
 
     def results(self, node: ir.Statement) -> tuple[Slots, ...]:
-        """Return no borrowed slot for each register result, and top for the others."""
+        """Return no unavailable slot for each register result, and top for the others."""
         return tuple(
             EMPTY if r.type.is_subseteq(RegisterType) else Slots.top()
             for r in node.results
@@ -158,32 +159,35 @@ class BorrowCheck(CachedCalls[Slots]):
     def eval_fallback(
         self, frame: ForwardFrame[Slots], node: ir.Statement
     ) -> tuple[Slots, ...]:
-        """Check that each register operand holds no borrowed slot."""
+        """Check that each register operand holds no unavailable slot."""
         self.expect_empty(frame, node, node.args)
         return self.results(node)
 
 
 @stmts.dialect.register(key=BORROW_KEY)
 class _Borrows(interp.MethodTable):
-    """Track the borrowed slots through `Borrow` and `Release`."""
+    """Track the unavailable slots through borrows, moves and register operations."""
 
     @interp.impl(stmts.Take)
     @interp.impl(stmts.Borrow)
     def borrow(
-        self, check: BorrowCheck, frame: ForwardFrame[Slots], stmt: stmts.Borrow
+        self,
+        check: BorrowCheck,
+        frame: ForwardFrame[Slots],
+        stmt: stmts.Borrow | stmts.Take,
     ) -> tuple[Slots, ...]:
-        """Add the index to the borrowed slots of the register."""
-        held = frame.get(stmt.register).held
+        """Add the borrowed index or the moved element to the unavailable slots."""
+        unavailable = frame.get(stmt.register).unavailable
         key = (
             Moved(check.indices.of(stmt.index))
             if isinstance(stmt, stmts.Take)
             else check.indices.of(stmt.index)
         )
-        if held is None:
+        if unavailable is None:
             return (Slots.top(), Slots.top())
-        if key in held:
+        if key in unavailable:
             check.error(stmt, "'borrow' takes a slot that is already borrowed")
-        elif any(not disjoint(key, previous) for previous in held):
+        elif any(not disjoint(key, previous) for previous in unavailable):
             check.add_validation_error(
                 stmt,
                 UnresolvedBorrowSeparation(
@@ -191,22 +195,28 @@ class _Borrows(interp.MethodTable):
                     "'borrow' requires indices that provably differ from every outstanding borrow",
                 ),
             )
-        return (Slots(held | {key}, frame.get(stmt.register).length), Slots.top())
+        return (
+            Slots(unavailable | {key}, frame.get(stmt.register).length),
+            Slots.top(),
+        )
 
     @interp.impl(stmts.Put)
     @interp.impl(stmts.Release)
     def release(
-        self, check: BorrowCheck, frame: ForwardFrame[Slots], stmt: stmts.Release
+        self,
+        check: BorrowCheck,
+        frame: ForwardFrame[Slots],
+        stmt: stmts.Release | stmts.Put,
     ) -> tuple[Slots, ...]:
-        """Remove a slot only when its index matches a recorded borrow."""
-        held = frame.get(stmt.register).held
+        """Remove the slot that matches the released index or the filled element."""
+        unavailable = frame.get(stmt.register).unavailable
         key = (
             Moved(check.indices.of(stmt.index))
             if isinstance(stmt, stmts.Put)
             else check.indices.of(stmt.index)
         )
-        if held is not None and key in held:
-            return (Slots(held - {key}, frame.get(stmt.register).length),)
+        if unavailable is not None and key in unavailable:
+            return (Slots(unavailable - {key}, frame.get(stmt.register).length),)
         check.error(stmt, "'release' requires a matching borrowed index")
         return (Slots.top(),)
 
@@ -251,13 +261,13 @@ class _Borrows(interp.MethodTable):
         state = frame.get(stmt.register)
         size = check.indices.of(stmt.length)
         key = Moved(Slice(check.indices.of(stmt.start), 1, size))
-        if state.held is None:
+        if state.unavailable is None:
             return Slots.top(), Slots(frozenset(), size)
-        if any(not disjoint(key, held) for held in state.held):
+        if any(not disjoint(key, slot) for slot in state.unavailable):
             check.error(
                 stmt, "A slice extraction overlaps an unavailable register element."
             )
-        return Slots(state.held | {key}, state.length), Slots(frozenset(), size)
+        return Slots(state.unavailable | {key}, state.length), Slots(frozenset(), size)
 
     @interp.impl(stmts.PutSlice)
     def put_slice(self, check: BorrowCheck, frame, stmt: stmts.PutSlice):
@@ -266,16 +276,22 @@ class _Borrows(interp.MethodTable):
         state = frame.get(stmt.register)
         size = frame.get(stmt.slice_register).length
         key = Moved(Slice(check.indices.of(stmt.start), 1, size))
-        if state.held is not None and size is not None and key in state.held:
-            return (Slots(state.held - {key}, state.length),)
+        if (
+            state.unavailable is not None
+            and size is not None
+            and key in state.unavailable
+        ):
+            return (Slots(state.unavailable - {key}, state.length),)
         check.error(stmt, "A slice insertion must match an empty range and its length.")
         return (Slots.top(),)
 
     @interp.impl(stmts.DiscardRegister)
     def discard(self, check: BorrowCheck, frame, stmt: stmts.DiscardRegister):
         """Permit moved-out elements and require every outstanding borrow to return."""
-        held = frame.get(stmt.register).held
-        if held is None or any(not isinstance(slot, Moved) for slot in held):
+        unavailable = frame.get(stmt.register).unavailable
+        if unavailable is None or any(
+            not isinstance(slot, Moved) for slot in unavailable
+        ):
             check.error(
                 stmt, "A discarded register must restore every borrowed element."
             )
@@ -323,7 +339,7 @@ class _BorrowScf(interp.MethodTable):
     def yield_(
         self, check: BorrowCheck, frame: ForwardFrame[Slots], stmt: scf.Yield
     ) -> interp.YieldValue[Slots]:
-        """Check that each yielded register holds no borrowed slot."""
+        """Check that each yielded register holds no unavailable slot."""
         check.expect_empty(frame, stmt, stmt.values)
         return interp.YieldValue(tuple(Slots.top() for _ in stmt.values))
 

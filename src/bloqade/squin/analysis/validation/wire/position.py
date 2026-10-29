@@ -26,13 +26,14 @@ class PositionAnalysis(CachedCalls[Origin]):
 
     keys = (KEY,)
     lattice = Origin
-    functions: list[ir.Statement] = field(default_factory=list, init=False)
+    active_functions: list[ir.Statement] = field(default_factory=list, init=False)
+    """The functions that the analysis interprets now, innermost last."""
     indices: IndexAnalysis = field(default_factory=IndexAnalysis, init=False)
 
     def initialize(self):
         """Reset function context and integer facts before each validation run."""
         super().initialize()
-        self.functions = []
+        self.active_functions = []
         self.indices = IndexAnalysis()
         return self
 
@@ -52,9 +53,13 @@ class PositionAnalysis(CachedCalls[Origin]):
             self.error(node, message)
 
     @property
-    def borrowing(self) -> bool:
-        """Identify functions whose quantum parameters require positional return continuity."""
-        return self.functions[-1].attributes.get(OWNED) != ir.PyAttr(True)
+    def checks_borrowed_positions(self) -> bool:
+        """Check whether the innermost function borrows its quantum parameters.
+
+        A borrowing function must return each quantum parameter in its position.
+        Jeff import marks consuming functions as owned, and they skip this check.
+        """
+        return self.active_functions[-1].attributes.get(OWNED) != ir.PyAttr(True)
 
     def frame_call(
         self,
@@ -63,40 +68,44 @@ class PositionAnalysis(CachedCalls[Origin]):
         *args: Origin,
         **kwargs: Origin,
     ) -> Origin:
-        """Check borrowed returns after Kirin interprets the function body."""
-        if node in self.functions:
+        """Interpret the function body, then check its borrowed return suffix."""
+        if node in self.active_functions:
             self.error(node, "Wire validation does not support recursive calls.")
             return Origin.top()
-        self.functions.append(node)
+        self.active_functions.append(node)
         try:
             result = super().frame_call(frame, node, *args, **kwargs)
-            if self.borrowing:
-                region = node.get_present_trait(
-                    ir.CallableStmtInterface
-                ).get_callable_region(node)
-                parameters = [
-                    arg for arg in region.blocks[0].args[1:] if is_linear(arg.type)
-                ]
-                outputs = result.data if isinstance(result.data, tuple) else (result,)
-                end = region.blocks[0].last_stmt
-                assert end is not None
-                if len(outputs) < len(parameters):
-                    self.error(
-                        end, "The return suffix must include every borrowed parameter."
-                    )
-                elif parameters:
-                    for i, (actual, parameter) in enumerate(
-                        zip(outputs[-len(parameters) :], parameters)
-                    ):
-                        self.expect(
-                            end,
-                            actual,
-                            frame.get(parameter),
-                            f"return suffix position {i} must continue borrowed parameter {i}",
-                        )
+            if self.checks_borrowed_positions:
+                self.check_return_suffix(frame, node, result)
             return result
         finally:
-            self.functions.pop()
+            self.active_functions.pop()
+
+    def check_return_suffix(
+        self, frame: ForwardFrame[Origin], node: ir.Statement, result: Origin
+    ) -> None:
+        """Require the last results of `node` to continue its quantum parameters in order."""
+        region = node.get_present_trait(ir.CallableStmtInterface).get_callable_region(
+            node
+        )
+        parameters = [arg for arg in region.blocks[0].args[1:] if is_linear(arg.type)]
+        outputs = result.data if isinstance(result.data, tuple) else (result,)
+        end = region.blocks[0].last_stmt
+        assert end is not None
+        if len(outputs) < len(parameters):
+            self.error(end, "The return suffix must include every borrowed parameter.")
+            return
+        if not parameters:
+            return
+        for i, (actual, parameter) in enumerate(
+            zip(outputs[-len(parameters) :], parameters)
+        ):
+            self.expect(
+                end,
+                actual,
+                frame.get(parameter),
+                f"return suffix position {i} must continue borrowed parameter {i}",
+            )
 
     def eval_fallback(self, frame: ForwardFrame[Origin], node: ir.Statement):
         """Follow declared wire continuations and assign unknown origins to other results."""
@@ -139,7 +148,7 @@ class WirePositions(interp.MethodTable):
         """Keep the register's origin and identify the selected element."""
         register = frame.get(stmt.register)
         selected = (
-            register.data.pick(check.indices.of(stmt.index))
+            register.data.element(check.indices.of(stmt.index))
             if isinstance(register.data, Handle)
             else Origin.top()
         )
@@ -152,7 +161,7 @@ class WirePositions(interp.MethodTable):
         """Require a release to restore the qubit from its original register element."""
         register = frame.get(stmt.register)
         expected = (
-            register.data.pick(check.indices.of(stmt.index))
+            register.data.element(check.indices.of(stmt.index))
             if isinstance(register.data, Handle)
             else Origin.top()
         )
@@ -259,7 +268,7 @@ class ControlFlow(interp.MethodTable):
         for i, (argument, actual, expected) in enumerate(
             zip(stmt.body.blocks[0].args[1:], yielded, initial)
         ):
-            if check.borrowing and is_linear(argument.type):
+            if check.checks_borrowed_positions and is_linear(argument.type):
                 check.expect(
                     end,
                     actual,
@@ -283,7 +292,7 @@ class ControlFlow(interp.MethodTable):
             yielded.append(result)
         left, right = yielded
         for i, (value, first, second) in enumerate(zip(stmt.results, left, right)):
-            if check.borrowing and is_linear(value.type):
+            if check.checks_borrowed_positions and is_linear(value.type):
                 check.expect(
                     stmt,
                     second,

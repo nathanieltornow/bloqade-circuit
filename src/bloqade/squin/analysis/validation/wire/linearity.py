@@ -102,7 +102,7 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
         """Record an ownership error at the operation that defines the value."""
         self.add_validation_error(node, ir.ValidationError(node, message))
 
-    def check(self, values: Iterable[ir.SSAValue], node: ir.IRNode) -> None:
+    def check_uses(self, values: Iterable[ir.SSAValue], node: ir.IRNode) -> None:
         """Check one consuming use per quantum tuple field along each execution path."""
         for value in values:
             try:
@@ -164,7 +164,7 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
             return None
         return index % size
 
-    def preserve(self, node, actual, declared):
+    def require_same_paths(self, node, actual, declared):
         """Require a boundary type to retain every quantum ownership path."""
         try:
             if linear_paths(actual) != linear_paths(declared):
@@ -179,10 +179,10 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
             for value in (*node.args, *node.results)
         ):
             self.error(node, "A wire operation cannot use the impossible type Bottom.")
-        self.check(node.results, node)
+        self.check_uses(node.results, node)
         return super().frame_eval(frame, node)
 
-    def flat(self, node, values):
+    def require_flat(self, node, values):
         """Require control-flow state to carry each quantum value separately."""
         if any(
             contains_linear(value.type) and not is_linear(value.type)
@@ -207,7 +207,7 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
                         node,
                         "Quantum function parameters must be separate wires or registers.",
                     )
-            self.check(params, node)
+            self.check_uses(params, node)
             if isinstance(node, func.Function):
                 output = node.signature.output
                 if isinstance(output, types.Generic) and output.is_subseteq(
@@ -261,7 +261,7 @@ class _FunctionLinearity(interp.MethodTable):
         """Check call types and validate the callee with Kirin's call machinery."""
         parameters = stmt.callee.callable_region.blocks[0].args[1:]
         for argument, parameter in zip(stmt.inputs, parameters):
-            check.preserve(stmt, argument.type, parameter.type)
+            check.require_same_paths(stmt, argument.type, parameter.type)
         expected = stmt.callee.return_type
         if contains_linear(expected) and stmt.result.type != expected:
             check.error(
@@ -281,7 +281,7 @@ class _FunctionLinearity(interp.MethodTable):
         while owner is not None and not isinstance(owner, func.Function):
             owner = owner.parent_stmt
         if isinstance(owner, func.Function):
-            check.preserve(stmt, stmt.value.type, owner.signature.output)
+            check.require_same_paths(stmt, stmt.value.type, owner.signature.output)
         return interp.ReturnValue(EmptyLattice.top())
 
 
@@ -298,16 +298,16 @@ class _Scf(interp.MethodTable):
         stmt: ir.Statement,
     ) -> tuple[EmptyLattice, ...]:
         """Check the state types, then run each body once."""
-        check.flat(stmt, stmt.results)
+        check.require_flat(stmt, stmt.results)
         if isinstance(stmt, scf.For):
-            check.flat(stmt, stmt.initializers)
+            check.require_flat(stmt, stmt.initializers)
             for value, argument in zip(stmt.initializers, stmt.body.blocks[0].args[1:]):
-                check.preserve(stmt, value.type, argument.type)
+                check.require_same_paths(stmt, value.type, argument.type)
         for region in stmt.regions:
             if not region.blocks:
                 continue
             block = region.blocks[0]
-            check.check(block.args, stmt)
+            check.check_uses(block.args, stmt)
             args = [EmptyLattice.top() for _ in block.args]
             with check.new_frame(stmt, has_parent_access=True) as inner:
                 check.frame_call_region(inner, stmt, region, *args)
@@ -318,10 +318,10 @@ class _Scf(interp.MethodTable):
         self, check: LinearityCheck, frame: ForwardFrame[EmptyLattice], stmt: scf.Yield
     ) -> interp.YieldValue[EmptyLattice]:
         """Check yielded ownership against each declared region result."""
-        check.flat(stmt, stmt.values)
+        check.require_flat(stmt, stmt.values)
         if stmt.parent_stmt is not None:
             for value, result in zip(stmt.values, stmt.parent_stmt.results):
-                check.preserve(stmt, value.type, result.type)
+                check.require_same_paths(stmt, value.type, result.type)
         return interp.YieldValue(tuple(EmptyLattice.top() for _ in stmt.values))
 
 

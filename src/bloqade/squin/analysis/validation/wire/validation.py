@@ -2,7 +2,8 @@
 
 `StructureValidation` runs kirin's own `verify` and `verify_type`.
 `LinearityValidation` checks that each wire and register has one use.
-`BorrowValidation` checks that each `Borrow` has a matching `Release`.
+`BorrowValidation` checks that each borrowed element returns and that each moved
+element is filled or discarded.
 `PositionValidation` checks the order of wires across control flow and calls.
 """
 
@@ -17,7 +18,10 @@ from bloqade.squin.analysis.validation.wire.linearity import LinearityValidation
 
 
 class StructureValidation(ValidationPass[None]):
-    """Run kirin's own structure and type checks on a wire squin method."""
+    """Run kirin's own structure and type checks on a method.
+
+    The suite runs this check on wire methods, and `check_stage` runs it on source.
+    """
 
     def name(self) -> str:
         """Return the pass name that validation reports show."""
