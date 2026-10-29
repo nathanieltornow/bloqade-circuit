@@ -125,13 +125,13 @@ def test_register_validation_states_obey_lattice_bounds():
     import itertools
 
     from bloqade.analysis.indices import Affine
-    from bloqade.squin.analysis.validation.wire.borrows import Hole, Slots
+    from bloqade.squin.analysis.validation.wire.borrows import Moved, Slots
 
     states = [Slots.bottom(), Slots.top(), Slots(frozenset())]
     for length in (None, Affine(2), Affine(3)):
         states.extend(
             Slots(frozenset(held), length)
-            for held in ((), (Affine(0),), (Hole(Affine(1)),))
+            for held in ((), (Affine(0),), (Moved(Affine(1)),))
         )
     for left, right in itertools.product(states, repeat=2):
         assert Slots.bottom().is_subseteq(left)

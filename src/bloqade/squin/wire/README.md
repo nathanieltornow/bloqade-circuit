@@ -234,7 +234,7 @@ Repeated public conversions clear the contract cache.
 
 Linearity and borrow validation use Kirin forward analyses with operation method tables.
 Borrow validation tracks outstanding register indices in its `Slots` lattice.
-This validation state describes holes in an explicit wire register.
+Its `Moved` entries name elements that `Take` or `TakeSlice` moved out of a register.
 
 Position validation uses Kirin's `Forward` analysis with operation method tables.
 Its `Origin` lattice stores exact allocation identities and tuple fields in Kirin frames.

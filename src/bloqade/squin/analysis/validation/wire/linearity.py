@@ -114,49 +114,55 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
             if region is None:
                 continue
             for path in paths:
-                users = []
-                for use in value.uses:
-                    user = use.stmt
-                    if path and isinstance(user, py.GetItem) and use.index == 0:
-                        index = constant_int(user.index)
-                        assert isinstance(value.type, types.Generic)
-                        size = len(value.type.vars)
-                        if index is None or not -size <= index < size:
-                            self.error(
-                                user,
-                                "A quantum tuple requires a constant index within its bounds.",
-                            )
-                            continue
-                        if index % size != path[0]:
-                            continue
-                        if user.result.type != value.type.vars[index % size]:
-                            self.error(
-                                user,
-                                "Tuple extraction must preserve the quantum field type.",
-                            )
-                    elif not (
-                        user.dialect is stmts.dialect
-                        or isinstance(
-                            user,
-                            (
-                                py.tuple.New,
-                                func.Invoke,
-                                func.Return,
-                                scf.For,
-                                scf.Yield,
-                            ),
-                        )
-                    ):
-                        self.error(
-                            user, f"'{user.name}' cannot consume a quantum value."
-                        )
-                    users.append(user)
+                users = self.field_users(value, path)
                 if (reason := misuse(users, region)) is not None:
                     suffix = "" if not path else f" at tuple field {path}"
                     self.error(
                         node,
                         f"the linear value '{value.name or repr(value)}'{suffix} {reason}",
                     )
+
+    def field_users(
+        self, value: ir.SSAValue, path: tuple[int, ...]
+    ) -> list[ir.Statement]:
+        """Return the statements that use the quantum field at `path` of `value`.
+
+        An empty path names `value` itself. For a tuple field, each `GetItem` that
+        reads the field counts as a use. The check records an error for each use
+        that cannot consume a quantum value.
+        """
+        users = []
+        for use in value.uses:
+            user = use.stmt
+            if path and isinstance(user, py.GetItem) and use.index == 0:
+                field = self.tuple_field(user, value)
+                if field is None or field != path[0]:
+                    continue
+                assert isinstance(value.type, types.Generic)
+                if user.result.type != value.type.vars[field]:
+                    self.error(
+                        user, "Tuple extraction must preserve the quantum field type."
+                    )
+            elif not consumes_quantum(user):
+                self.error(user, f"'{user.name}' cannot consume a quantum value.")
+            users.append(user)
+        return users
+
+    def tuple_field(self, user: py.GetItem, value: ir.SSAValue) -> int | None:
+        """Return the field of the tuple `value` that `user` reads.
+
+        The result is None, and the check records an error, if the index is not a
+        constant inside the tuple bounds.
+        """
+        index = constant_int(user.index)
+        assert isinstance(value.type, types.Generic)
+        size = len(value.type.vars)
+        if index is None or not -size <= index < size:
+            self.error(
+                user, "A quantum tuple requires a constant index within its bounds."
+            )
+            return None
+        return index % size
 
     def preserve(self, node, actual, declared):
         """Require a boundary type to retain every quantum ownership path."""
@@ -222,6 +228,13 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
     ) -> tuple[EmptyLattice, ...]:
         """Check the results of a statement without a rule."""
         return tuple(EmptyLattice.top() for _ in node.results)
+
+
+def consumes_quantum(user: ir.Statement) -> bool:
+    """Check whether the statement `user` can take a quantum value as an operand."""
+    return user.dialect is stmts.dialect or isinstance(
+        user, (py.tuple.New, func.Invoke, func.Return, scf.For, scf.Yield)
+    )
 
 
 @py.tuple.dialect.register(key=KEY)
