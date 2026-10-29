@@ -99,9 +99,9 @@ class Functions(interp.MethodTable):
         """Allocate a register, run a library wrapper or call a converted function."""
         # `qalloc` builds its register with a list map, which the emitter cannot run.
         if stmt.callee is qubit.qalloc:
-            size = emit.classical(frame, frame.get(stmt.inputs[0]))
+            size = emit.classical_value(frame, frame.get(stmt.inputs[0]))
             root = frame.push(stmts.AllocRegister(size)).results[0]
-            frame.current[root] = root
+            frame.latest[root] = root
             frame.local_roots.append(root)
             length = index_of(size)
             if (count := length.constant) is not None:
@@ -113,7 +113,7 @@ class Functions(interp.MethodTable):
             with emit.new_frame(stmt.callee.code) as body:
                 body.site = frame.site or stmt
                 body.output = frame.output
-                body.current = frame.current
+                body.latest = frame.latest
                 body.local_roots = frame.local_roots
                 result = emit.frame_call(
                     body, stmt.callee.code, None, *frame.get_values(stmt.inputs)
@@ -137,7 +137,7 @@ def parameter(
     length = None
     if shape and all(size is not None for size in shape):
         length = Affine(math.prod(cast(tuple[int, ...], shape)))
-    frame.current[argument] = argument
+    frame.latest[argument] = argument
     return Location(argument, length, shape=shape)
 
 
@@ -156,7 +156,7 @@ def ordinary_values(
         return (value,)
     if not isinstance(value, tuple):
         kinds = output_types(function.signature.output)
-        return unpack(frame, emit.classical(frame, value), kinds)
+        return unpack(frame, emit.classical_value(frame, value), kinds)
     if len(value) != layout.ordinary:
         raise WireConversionError(
             "The returned tuple must match the declared result count.", end
@@ -209,9 +209,9 @@ def return_results(
                 "A quantum return must own one whole allocation.", end
             )
         else:
-            results.append(emit.classical(frame, value))
+            results.append(emit.classical_value(frame, value))
     results.extend(emit.acquire(frame, location) for location in borrowed)
-    frame.finish()
+    frame.free_local_allocations()
     if not results:
         packed = frame.push(func.ConstantNone()).results[0]
     elif len(results) == 1:
@@ -257,7 +257,11 @@ def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
     borrowed = quantum_operands(values, layout, stmt)
     operands = dict(zip(layout.borrowed, borrowed, strict=True))
     inputs = tuple(
-        emit.acquire(frame, operands[i]) if i in operands else emit.classical(frame, x)
+        (
+            emit.acquire(frame, operands[i])
+            if i in operands
+            else emit.classical_value(frame, x)
+        )
         for i, x in enumerate(values)
     )
     made = frame.push(func.Invoke(inputs, callee=contract.method))
@@ -320,7 +324,7 @@ def fresh_results(
     """
     parameters = contract.method.callable_region.blocks[0].args[1:]
     mapping: dict[Sym, Affine] = {
-        parameter: index_of(emit.classical(frame, value))
+        parameter: index_of(emit.classical_value(frame, value))
         for parameter, value in zip(parameters, values, strict=True)
         if parameter.type.is_subseteq(types.Int)
     }
@@ -334,7 +338,7 @@ def fresh_results(
             if (count := length.constant) is not None:
                 length = Affine(max(0, count))
         meanings.append(Location(result, length))
-        frame.current[result] = result
+        frame.latest[result] = result
         frame.local_roots.append(result)
     return tuple(meanings)
 

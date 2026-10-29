@@ -9,7 +9,9 @@ from kirin.emit import EmitABC, EmitFrame
 from kirin.dialects import py, scf, func
 from kirin.emit.abc import EmitTable
 from kirin.worklist import WorkList
+from kirin.dialects.py.len import Len
 
+from bloqade.types import holds_qubits
 from bloqade.squin.wire import stmts
 from bloqade.analysis.indices import Iter, Slice, Affine, IndexAnalysis
 from bloqade.squin.wire.twins import TWINS
@@ -17,18 +19,29 @@ from bloqade.squin.wire.types import WireType
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.signature import Contract
 
-from .values import Value, Location
+from .values import Value, Location, contains_location
 
 StatementT = TypeVar("StatementT", bound=ir.Statement)
 
 
 @dataclass
 class WireFrame(EmitFrame[Value]):
-    """Store source meanings, current wires and allocations local to one output block."""
+    """Hold the emission state of one source region.
+
+    The inherited `entries` map each source value to its meaning: an emitted
+    classical value, a quantum `Location` or a tuple of meanings.
+    """
 
     output: ir.Block = field(default_factory=ir.Block)
-    current: dict[ir.SSAValue, ir.SSAValue] = field(default_factory=dict)
+    """The wire block that this frame emits."""
+    latest: dict[ir.SSAValue, ir.SSAValue] = field(default_factory=dict)
+    """The latest wire or register value of each allocation root.
+
+    An operation that consumes a qubit replaces the entry of its root. A root has
+    no entry while an operation holds its whole value.
+    """
     local_roots: list[ir.SSAValue] = field(default_factory=list)
+    """The allocation roots that this region allocated and must free at its end."""
     site: func.Invoke | None = None
     """The user call that runs the library wrapper of this frame, or None in user code.
 
@@ -44,10 +57,10 @@ class WireFrame(EmitFrame[Value]):
         self.output.stmts.append(node)
         return node
 
-    def finish(self) -> None:
-        """Free local allocations whose current wires remain in this block."""
+    def free_local_allocations(self) -> None:
+        """Free each local allocation that the region still holds at its end."""
         for root in self.local_roots:
-            if (value := self.current.pop(root, None)) is not None:
+            if (value := self.latest.pop(root, None)) is not None:
                 self.push(
                     stmts.Free(value)
                     if value.type == WireType
@@ -84,23 +97,26 @@ class EmitWire(EmitABC[WireFrame, Value]):
         assert self.result is not None
         return self.result
 
-    def classical(self, frame: WireFrame, value: Value) -> ir.SSAValue:
-        """Require an emitted classical operand or construct its classical tuple."""
+    def classical_value(self, frame: WireFrame, value: Value) -> ir.SSAValue:
+        """Return the emitted classical value of a meaning.
+
+        A tuple of meanings becomes an emitted tuple, and None becomes a `None` constant.
+        """
         if isinstance(value, ir.SSAValue):
             return value
         if value is None:
             return frame.push(func.ConstantNone()).results[0]
         if isinstance(value, tuple):
             return frame.push(
-                py.tuple.New(tuple(self.classical(frame, x) for x in value))
+                py.tuple.New(tuple(self.classical_value(frame, x) for x in value))
             ).results[0]
         raise WireConversionError(
             "A classical operation cannot consume a quantum reference.",
             frame.current_stmt,
         )
 
-    def integer(self, frame: WireFrame, expression: Affine) -> ir.SSAValue:
-        """Materialize an integer expression whose symbols already belong to the output IR."""
+    def emit_affine(self, frame: WireFrame, expression: Affine) -> ir.SSAValue:
+        """Emit the integer operations that compute an affine index."""
         if (value := expression.constant) is not None:
             return frame.push(py.Constant(value)).results[0]
         total = None
@@ -116,18 +132,18 @@ class EmitWire(EmitABC[WireFrame, Value]):
             term = symbol
             if coefficient != 1:
                 constant = frame.push(py.Constant(coefficient)).results[0]
-                term = self.binary(frame, py.Mult, term, constant)
-            total = term if total is None else self.binary(frame, py.Add, total, term)
+                term = self._int_op(frame, py.Mult, term, constant)
+            total = term if total is None else self._int_op(frame, py.Add, total, term)
         assert total is not None
         if expression.offset:
             constant = frame.push(py.Constant(expression.offset)).results[0]
-            total = self.binary(frame, py.Add, total, constant)
+            total = self._int_op(frame, py.Add, total, constant)
         return total
 
-    def binary(
+    def _int_op(
         self, frame: WireFrame, kind, left: ir.SSAValue, right: ir.SSAValue
     ) -> ir.SSAValue:
-        """Emit integer arithmetic with the result type required by wire indices."""
+        """Emit one integer operation and give its result the type `int`."""
         node = frame.push(kind(left, right))
         node.results[0].type = types.Int
         return node.results[0]
@@ -135,10 +151,10 @@ class EmitWire(EmitABC[WireFrame, Value]):
     def acquire(self, frame: WireFrame, location: Location) -> ir.SSAValue:
         """Return the wire value of a location for an operation that consumes it.
 
-        A whole allocation leaves `current` until `restore` puts its next value back.
+        A whole allocation leaves `latest` until `restore` puts its next value back.
         A register element emits a `Borrow`, and `restore` emits the matching `Release`.
         """
-        value = frame.current.get(location.root)
+        value = frame.latest.get(location.root)
         if value is None:
             raise WireConversionError(
                 "Emission requires an available wire at this operation.",
@@ -146,53 +162,53 @@ class EmitWire(EmitABC[WireFrame, Value]):
             )
         if isinstance(location.selection, Affine):
             node = frame.push(
-                stmts.Borrow(value, self.integer(frame, location.selection))
+                stmts.Borrow(value, self.emit_affine(frame, location.selection))
             )
-            frame.current[location.root] = node.results[0]
+            frame.latest[location.root] = node.results[0]
             return node.results[1]
         if location.selection is not None:
             raise WireConversionError(
                 "A whole-register operation requires a whole allocation.",
                 frame.current_stmt,
             )
-        del frame.current[location.root]
+        del frame.latest[location.root]
         return value
 
     def restore(self, frame: WireFrame, location: Location, value: ir.SSAValue) -> None:
         """Record the next value of a location after the operation that consumed it."""
         if isinstance(location.selection, Affine):
-            register = frame.current[location.root]
+            register = frame.latest[location.root]
             value = frame.push(
-                stmts.Release(register, self.integer(frame, location.selection), value)
+                stmts.Release(
+                    register, self.emit_affine(frame, location.selection), value
+                )
             ).results[0]
-        frame.current[location.root] = value
+        frame.latest[location.root] = value
 
-    def length(self, frame: WireFrame, value: Value) -> ir.SSAValue:
+    def length_value(self, frame: WireFrame, value: Value) -> ir.SSAValue:
         """Return the length of a source container as an emitted integer.
 
         A known length becomes a constant or an index expression. An unknown length
         of a whole register emits `Length`, which also gives the next register value.
         """
         if isinstance(value, tuple):
-            return self.integer(frame, Affine(len(value)))
+            return self.emit_affine(frame, Affine(len(value)))
         if isinstance(value, Location):
             if value.length is not None and (
                 value.length.constant is not None or isinstance(value.selection, Slice)
             ):
-                return self.integer(frame, value.length)
+                return self.emit_affine(frame, value.length)
             if value.selection is not None:
                 raise WireConversionError(
                     "The register view requires a known length.", frame.current_stmt
                 )
-            node = frame.push(stmts.Length(frame.current[value.root]))
-            frame.current[value.root] = node.results[0]
+            node = frame.push(stmts.Length(frame.latest[value.root]))
+            frame.latest[value.root] = node.results[0]
             return node.results[1]
-        from kirin.dialects.py.len import Len
+        return frame.push(Len(self.classical_value(frame, value))).results[0]
 
-        return frame.push(Len(self.classical(frame, value))).results[0]
-
-    def items(self, value: Value, at: ir.Statement) -> tuple[Value, ...] | None:
-        """Expand source containers whose logical lengths are known during compilation."""
+    def known_items(self, value: Value, at: ir.Statement) -> tuple[Value, ...] | None:
+        """Return the item meanings of a container whose length is known, or None."""
         if isinstance(value, tuple):
             return value
         if isinstance(value, Location) and value.length is not None:
@@ -203,13 +219,10 @@ class EmitWire(EmitABC[WireFrame, Value]):
     def eval_fallback(self, frame: WireFrame, node: ir.Statement):
         """Emit declared quantum twins or copy supported classical operations with mapped operands."""
         if type(node) in TWINS:
+            # `gates` imports this module, so this import must stay local.
             from .gates import emit_gate
 
             return emit_gate(self, frame, node)
-        from bloqade.types import holds_qubits
-
-        from .values import contains_location
-
         values = frame.get_values(node.args)
         if (
             node.regions
@@ -220,7 +233,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
                 f"Unsupported reference operation '{node.name}'.", node
             )
         made = node.from_stmt(
-            node, args=tuple(self.classical(frame, value) for value in values)
+            node, args=tuple(self.classical_value(frame, value) for value in values)
         )
         frame.push(made)
         return tuple(made.results)

@@ -52,7 +52,7 @@ An SSA value names one compiler value with one definition.
 | State | Meaning |
 | --- | --- |
 | `entries` | Map each source value to an emitted classical value, quantum location or container of values. |
-| `current` | Map each allocation identity to its latest wire or register value. |
+| `latest` | Map each allocation root to its latest wire or register value. |
 | `local_roots` | Record allocations that this region must free unless the function returns them. |
 | `output` | Hold the emitted block and its arguments. |
 | `site` | Name the user call that runs a library wrapper. It is None in user code. |
@@ -63,7 +63,7 @@ Its `root_length` records the known size of the whole allocation.
 Its `selection` names one element or one slice of the root.
 Its `shape` records nested register dimensions.
 Its `length` property gives the number of items in the selected view.
-The frame keeps locations stable while `current` changes after each quantum operation.
+The frame keeps locations stable while `latest` changes after each quantum operation.
 An alias copies its operand's frame entry.
 An index selects from that entry using the already emitted integer operand.
 A source list holds its element locations in a tuple.
@@ -79,7 +79,7 @@ The operation tables live in `squin.emit.wire`:
 
 | File | Responsibility |
 | --- | --- |
-| `base.py` | Define the emitter, frame and operations on current wires. |
+| `base.py` | Define the emitter, the frame and the operations on latest wires. |
 | `functions.py` | Emit function boundaries, library wrappers and calls. |
 | `references.py` | Resolve source qubit references and copy classical operations. |
 | `control.py` | Convert loop and branch regions through Kirin's region interpreter. |
@@ -99,7 +99,7 @@ A twin is the wire form of one source operation on one group of qubits.
 `WireToSquin` reconstructs the source operation with singleton qubit lists.
 
 A scalar gate handler gets each operand location from the frame.
-For a standalone qubit, it consumes the current wire and records the output wire.
+For a standalone qubit, it consumes the latest wire and records the output wire.
 For a register element, it emits `Borrow`, the gate and `Release`.
 `Borrow` produces the selected wire and a register with that element temporarily unavailable.
 `Release` restores the updated wire to that register element.
@@ -113,7 +113,7 @@ FreeRegister(r2)
 ```
 
 Allocation handlers record their roots in the current frame.
-At region exit, the frame frees each local allocation whose current value remains available.
+At region exit, `free_local_allocations` frees each local allocation that the region still holds.
 Returning a fresh allocation consumes that value before cleanup.
 
 A known-length broadcast emits one scalar gate per operand group.
@@ -124,14 +124,14 @@ Operations with shortest-list semantics use the minimum length.
 
 ## Loops and branches
 
-The loop handler reads every available outer allocation from `current`.
+The loop handler reads every available outer allocation from `latest`.
 It creates output parameters for classical loop state and those allocations.
 It attaches the output loop before interpreting its body so integer indices can use the loop's range.
 A temporary yield gives the loop its result count until the body supplies the final yield.
-The body's frame starts with those parameters as its current wire values.
+The body's frame starts with those parameters as its latest wire values.
 Kirin interprets the source body once.
-The handler then emits a yield with the final classical values and current wires.
-The loop results replace the enclosing frame's current values.
+The handler then emits a yield with the final classical values and latest wires.
+The loop results replace the enclosing frame's latest values.
 For zero iterations, the loop returns its initial values.
 
 ```text
@@ -143,10 +143,10 @@ r_after = For(indices, initial=r0):
     Yield(r_next)
 ```
 
-Each branch starts with a separate copy of the incoming current-wire map.
+Each branch starts with a separate copy of the incoming `latest` map.
 The handler interprets both source regions once.
 Both output regions yield the incoming allocations in the same order.
-The conditional's results become the enclosing frame's current values.
+The conditional's results become the enclosing frame's latest values.
 Every register must contain all its borrowed elements at these boundaries.
 
 Source reference variables must retain their allocation identity across a loop.
@@ -177,7 +177,7 @@ The length is None for a classical result and for a register of unknown length.
 A length is an affine expression in the callee's integer parameters.
 The caller replaces those parameters with its own arguments, so `qalloc(n)` in the callee gives a known length at a call with a constant `n`.
 
-The caller consumes its current inputs and restores them from the borrowed-parameter suffix.
+The caller consumes its latest inputs and restores them from the borrowed-parameter suffix.
 Calls on register elements use `Borrow` and `Release` around the call.
 The helper below borrows `q`, and its loop carries the wire of `q`:
 

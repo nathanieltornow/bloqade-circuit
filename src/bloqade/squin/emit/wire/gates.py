@@ -30,7 +30,7 @@ def scalar_gate(
     }
     fields = getattr(twin, "__kirin_stmt_fields")
     classical = {
-        name: emit.classical(frame, frame.get(getattr(source, name)))
+        name: emit.classical_value(frame, frame.get(getattr(source, name)))
         for name in fields.std_args
         if name not in inputs
     }
@@ -46,7 +46,7 @@ def emit_gate(emit: EmitWire, frame: WireFrame, source: ir.Statement):
     """Expand known broadcast operands or emit one loop for runtime lengths."""
     trait = TWINS[type(source)].get_present_trait(Twin)
     operands = tuple(frame.get(getattr(source, field)) for field, _ in trait.wires)
-    groups = tuple(emit.items(value, source) for value in operands)
+    groups = tuple(emit.known_items(value, source) for value in operands)
     if any(group is None for group in groups):
         return broadcast_loop(emit, frame, source, operands)
     known = tuple(group for group in groups if group is not None)
@@ -84,7 +84,7 @@ def broadcast_loop(emit: EmitWire, frame: WireFrame, source: ir.Statement, opera
         raise WireConversionError(
             "A runtime broadcast requires resolved register operands.", source
         )
-    lengths = tuple(emit.length(frame, value) for value in operands)
+    lengths = tuple(emit.length_value(frame, value) for value in operands)
     size = lengths[0]
     for other in lengths[1:]:
         if trait.truncate:
@@ -114,7 +114,7 @@ def broadcast_loop(emit: EmitWire, frame: WireFrame, source: ir.Statement, opera
             for element in elements
         )
         roots = carry_wires(frame, body)
-        incoming = tuple(frame.current[root] for root in roots)
+        incoming = tuple(frame.latest[root] for root in roots)
         locations = []
         for operand in operands:
             if not isinstance(operand, Location):

@@ -23,7 +23,7 @@ class Qubits(interp.MethodTable):
     def new(self, emit: EmitWire, frame: WireFrame, stmt):
         """Create a qubit and record its lifetime in the current region."""
         root = frame.push(stmts.Alloc()).results[0]
-        frame.current[root] = root
+        frame.latest[root] = root
         frame.local_roots.append(root)
         return (Location(root),)
 
@@ -72,7 +72,7 @@ class Arithmetic(interp.MethodTable):
         """Concatenate known quantum sequences or copy the classical addition."""
         left, right = frame.get_values(stmt.args)
         if contains_location(left) or contains_location(right):
-            a, b = emit.items(left, stmt), emit.items(right, stmt)
+            a, b = emit.known_items(left, stmt), emit.known_items(right, stmt)
             if a is None or b is None:
                 raise WireConversionError(
                     "Quantum concatenation requires known source lengths.", stmt
@@ -88,7 +88,7 @@ class Lengths(interp.MethodTable):
     @interp.impl(py_len.Len)
     def length(self, emit: EmitWire, frame: WireFrame, stmt):
         """Read the source sequence's known or runtime length."""
-        return (emit.length(frame, frame.get(stmt.value)),)
+        return (emit.length_value(frame, frame.get(stmt.value)),)
 
 
 @py.indexing.dialect.register(key="emit.squin_wire")
@@ -99,7 +99,7 @@ class Indexing(interp.MethodTable):
     def getitem(self, emit: EmitWire, frame: WireFrame, stmt):
         """Resolve one source element or slice using already emitted operands."""
         obj, at = frame.get_values(stmt.args)
-        index = emit.classical(frame, at)
+        index = emit.classical_value(frame, at)
         if isinstance(obj, ir.SSAValue):
             return emit.eval_fallback(frame, stmt)
         if index.type.is_subseteq(types.Slice):
@@ -130,9 +130,9 @@ class Indexing(interp.MethodTable):
                 return (obj[item],)
             if isinstance(obj, tuple) and not contains_location(obj):
                 return (
-                    frame.push(py.GetItem(emit.classical(frame, obj), index)).results[
-                        0
-                    ],
+                    frame.push(
+                        py.GetItem(emit.classical_value(frame, obj), index)
+                    ).results[0],
                 )
         raise WireConversionError(
             "A quantum container requires a tuple read at a constant index or a resolved register element.",
