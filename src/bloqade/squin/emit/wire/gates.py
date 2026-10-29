@@ -47,7 +47,9 @@ def scalar_gate(
 def emit_gate(emit: EmitWire, frame: WireFrame, source: ir.Statement):
     """Expand known broadcast operands or emit one loop for runtime lengths."""
     trait = TWINS[type(source)].get_present_trait(Twin)
-    operands = tuple(frame.get(getattr(source, field)) for field, _ in trait.wires)
+    operands = tuple(
+        frame.get(getattr(source, source_field)) for source_field, _ in trait.wires
+    )
     maybe_items = tuple(emit.known_items(value, source) for value in operands)
     if any(items is None for items in maybe_items):
         return broadcast_loop(emit, frame, source, operands)
@@ -71,9 +73,11 @@ def emit_gate(emit: EmitWire, frame: WireFrame, source: ir.Statement):
             collected.append(value)
     return tuple(
         frame.push(
-            ilist.New(tuple(values), elem_type=getattr(source, field).type.vars[0])
+            ilist.New(
+                tuple(values), elem_type=getattr(source, source_field).type.vars[0]
+            )
         ).results[0]
-        for (field, _), values in zip(trait.results, outputs, strict=True)
+        for (source_field, _), values in zip(trait.results, outputs, strict=True)
     )
 
 
@@ -95,10 +99,14 @@ def broadcast_loop(emit: EmitWire, frame: WireFrame, source: ir.Statement, opera
     registers = cast(tuple[Location, ...], operands)
     lengths = tuple(emit.length_value(frame, value) for value in registers)
     size = broadcast_length(frame, source, lengths, trait.truncate)
-    elements = tuple(getattr(source, field).type.vars[0] for field, _ in trait.results)
+    elements = tuple(
+        getattr(source, source_field).type.vars[0] for source_field, _ in trait.results
+    )
     empty = tuple(
         frame.push(ilist.New((), elem_type=element)).results[0] for element in elements
     )
+    # This loop uses its index as a plain symbol, so it attaches after its body.
+    # The source loop in `control.py` attaches first, so that its index gets a range.
     with body_frame(emit, frame, source) as body:
         index = body.output.args.append_from(types.Int, "i")
         lists = tuple(

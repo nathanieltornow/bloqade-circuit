@@ -123,6 +123,8 @@ class ControlFlow(interp.MethodTable):
                 raise WireConversionError(
                     "A loop must yield its source state in initializer order.", stmt
                 )
+            # A quantum initializer gets no block argument, because `carry_wires`
+            # carries its root. The body must yield the same location back.
             for i, value in enumerate(initial):
                 if i not in classical_indices and value != yielded[i]:
                     raise WireConversionError(
@@ -146,6 +148,8 @@ class ControlFlow(interp.MethodTable):
         bodies, yields = [], []
         for source in (stmt.then_body, stmt.else_body):
             with body_frame(emit, frame, stmt) as body:
+                # Each body of Kirin's `scf.IfElse` gets the condition as a block
+                # argument.
                 arguments = tuple(
                     body.output.args.append_from(arg.type, arg.name)
                     for arg in source.blocks[0].args

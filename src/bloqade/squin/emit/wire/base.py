@@ -92,7 +92,11 @@ class EmitWire(EmitABC[WireFrame, Value]):
         self.result = None
 
     def emit_method(self) -> Contract:
-        """Emit one source method using the supplied checked callee contracts."""
+        """Emit one source method using the supplied checked callee contracts.
+
+        Kirin's `run` evaluates `source.code`, which dispatches to the function
+        handler in `functions.py`. That handler sets `result`.
+        """
         self.run(self.source)
         assert self.result is not None
         return self.result
@@ -153,6 +157,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
 
         A whole allocation leaves `latest` until `restore` puts its next value back.
         A register element emits a `Borrow`, and `restore` emits the matching `Release`.
+        Each of them emits the element index again from `location.selection`.
         """
         value = frame.latest.get(location.root)
         if value is None:
@@ -188,8 +193,12 @@ class EmitWire(EmitABC[WireFrame, Value]):
     def length_value(self, frame: WireFrame, value: Value) -> ir.SSAValue:
         """Return the length of a source container as an emitted integer.
 
-        A known length becomes a constant or an index expression. An unknown length
-        of a whole register emits `Length`, which also gives the next register value.
+        A constant length and a slice length become an index expression. The slice
+        helpers in `bloqade.analysis.indices` build only slice lengths that are never
+        negative. Any other register length emits `Length`, which also gives the next
+        register value. A symbolic root length such as `n` in `qalloc(n)` can be
+        negative, and the register then holds no qubits, so only `Length` gives its
+        real length.
         """
         if isinstance(value, tuple):
             return self.emit_affine(frame, Affine(len(value)))

@@ -49,6 +49,8 @@ class SquinToWire:
         self.active.add(source)
         try:
             source_check = check_stage(source, SourceValidation)
+            # Sorting by name gives a deterministic conversion order. A library
+            # wrapper gets no conversion, because `run_library` emits its body.
             for callee in sorted(
                 source_check.callees, key=lambda item: item.sym_name or ""
             ):

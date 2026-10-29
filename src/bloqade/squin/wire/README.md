@@ -176,6 +176,7 @@ The caller reads the type of each wire result from the callee's inferred signatu
 The length is None for a classical result and for a register of unknown length.
 A length is an affine expression in the callee's integer parameters.
 The caller replaces those parameters with its own arguments, so `qalloc(n)` in the callee gives a known length at a call with a constant `n`.
+With a symbolic `n`, a broadcast over the result reads the runtime length through `Length`.
 
 The caller consumes its latest inputs and restores them from the borrowed-parameter suffix.
 Calls on register elements use `Borrow` and `Release` around the call.

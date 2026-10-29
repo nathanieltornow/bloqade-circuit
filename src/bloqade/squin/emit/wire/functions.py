@@ -69,6 +69,7 @@ class Functions(interp.MethodTable):
             add_parameter(frame, source, kind)
             for source, kind in zip(block.args[1:], input_types, strict=True)
         ]
+        # `None` is the meaning of the source self argument.
         returned = emit.frame_call(frame, stmt, None, *parameter_values)
         end = block.last_stmt
         assert isinstance(end, func.Return)
