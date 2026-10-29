@@ -2,18 +2,18 @@
 
 import pytest
 from kirin import ir
-from test_lower import lowered
 from kirin.dialects import py, scf, func
 from test_roundtrip import ladder, simulate
+from kirin.ir.exception import ValidationErrorGroup
 
 from bloqade import squin
 from bloqade.qubit import qalloc
 from bloqade.constants import constant_int
 from bloqade.squin.gate import stmts as gates
 from bloqade.squin.wire import WireConversionError, stmts, twins
+from bloqade.squin.emit.wire import EmitWire
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
-from bloqade.squin.rewrite.wire.prepare import Conversion
 from bloqade.squin.analysis.validation.wire import WireValidation
 
 
@@ -33,15 +33,18 @@ def test_conversion_preserves_the_program_and_its_use_lists():
     assert simulate(WireToSquin().emit(method)) == [1, 1, 1, 1]
 
 
-def test_promotion_rejects_a_duplicate_transfer():
-    method = lowered(ladder)
-    first = next(node for node in method.code.walk() if isinstance(node, stmts.Unwrap))
-    duplicate = stmts.Unwrap(first.qubit)
+def test_wire_validation_rejects_a_duplicate_borrow():
+    method = SquinToWire().emit(ladder)
+    first = next(node for node in method.code.walk() if isinstance(node, stmts.Borrow))
+    uses = tuple(first.register_out.uses)
+    duplicate = stmts.Borrow(first.register_out, first.index)
     duplicate.insert_after(first)
-    with pytest.raises(
-        WireConversionError, match="distinct simultaneous register borrows"
-    ):
-        Conversion(method, SquinToWire().convert).run()
+    for use in uses:
+        args = list(use.stmt.args)
+        args[use.index] = duplicate.register_out
+        use.stmt.args = tuple(args)
+    with pytest.raises(ValidationErrorGroup, match="already borrowed"):
+        WireValidation().check(method)
 
 
 @squin.kernel
@@ -115,7 +118,7 @@ def unused_allocation():
     squin.qalloc(3)
 
 
-def test_promotion_preserves_an_unused_register_allocation():
+def test_emission_preserves_an_unused_register_allocation():
     method = SquinToWire().emit(unused_allocation)
     nodes = list(method.callable_region.blocks[0].stmts)
     allocation = next(node for node in nodes if isinstance(node, stmts.AllocRegister))
@@ -143,7 +146,7 @@ def test_each_iteration_owns_its_local_allocation():
 
 
 @squin.kernel
-def partially_blocked_loop(n: int, i: int):
+def uncertain_loop(n: int, i: int):
     a = squin.qalloc(2)
     b = squin.qalloc(1)
     for _ in range(n):
@@ -152,68 +155,32 @@ def partially_blocked_loop(n: int, i: int):
     return squin.broadcast.measure(a), squin.broadcast.measure(b)
 
 
-@pytest.mark.parametrize("n", [0, 1, 2])
-def test_a_pinned_allocation_keeps_an_independent_allocation_promotable(n):
-    method = SquinToWire(partial=True).emit(partially_blocked_loop)
+def test_emission_converts_every_allocation_before_borrow_validation():
+    method = uncertain_loop.similar()
+    method = EmitWire(method.dialects, method, {}).emit_method().method
     allocations = [
         node for node in method.code.walk() if isinstance(node, stmts.AllocRegister)
     ]
-    references = [
+    assert len(allocations) == 2
+    assert not any(
+        isinstance(node, func.Invoke) and node.callee is qalloc
+        for node in method.code.walk()
+    )
+    with pytest.raises(ValidationErrorGroup, match="provably differ"):
+        WireValidation().check(method)
+
+
+def test_emission_rejects_an_unsupported_reference_observer():
+    method = unused_allocation.similar()
+    allocation = next(
         node
         for node in method.code.walk()
         if isinstance(node, func.Invoke) and node.callee is qalloc
-    ]
-    assert len(allocations) == len(references) == 1
-    assert constant_int(allocations[0].size) == 1
-    loop = next(node for node in method.code.walk() if isinstance(node, scf.For))
-    assert allocations[0].result in loop.initializers
-    assert simulate(WireToSquin().emit(method), n, 1) == [[0, 0], [n % 2]]
-
-
-def test_a_pure_observer_of_a_reference_blocks_its_promotion():
-    method = lowered(allocation_order)
-    transfers = [node for node in method.code.walk() if isinstance(node, stmts.Unwrap)]
-    observed = transfers[0].qubit
-    compare = py.cmp.Eq(observed, observed)
-    compare.insert_before(transfers[0])
+    )
+    compare = py.cmp.Eq(allocation.result, allocation.result)
+    compare.insert_after(allocation)
     with pytest.raises(WireConversionError, match="Unsupported reference operation"):
-        Conversion(method, SquinToWire().convert).run()
-
-
-def test_promotion_visits_each_prepared_statement_once(monkeypatch):
-    """Check the shared chain's order while boundary rules move scheduled body statements."""
-    from test_roundtrip import nested
-
-    from bloqade.squin.rewrite.wire import prepare, promote
-
-    expected = []
-    visited = []
-    run = prepare.promote
-    entry = promote.PromoteEntry.rewrite_Statement
-    boundary = promote.PromoteBoundary.rewrite_Statement
-
-    def record_input(method, inputs):
-        expected.extend(method.code.walk())
-        return run(method, inputs)
-
-    def record_visit(rule, node):
-        assert node is expected[len(visited)]
-        visited.append(node)
-        return entry(rule, node)
-
-    def preserve_children(rule, node):
-        children = [child for region in node.regions for child in region.walk()]
-        result = boundary(rule, node)
-        assert all(child.parent_block is not None for child in children)
-        return result
-
-    monkeypatch.setattr(prepare, "promote", record_input)
-    monkeypatch.setattr(promote.PromoteEntry, "rewrite_Statement", record_visit)
-    monkeypatch.setattr(promote.PromoteBoundary, "rewrite_Statement", preserve_children)
-    method = SquinToWire().emit(nested)
-    assert visited == expected
-    assert len(set(visited)) == len(visited)
-    WireValidation().check(method)
+        EmitWire(method.dialects, method, {}).emit_method()
 
 
 @squin.kernel
@@ -245,45 +212,96 @@ def test_a_loop_carries_available_allocations_and_preserves_unused_wires(n):
     assert simulate(WireToSquin().emit(method), n) == [[n % 2, 0], [1]]
 
 
-def test_a_boundary_rejects_an_outstanding_register_borrow():
+def test_wire_validation_rejects_an_outstanding_borrow_at_a_boundary():
     """Require the register's complete state before passing it into a loop or branch."""
-    method = lowered(branch_then_loop)
-    wrap = next(node for node in method.code.walk() if isinstance(node, stmts.Wrap))
-    wrap.delete()
-    with pytest.raises(WireConversionError, match="every borrowed element"):
-        Conversion(method, SquinToWire().convert).run()
+    method = SquinToWire().emit(branch_then_loop)
+    release = next(
+        node for node in method.code.walk() if isinstance(node, stmts.Release)
+    )
+    release.register_out.replace_by(release.register)
+    release.delete()
+    with pytest.raises(ValidationErrorGroup, match="borrowed slots"):
+        WireValidation().check(method)
 
 
 @pytest.mark.parametrize("kernel", [ladder, index_from_branch])
-def test_promotion_uses_concrete_locations_without_source_resolution(
+def test_conversion_resolves_references_without_a_recorded_identity_table(
     monkeypatch, kernel
 ):
-    """Require promotion to use prepared integer indices after preparation resolves source references."""
-    from bloqade.squin.rewrite.wire import prepare, promote
-    from bloqade.squin.rewrite.wire.handles import Handles
+    """Require emission to resolve source values independently of validator state."""
+    from bloqade.squin.analysis.validation.wire.origins import PositionAnalysis
 
-    run = prepare.promote
-    inspected = []
+    def forbid_table(*args, **kwargs):
+        raise AssertionError("Conversion must resolve the current source definitions.")
 
-    def forbid_resolution(*args, **kwargs):
-        raise AssertionError("Promotion must use its concrete location table.")
-
-    def check_input(method, inputs):
-        assert inputs.locations
-        for node, location in inputs.locations.items():
-            assert isinstance(location, (promote.Whole, promote.Element))
-            assert location.root.owner in inputs.allocations
-            if isinstance(location, promote.Element):
-                assert isinstance(location.index, (ir.ResultValue, ir.BlockArgument))
-            assert node.parent_block is not None
-        inspected.append(inputs)
-        with monkeypatch.context() as context:
-            context.setattr(Handles, "get", forbid_resolution)
-            context.setattr(Handles, "record", forbid_resolution)
-            context.setattr(prepare, "index_value", forbid_resolution)
-            run(method, inputs)
-
-    monkeypatch.setattr(prepare, "promote", check_input)
-    method = SquinToWire().emit(kernel)
-    assert inspected
+    method = kernel.similar()
+    with monkeypatch.context() as context:
+        context.setattr(PositionAnalysis, "run", forbid_table)
+        method = EmitWire(method.dialects, method, {}).emit_method().method
     WireValidation().check(method)
+
+
+@squin.kernel
+def selected_element():
+    qs = squin.qalloc(2)
+    squin.x(qs[0])
+    return squin.broadcast.measure(qs)
+
+
+def test_emission_discovers_an_unused_source_allocation():
+    from bloqade.qubit import stmts as qubit_stmts
+
+    source = unused_allocation.similar()
+    end = source.callable_region.blocks[0].last_stmt
+    assert isinstance(end, func.Return)
+    qubit_stmts.New().insert_before(end)
+    method = SquinToWire().emit(source)
+    nodes = list(method.callable_region.blocks[0].stmts)
+    allocation = next(node for node in nodes if isinstance(node, stmts.Alloc))
+    release = next(node for node in nodes if isinstance(node, stmts.Free))
+    assert release.wire is allocation.result
+
+
+@pytest.mark.parametrize("length", [64, 256])
+def test_complete_conversion_cleans_deep_alias_chains(length):
+    method = selected_element.similar()
+    allocation = next(
+        node
+        for node in method.code.walk()
+        if isinstance(node, func.Invoke) and node.callee is qalloc
+    )
+    uses = tuple(allocation.result.uses)
+    value, after = allocation.result, allocation
+    for i in range(length):
+        alias = py.assign.Alias(value, target=ir.PyAttr(f"alias_{i}"))
+        alias.result.type = value.type
+        alias.insert_after(after)
+        value, after = alias.result, alias
+    for use in uses:
+        args = list(use.stmt.args)
+        args[use.index] = value
+        use.stmt.args = tuple(args)
+    before = method.code.print_str()
+    wired = SquinToWire().emit(method)
+    assert simulate(WireToSquin().emit(wired)) == [1, 0]
+    assert not any(isinstance(node, py.assign.Alias) for node in wired.code.walk())
+    assert method.code.print_str() == before
+
+
+@squin.kernel
+def repeated_branch_condition(flag: bool):
+    qs = squin.qalloc(1)
+    if flag:
+        if flag:
+            squin.x(qs[0])
+        else:
+            squin.x(qs[0])
+    else:
+        squin.x(qs[0])
+    return squin.broadcast.measure(qs)
+
+
+@pytest.mark.parametrize("flag", [False, True])
+def test_stage_types_cover_both_bodies_of_repeated_conditions(flag):
+    wired = SquinToWire().emit(repeated_branch_condition)
+    assert simulate(WireToSquin().emit(wired), flag) == [1]

@@ -368,7 +368,24 @@ DETERMINISTIC = [
 ]
 
 # pyqrack has no rule for `is_zero` on the squin source, so this one skips it.
-DETERMINISTIC_AFTER_THE_TRIP = [*DETERMINISTIC, (inverted, (1,), [1, 0])]
+DIRECT_REFUSALS = {
+    sliced_call: "whole registers or individual qubits",
+    sliding: "whole registers or individual qubits",
+    flipped_fresh: "borrowed quantum parameter",
+    counted: "borrowed quantum parameter",
+    list_to_a_call: "borrowed quantum parameter",
+}
+DETERMINISTIC_AFTER_THE_TRIP = [
+    case for case in DETERMINISTIC if case[0] not in DIRECT_REFUSALS
+] + [(inverted, (1,), [1, 0])]
+
+
+@pytest.mark.parametrize("kernel, reason", DIRECT_REFUSALS.items())
+def test_direct_emission_reports_unsupported_call_contracts(kernel, reason):
+    before = kernel.code.print_str()
+    with rejected(reason):
+        SquinToJeff().emit(kernel)
+    assert kernel.code.print_str() == before
 
 
 @pytest.mark.parametrize("kernel, args, expected", DETERMINISTIC)
@@ -416,7 +433,8 @@ def grid(qss: ilist.IList[ilist.IList[Qubit, Literal[2]], Literal[3]]):
     squin.x(qss[0][1])
     for i in range(2):
         squin.cx(qss[i][1], qss[i + 1][0])
-    flip_two(qss[2])
+    squin.x(qss[2][0])
+    squin.x(qss[2][1])
 
 
 @squin.kernel
@@ -672,7 +690,12 @@ CASES = [
     pytest.param(slice_of_a_slice, (), None, id="qs[1:5][1:3]"),
     pytest.param(ladder, (), None, id="cx(qs[i], qs[i + 1])"),
     pytest.param(row_of_a_literal_list, (), None, id="qss[1][0]"),
-    pytest.param(sliced_call, (), None, id="qs[1:3] to a call of 2 qubits"),
+    pytest.param(
+        sliced_call,
+        (),
+        "whole registers or individual qubits",
+        id="qs[1:3] to a call of 2 qubits",
+    ),
     pytest.param(fan_out, (), None, id="cx(qs[0], qs[i])"),
     pytest.param(squared_index, (), None, id="qs[i * i + 1]"),
     pytest.param(wrapped_index, (), None, id="qs[(i + 1) % 3]"),
@@ -683,54 +706,59 @@ CASES = [
     pytest.param(
         slice_to_any_length,
         (),
-        None,
+        "whole registers or individual qubits",
         id="qs[1:3] to a call of any length",
     ),
     pytest.param(
         strided_to_a_call,
         (),
-        None,
+        "whole registers or individual qubits",
         id="qs[::2] to a call",
     ),
     pytest.param(
         loop_over_qubits,
         (),
-        None,
+        "classical operation cannot consume a quantum reference",
         id="for q in qs",
     ),
     pytest.param(
         picked_in_a_branch,
         (True,),
-        None,
+        "branch reference",
         id="a qubit picked in a branch",
     ),
     pytest.param(
         carried_by_a_loop,
         (2,),
-        None,
+        "value carried by a loop or branch",
         id="a qubit carried by a loop",
     ),
     pytest.param(
         returns_a_part,
         (),
-        None,
+        "must own one whole allocation",
         id="a call that returns qs[1:3]",
     ),
     pytest.param(concatenated, (), None, id="a + b of registers"),
     pytest.param(
         nested_def,
         (),
-        None,
+        "requires function, loop or branch regions",
         id="a call of a nested def",
     ),
     pytest.param(
-        mapped, (), "requires scalar numeric operands", id="ilist.map over qubits"
+        mapped, (), "Unsupported reference operation 'map'", id="ilist.map over qubits"
     ),
-    pytest.param(for_each_qubit, (), None, id="ilist.for_each over qubits"),
+    pytest.param(
+        for_each_qubit,
+        (),
+        "Unsupported reference operation 'for_each'",
+        id="ilist.for_each over qubits",
+    ),
     pytest.param(
         literal_list_to_a_call,
         (),
-        None,
+        "whole registers or individual qubits",
         id="a literal list of registers to a call",
     ),
 ]

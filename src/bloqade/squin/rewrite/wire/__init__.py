@@ -1,1 +1,1 @@
-"""Hold the rewrite rules for conversion between squin references and wires."""
+"""Hold source normalization rules and wire-to-squin reconstruction rules."""

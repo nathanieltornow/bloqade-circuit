@@ -32,7 +32,7 @@ from bloqade.squin.wire.group import kernel as wire_kernel, reference_kernel
 from bloqade.squin.wire.types import RegisterType, is_linear
 from bloqade.squin.wire.traits import Twin
 from bloqade.squin.wire.ownership import KEY as OWNED, owns_inputs
-from bloqade.squin.rewrite.wire.lower import packed_type, output_types
+from bloqade.squin.wire.signature import packed_type, output_types
 from bloqade.squin.rewrite.wire.driver import CheckedFixpoint
 
 
@@ -126,36 +126,10 @@ class FromWireStatements(RewriteRule):
         elif isinstance(node, stmts.Length):
             node.result.replace_by(_put(py_len.Len(node.register), node).result)
             node.register_out.replace_by(node.register)
-        elif isinstance(node, stmts.Unwrap):
-            node.wire.replace_by(node.qubit)
-        elif isinstance(node, stmts.UnwrapRegister):
-            node.register.replace_by(node.qubits)
-        elif isinstance(node, (stmts.Reference, stmts.ReferenceRegister)):
-            return self.reference(node)
-        elif isinstance(node, (stmts.Wrap, stmts.WrapRegister)):
-            # The rule for a reference removes the `Wrap` that fills it.
-            if isinstance(
-                node.args[0].owner, (stmts.Reference, stmts.ReferenceRegister)
-            ):
-                return RewriteResult()
         elif not isinstance(
             node, (stmts.Free, stmts.FreeRegister, stmts.DiscardRegister)
         ):
             return RewriteResult()
-        node.delete()
-        return RewriteResult(has_done_something=True)
-
-    def reference(self, node: ir.Statement) -> RewriteResult:
-        """Replace a new reference with the wire of the `Wrap` that follows it.
-
-        The reference check makes sure that this `Wrap` comes right after the
-        reference. A wire stands for the same qubit as the reference that it
-        fills, so every later use of the reference reads the wire.
-        """
-        fill = node.next_stmt
-        assert isinstance(fill, (stmts.Wrap, stmts.WrapRegister))
-        node.results[0].replace_by(fill.args[1])
-        fill.delete()
         node.delete()
         return RewriteResult(has_done_something=True)
 
@@ -436,3 +410,50 @@ class ReferenceTypes(RewriteRule):
         for value in node.results:
             value.type = squin_type(value.type)
         return RewriteResult()
+
+
+def bounded_list_lengths(kind: types.TypeAttribute) -> types.TypeAttribute:
+    """Constrain unknown list lengths to integers without assuming a concrete size."""
+    if isinstance(kind, types.Generic) and kind.is_subseteq(ilist.IListType):
+        element, length = kind.vars
+        return ilist.IListType[
+            bounded_list_lengths(element), types.Int if length == types.Any else length
+        ]
+    if (
+        isinstance(kind, types.Generic)
+        and kind.is_subseteq(types.Tuple)
+        and kind.vararg is None
+    ):
+        return types.Generic(
+            tuple, *(bounded_list_lengths(member) for member in kind.vars)
+        )
+    return kind
+
+
+class BoundListLengths(RewriteRule):
+    """Give list lengths integer bounds before checking operation types."""
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Refine result types and the declared function signature."""
+        changed = False
+        for value in node.results:
+            kind = bounded_list_lengths(value.type)
+            changed |= value.type != kind
+            value.type = kind
+        if isinstance(node, func.Function):
+            signature = node.signature
+            inputs = tuple(bounded_list_lengths(kind) for kind in signature.inputs)
+            output = bounded_list_lengths(signature.output)
+            changed |= inputs != signature.inputs or output != signature.output
+            node.signature = func.Signature(inputs=inputs, output=output)
+            node.body.blocks[0].args[0].type = types.MethodType[list(inputs), output]
+        return RewriteResult(has_done_something=changed)
+
+    def rewrite_Block(self, node: ir.Block) -> RewriteResult:
+        """Refine list lengths in block arguments."""
+        changed = False
+        for value in node.args:
+            kind = bounded_list_lengths(value.type)
+            changed |= value.type != kind
+            value.type = kind
+        return RewriteResult(has_done_something=changed)

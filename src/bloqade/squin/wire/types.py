@@ -8,6 +8,9 @@ register as a wire, and `Release` puts the wire back.
 """
 
 from kirin import types
+from kirin.dialects import ilist
+
+from bloqade.types import QubitType
 
 
 class Wire:
@@ -64,3 +67,35 @@ def linear_paths(kind: types.TypeAttribute) -> tuple[tuple[int, ...], ...]:
             for path in linear_paths(member)
         )
     raise ValueError("Quantum containers must use fixed tuple fields.")
+
+
+def quantum_type(kind: types.TypeAttribute) -> types.TypeAttribute | None:
+    """Return the linear type of a scalar qubit or a nested qubit register."""
+    if isinstance(kind, types.BottomType):
+        return None
+    if kind.is_subseteq(QubitType) or kind.is_subseteq(WireType):
+        return WireType
+    if kind.is_subseteq(RegisterType):
+        return RegisterType
+    if isinstance(kind, types.Generic) and kind.is_subseteq(ilist.IListType):
+        if quantum_type(kind.vars[0]) is not None:
+            return RegisterType
+    return None
+
+
+def typed_length(kind: types.TypeAttribute) -> int | None:
+    """Return a list's declared constant length, if its type supplies one."""
+    if isinstance(kind, types.Generic) and kind.is_subseteq(ilist.IListType):
+        length = kind.vars[1]
+        if isinstance(length, types.Literal) and isinstance(length.data, int):
+            return length.data
+    return None
+
+
+def register_shape(kind: types.TypeAttribute) -> tuple[int | None, ...]:
+    """Return the source register dimensions in outer-to-inner order."""
+    shape = []
+    while isinstance(kind, types.Generic) and kind.is_subseteq(ilist.IListType):
+        shape.append(typed_length(kind))
+        kind = kind.vars[0]
+    return tuple(shape)

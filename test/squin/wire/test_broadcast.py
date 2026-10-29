@@ -120,7 +120,7 @@ def paired_noise(n: int, m: int):
     [(unknown_length, 1), (paired, 1), (three_registers, 1), (adjoints_and_reset, 0)],
 )
 @pytest.mark.parametrize("n", [0, 1, 4])
-def test_runtime_broadcasts_promote_completely_and_preserve_results(kernel, bit, n):
+def test_runtime_broadcasts_emit_completely_and_preserve_results(kernel, bit, n):
     converter = SquinToWire()
     wired = converter.emit(kernel)
     assert remaining(wired) == []

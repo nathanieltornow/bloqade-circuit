@@ -3,10 +3,6 @@
 `Threads` tells which result of a statement continues which linear operand. A
 rewrite rule reads it to follow one qubit from statement to statement.
 
-`ReferenceAccess` marks a statement that takes a qubit out of a reference or puts
-it back, as MLIR's `PromotableMemOpInterface` marks loads and stores. The
-promotion passes find every access of a slot through this trait.
-
 `Twin` marks a statement that the twin generator builds from a squin statement.
 The kind traits `Unitary`, `Noise`, `Measurement` and `Preparation` tell rewrite
 rules what the statement does to its qubits.
@@ -37,25 +33,6 @@ class Threads(ir.StmtTrait):
             if value is operand:
                 return result
         raise ValueError(f"{operand} is no linear operand of {stmt.name}")
-
-
-@dataclass(frozen=True)
-class ReferenceAccess(ir.StmtTrait):
-    """Mark a statement that reads or fills the qubit reference in its first operand.
-
-    If `takes` is True, the statement takes the qubits out as its first result,
-    like a load. Otherwise it puts its second operand back, like a store.
-    """
-
-    takes: bool
-
-    def reference(self, stmt: ir.Statement) -> ir.SSAValue:
-        """Return the qubit reference that `stmt` accesses."""
-        return stmt.args[0]
-
-    def value(self, stmt: ir.Statement) -> ir.SSAValue:
-        """Return the wire or register that `stmt` takes out or puts back."""
-        return stmt.results[0] if self.takes else stmt.args[1]
 
 
 @dataclass(frozen=True)

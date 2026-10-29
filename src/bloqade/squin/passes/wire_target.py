@@ -2,15 +2,13 @@
 
 The target accepts wire operations and classical operations from the source
 dialect group. Every operand, result and block argument must exclude qubit
-references. Partial conversion reports the same violations and keeps them.
+references. Complete conversion rejects every remaining violation.
 """
 
 from dataclasses import field, dataclass
 
 from kirin import ir
-from kirin.rewrite import Walk
 from kirin.dialects import func
-from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade import qubit
 from bloqade.squin import gate, noise
@@ -18,15 +16,7 @@ from bloqade.types import holds_qubits
 from bloqade.squin.wire import stmts
 from bloqade.native.dialects import gate as native_gate
 from bloqade.squin.wire.group import kernel, reference_kernel
-
-REFERENCE_STATEMENTS = (
-    stmts.Unwrap,
-    stmts.Wrap,
-    stmts.UnwrapRegister,
-    stmts.WrapRegister,
-    stmts.Reference,
-    stmts.ReferenceRegister,
-)
+from bloqade.squin.analysis.validation.wire.stages import SourceAnalysis
 
 CLASSICAL_DIALECTS = reference_kernel.data - {
     qubit.dialect,
@@ -37,12 +27,12 @@ CLASSICAL_DIALECTS = reference_kernel.data - {
 
 
 @dataclass
-class ConversionTarget(RewriteRule):
-    """Collect illegal statements with Kirin's walker without changing the method."""
+class ConversionTarget(SourceAnalysis):
+    """Collect illegal statements through Kirin's validation analysis frames."""
 
     remaining: list[str] = field(default_factory=list)
 
-    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+    def check_node(self, node: ir.Statement) -> None:
         """Record operations that keep references or lack a supported wire form."""
         legal_dialect = (
             node.dialect in CLASSICAL_DIALECTS
@@ -61,21 +51,18 @@ class ConversionTarget(RewriteRule):
             holds_qubits(kind)
             for kind in (*node.signature.inputs, node.signature.output)
         )
-        if not (
-            legal_dialect and legal_values and legal_call and legal_signature
-        ) or isinstance(node, REFERENCE_STATEMENTS):
+        if not (legal_dialect and legal_values and legal_call and legal_signature):
             self.remaining.append(node.name)
-        return RewriteResult()
 
-    def rewrite_Block(self, node: ir.Block) -> RewriteResult:
-        """Record block parameters that still hold qubit references."""
-        if any(holds_qubits(arg.type) for arg in node.args):
+    def frame_call_region(self, frame, node, region, *args):
+        """Record reference parameters before Kirin checks the region body."""
+        if any(holds_qubits(arg.type) for block in region.blocks for arg in block.args):
             self.remaining.append("block argument")
-        return RewriteResult()
+        return super().frame_call_region(frame, node, region, *args)
 
     @classmethod
     def check(cls, method: ir.Method) -> list[str]:
         """Return every conversion violation in the method and its nested regions."""
-        target = cls()
-        Walk(target).rewrite(method.code)
+        target = cls(method.dialects)
+        target.run(method)
         return target.remaining

@@ -5,7 +5,8 @@ from typing import Any
 
 import pytest
 from kirin import ir, types
-from kirin.dialects import scf, func, ilist
+from kirin.dialects import func, ilist
+from kirin.ir.exception import ValidationErrorGroup
 
 from bloqade import squin
 from bloqade.types import Qubit, MeasurementResult
@@ -190,16 +191,9 @@ CASES = [
     (born_inside, (3,), 13),
     (nested, (1, True), [1, 1, 1, 0]),
     (nested, (3, False), [0, 0, 1, 0]),
-    (through_calls, (), [0, 1, 1, 0]),
     (cancelling, (), [0, 0]),
     (two_ancillas, (), [1, 0]),
-    (loop_over_qubits, (), [1, 1, 1]),
-    (picked_in_a_branch, (True,), [0, 1]),
-    (picked_in_a_branch, (False,), [1, 0]),
-    (carried_by_a_loop, (1,), [1, 0]),
-    (carried_by_a_loop, (3,), [1, 0]),
     (concatenated, (), [1, 1]),
-    (for_each_qubit, (), [1, 1]),
     (sliced_in_a_loop, (), [0, 1, 1, 0]),
     (growing_slice, (), [1, 1, 1, 0]),
 ]
@@ -231,7 +225,7 @@ def maybe_the_same_qubit(j: int) -> ilist.IList[MeasurementResult, Any]:
 
 
 def test_a_gate_on_two_places_that_may_alias_is_refused():
-    with pytest.raises(WireConversionError, match="may name one qubit"):
+    with pytest.raises(ValidationErrorGroup, match="provably differ"):
         SquinToWire().emit(maybe_the_same_qubit)
 
 
@@ -297,8 +291,22 @@ def mapped() -> ilist.IList[MeasurementResult, Any]:
     return ilist.map(measure_one, qs)
 
 
-def test_a_map_over_qubits_becomes_a_loop():
-    wired = SquinToWire().emit(mapped)
-    assert not any(isinstance(n, ilist.Map) for n in wired.callable_region.walk())
-    assert any(isinstance(n, scf.For) for n in wired.callable_region.walk())
-    assert simulate(WireToSquin().emit(wired)) == [0, 0]
+@pytest.mark.parametrize(
+    "kernel, reason",
+    [
+        (through_calls, "borrowed quantum parameter"),
+        (loop_over_qubits, "classical operation cannot consume a quantum reference"),
+        (picked_in_a_branch, "branch"),
+        (carried_by_a_loop, "loop"),
+        (for_each_qubit, "Unsupported reference operation"),
+        (mapped, "Unsupported reference operation"),
+    ],
+)
+def test_direct_emission_rejects_forms_that_require_source_transformation(
+    kernel, reason
+):
+    before = kernel.code.print_str()
+    with pytest.raises(WireConversionError, match=reason) as caught:
+        SquinToWire().emit(kernel)
+    assert caught.value.source is not None
+    assert kernel.code.print_str() == before

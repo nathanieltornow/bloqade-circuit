@@ -8,8 +8,7 @@ from kirin.rewrite import Walk
 
 from bloqade.squin.rewrite.wire.driver import reachable
 from bloqade.squin.passes.wire_typeinfer import infer_wire_types
-from bloqade.squin.rewrite.wire.from_wire import FromWire
-from bloqade.squin.rewrite.wire.normalize import BoundListLengths
+from bloqade.squin.rewrite.wire.from_wire import FromWire, BoundListLengths
 from bloqade.squin.analysis.validation.wire import WireValidation
 
 

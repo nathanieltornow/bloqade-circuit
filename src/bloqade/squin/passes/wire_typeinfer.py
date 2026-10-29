@@ -31,7 +31,7 @@ class WireHints(HintConst):
 
 
 def infer_wire_types(method: ir.Method) -> None:
-    """Infer copied method types with exact tuple selectors on the pinned Kirin version."""
+    """Infer method types with exact tuple selectors on the pinned Kirin version."""
     inference = TypeInfer(method.dialects)
     inference.hint_const = WireHints(method.dialects)
     inference(method)
