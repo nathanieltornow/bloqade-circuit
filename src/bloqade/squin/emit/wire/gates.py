@@ -91,13 +91,13 @@ def broadcast_loop(emit: EmitWire, frame: WireFrame, source: ir.Statement, opera
         raise WireConversionError(
             "A runtime broadcast requires resolved register operands.", source
         )
+    lengths = tuple(emit.length_value(frame, value) for value in operands)
     if any(isinstance(value, tuple) for value in operands):
         raise WireConversionError(
             "A runtime broadcast cannot index a heterogeneous quantum container.",
             source,
         )
     registers = cast(tuple[Location, ...], operands)
-    lengths = tuple(emit.length_value(frame, value) for value in registers)
     size = broadcast_length(frame, source, lengths, trait.truncate)
     elements = tuple(
         getattr(source, source_field).type.vars[0] for source_field, _ in trait.results

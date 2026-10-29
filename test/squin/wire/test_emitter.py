@@ -8,6 +8,7 @@ from test_roundtrip import nested, simulate
 
 from bloqade import squin
 from bloqade.types import Qubit
+from bloqade.squin.wire import WireConversionError
 from bloqade.squin.emit.wire import EmitWire
 from bloqade.squin.passes.squin_to_wire import SquinToWire, target_violations
 from bloqade.squin.passes.wire_to_squin import WireToSquin
@@ -155,3 +156,21 @@ def test_library_operations_take_the_location_of_the_user_call():
     sources = [node.source for node in loop.walk()]
     assert call.source is not None and len(sources) > 1
     assert {None if s is None else s.lineno for s in sources} == {call.source.lineno}
+
+
+@squin.kernel
+def summed(n: int) -> int:
+    total = 0
+    for i in range(n):
+        total = total + i
+    return total
+
+
+def test_a_return_inside_a_loop_body_is_rejected():
+    method = summed.similar()
+    loop = next(n for n in method.callable_region.walk() if isinstance(n, scf.For))
+    end = loop.body.blocks[0].last_stmt
+    assert isinstance(end, scf.Yield)
+    end.replace_by(func.Return(end.values[0]))
+    with pytest.raises(WireConversionError, match="function-level return"):
+        EmitWire(method.dialects, method, {}).emit_method()

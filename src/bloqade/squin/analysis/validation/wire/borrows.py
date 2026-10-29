@@ -265,7 +265,7 @@ class _Borrows(interp.MethodTable):
             return Slots.top(), Slots(frozenset(), size)
         if any(not disjoint(key, slot) for slot in state.unavailable):
             check.error(
-                stmt, "A slice extraction overlaps an unavailable register element."
+                stmt, "A slice extraction overlaps an outstanding register hole."
             )
         return Slots(state.unavailable | {key}, state.length), Slots(frozenset(), size)
 

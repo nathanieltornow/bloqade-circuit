@@ -100,7 +100,11 @@ class Functions(interp.MethodTable):
         self, emit: EmitWire, frame: WireFrame, stmt: func.Return
     ) -> interp.ReturnValue[Value]:
         """Return the source value to the function or library call that runs the body."""
-        if stmt.parent_stmt is not frame.code:
+        # A loop or branch frame has the loop or the branch as its code.
+        if (
+            not isinstance(frame.code, func.Function)
+            or stmt.parent_stmt is not frame.code
+        ):
             raise WireConversionError(
                 "Wire conversion requires a function-level return.", stmt
             )
