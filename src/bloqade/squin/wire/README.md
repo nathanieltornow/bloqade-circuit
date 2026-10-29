@@ -27,7 +27,8 @@ reconstructed = WireToSquin().emit(wired)
 It converts user callees first and supplies their checked contracts to the caller's emitter.
 Each callee must pass the same conversion target and validation.
 
-`SourceValidation` checks source structure, types, region forms and static calls before emission.
+`check_stage` runs `StructureValidation` for source structure and types before emission.
+`SourceValidation` then checks region forms and static calls, and it collects the callees.
 Emission visits each source statement once per method conversion.
 Kirin's region interpreter controls statement order and fills the frame after each operation.
 Standard library wrappers execute through nested emission frames with shared output and wire state.
@@ -37,6 +38,7 @@ Validation, type inference and cleanup perform their own traversals.
 Wire validation interprets each callee once for each list of abstract arguments.
 The full pipeline has no established linear-time bound.
 The pinned Kirin version requires literal tuple-index hints during output type inference.
+`src/bloqade/squin/passes/wire_typeinfer.py` adds those hints.
 
 Unsupported source forms stop conversion at their first failed condition.
 The converter preserves the source and propagates the error without retrying through inlining.
@@ -56,9 +58,11 @@ An SSA value names one compiler value with one definition.
 | `site` | Name the user call that runs a library wrapper. It is None in user code. |
 
 A `Location` identifies an allocation and an optional element or slice.
-Its root is the emitted allocation result or a function parameter.
-Its shape records nested register dimensions.
-Its length records a known allocation size.
+Its `root` is the emitted allocation result, a call result or a function parameter.
+Its `root_length` records the known size of the whole allocation.
+Its `selection` names one element or one slice of the root.
+Its `shape` records nested register dimensions.
+Its `length` property gives the number of items in the selected view.
 The frame keeps locations stable while `current` changes after each quantum operation.
 An alias copies its operand's frame entry.
 An index selects from that entry using the already emitted integer operand.
@@ -168,7 +172,8 @@ answer, q1 = call f_wire(q0, n)
 `Layout` reads this convention from the source signature.
 It gives the borrowed parameter positions, the ordinary result count and the tuple packing of the source return.
 The caller reads the type of each wire result from the callee's inferred signature.
-`Contract` holds the callee's wire method and the static length of each fresh register result.
+`Contract` holds the callee's wire method and one static length for each ordinary result.
+The length is None for a classical result and for a register of unknown length.
 A length is an affine expression in the callee's integer parameters.
 The caller replaces those parameters with its own arguments, so `qalloc(n)` in the callee gives a known length at a call with a constant `n`.
 

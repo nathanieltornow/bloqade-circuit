@@ -26,7 +26,7 @@ class SquinToWire:
     """Emit source methods once and require complete, validated wire results."""
 
     contracts: dict[ir.Method, Contract] = field(default_factory=dict, init=False)
-    """The validated wire function of each converted source method."""
+    """The contract of each converted source method, with its validated wire method."""
     active: set[ir.Method] = field(default_factory=set, init=False)
     """The source methods whose conversion is in progress, used to reject recursion."""
 

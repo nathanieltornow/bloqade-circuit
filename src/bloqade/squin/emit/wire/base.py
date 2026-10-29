@@ -105,6 +105,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
             return frame.push(py.Constant(value)).results[0]
         total = None
         for symbol, coefficient in expression.terms:
+            # An `Iter` symbol names the index of an emitted loop. The loop emitter
+            # attaches each loop before its body, so the body block already exists.
             if isinstance(symbol, Iter) and isinstance(symbol.stmt, scf.For):
                 symbol = symbol.stmt.body.blocks[0].args[0]
             if not isinstance(symbol, ir.SSAValue):
@@ -166,7 +168,11 @@ class EmitWire(EmitABC[WireFrame, Value]):
         frame.current[location.root] = value
 
     def length(self, frame: WireFrame, value: Value) -> ir.SSAValue:
-        """Read a source container length or the current wire register's runtime length."""
+        """Return the length of a source container as an emitted integer.
+
+        A known length becomes a constant or an index expression. An unknown length
+        of a whole register emits `Length`, which also gives the next register value.
+        """
         if isinstance(value, tuple):
             return self.integer(frame, Affine(len(value)))
         if isinstance(value, Location):

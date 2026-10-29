@@ -2,7 +2,7 @@
 
 An affine index has the form `c + a1*s1 + ... + an*sn`. Each `c` and `a` is a
 constant integer. Each symbol `s` is an integer parameter or the iteration variable
-of a loop or a map. Indices such as `i`, `i + 1`, `2*i + 1` and `n - 1 - i` are
+of an `scf.For` loop. Indices such as `i`, `i + 1`, `2*i + 1` and `n - 1 - i` are
 affine, and `i * i` and `i % 2` are not.
 
 The converter and wire validators use these expressions to compare register indices.
@@ -24,7 +24,7 @@ from bloqade.constants import constant_int
 
 @dataclass(frozen=True)
 class Iter:
-    """The iteration variable of the loop or map statement `stmt`.
+    """The iteration variable of the `scf.For` loop `stmt`.
 
     If the loop runs over a constant range, `values` holds that range. Otherwise
     `values` is None. Two `Iter` symbols of one statement name the same iteration.
@@ -34,16 +34,10 @@ class Iter:
     values: range | None = None
 
     def __repr__(self) -> str:
-        """Return the name of the iteration variable, such as `%i`.
-
-        A loop names the first argument of its body. A map names its result
-        with the suffix `[*]`, such as `%ys[*]`.
-        """
+        """Return the name of the first argument of the loop body, such as `%i`."""
         for region in self.stmt.regions:
             if region.blocks and region.blocks[0].args:
                 return _name(region.blocks[0].args[0])
-        if self.stmt.results:
-            return _name(self.stmt.results[0]) + "[*]"
         return f"%{self.stmt.name}"
 
 
