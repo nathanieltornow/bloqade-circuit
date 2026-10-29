@@ -1,12 +1,15 @@
 """Emit structured regions once with explicit incoming and outgoing wire values.
 
 A loop or a branch carries every wire of the enclosing frame. Its body gets one
-block argument or one copied entry for each allocation root in `current`. The body
+block argument or one copied entry for each allocation root in `latest`. The body
 yields the next wire of each root in the same order, after its classical results.
+
+Each body frame copies the library call site of its enclosing frame. It starts with
+its owner as the current statement, so that operations and errors before the first
+body statement take the owner's source location.
 """
 
-from contextlib import contextmanager
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 
 from kirin import ir, interp
 from kirin.dialects import scf, ssacfg
@@ -15,20 +18,6 @@ from bloqade.squin.wire.errors import WireConversionError
 
 from .base import EmitWire, WireFrame
 from .values import Value, contains_location
-
-
-@contextmanager
-def body_frame(
-    emit: EmitWire, frame: WireFrame, node: ir.Statement
-) -> Iterator[WireFrame]:
-    """Open the frame of a body that `node` owns inside `frame`.
-
-    The body can read the source values of `frame` and keeps its library call site.
-    """
-    with emit.new_frame(node, has_parent_access=True) as body:
-        body.site = frame.site
-        body.current_stmt = node
-        yield body
 
 
 def carry_wires(frame: WireFrame, body: WireFrame) -> tuple[ir.SSAValue, ...]:
@@ -98,7 +87,8 @@ class ControlFlow(interp.MethodTable):
         )
         iterable = emit.classical_value(frame, frame.get(stmt.iterable))
         source_args = stmt.body.blocks[0].args
-        with body_frame(emit, frame, stmt) as body:
+        with emit.new_frame(stmt, has_parent_access=True) as body:
+            body.site, body.current_stmt = frame.site, stmt
             arguments = list(initial)
             index = body.output.args.append_from(
                 source_args[0].type, source_args[0].name
@@ -147,7 +137,8 @@ class ControlFlow(interp.MethodTable):
         roots = tuple(frame.latest)
         bodies, yields = [], []
         for source in (stmt.then_body, stmt.else_body):
-            with body_frame(emit, frame, stmt) as body:
+            with emit.new_frame(stmt, has_parent_access=True) as body:
+                body.site, body.current_stmt = frame.site, stmt
                 # Each body of Kirin's `scf.IfElse` gets the condition as a block
                 # argument.
                 arguments = tuple(

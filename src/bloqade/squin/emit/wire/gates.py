@@ -14,7 +14,7 @@ from bloqade.squin.wire.traits import Twin
 
 from .base import EmitWire, WireFrame
 from .values import Location
-from .control import resume, body_frame, carry_wires, yield_wires
+from .control import resume, carry_wires, yield_wires
 
 
 def scalar_gate(
@@ -107,7 +107,8 @@ def broadcast_loop(emit: EmitWire, frame: WireFrame, source: ir.Statement, opera
     )
     # This loop uses its index as a plain symbol, so it attaches after its body.
     # The source loop in `control.py` attaches first, so that its index gets a range.
-    with body_frame(emit, frame, source) as body:
+    with emit.new_frame(source, has_parent_access=True) as body:
+        body.site, body.current_stmt = frame.site, source
         index = body.output.args.append_from(types.Int, "i")
         lists = tuple(
             body.output.args.append_from(ilist.IListType[element, types.Int])
