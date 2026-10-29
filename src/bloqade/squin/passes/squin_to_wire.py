@@ -16,7 +16,7 @@ from bloqade.squin.analysis.validation.wire import WireValidation
 from bloqade.squin.analysis.validation.wire.stages import SourceValidation, check_stage
 
 
-def remaining(method: ir.Method) -> list[str]:
+def target_violations(method: ir.Method) -> list[str]:
     """Return the operations and parameters that violate the complete wire conversion target."""
     return ConversionTarget.check(method)
 
@@ -38,7 +38,7 @@ class SquinToWire:
         return self.convert(method).method
 
     def convert(self, source: ir.Method) -> Contract:
-        """Emit callees before their caller and propagate the first conversion failure."""
+        """Convert the callees of `source`, then `source` itself, and cache the result."""
         if source in self.contracts:
             return self.contracts[source]
         if source in self.active:
@@ -48,22 +48,33 @@ class SquinToWire:
             )
         self.active.add(source)
         try:
-            checked = check_stage(source, SourceValidation)
-            for callee in sorted(checked.callees, key=lambda item: item.sym_name or ""):
+            source_check = check_stage(source, SourceValidation)
+            for callee in sorted(
+                source_check.callees, key=lambda item: item.sym_name or ""
+            ):
                 if not is_library(callee):
                     self.convert(callee)
-            contract = EmitWire(source.dialects, source, self.contracts).emit_method()
-            output = contract.method
-            Fixpoint(Walk(DeadCodeElimination())).rewrite(output.code)
-            infer_wire_types(output)
-            if left := remaining(output):
-                raise WireConversionError(
-                    f"'{output.sym_name}' violates the wire conversion target at: "
-                    + ", ".join(sorted(set(left))),
-                    output.code,
-                )
-            WireValidation().check(output)
+            contract = self.emit_and_validate(source)
             self.contracts[source] = contract
             return contract
         finally:
             self.active.remove(source)
+
+    def emit_and_validate(self, source: ir.Method) -> Contract:
+        """Emit the wire method of `source`, infer its types and validate it.
+
+        Dead-code removal runs before type inference, because unused slice
+        operations otherwise give wrong inferred types.
+        """
+        contract = EmitWire(source.dialects, source, self.contracts).emit_method()
+        method = contract.method
+        Fixpoint(Walk(DeadCodeElimination())).rewrite(method.code)
+        infer_wire_types(method)
+        if violations := target_violations(method):
+            raise WireConversionError(
+                f"'{method.sym_name}' violates the wire conversion target at: "
+                + ", ".join(sorted(set(violations))),
+                method.code,
+            )
+        WireValidation().check(method)
+        return contract

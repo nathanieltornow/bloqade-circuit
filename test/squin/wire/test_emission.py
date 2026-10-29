@@ -7,7 +7,7 @@ from test_roundtrip import CASES, calls, simulate, cancelling
 from bloqade.qubit import stmts as qubit_stmts
 from bloqade.squin.wire import stmts as wire_stmts
 from bloqade.squin.rewrite.wire.driver import reachable
-from bloqade.squin.passes.squin_to_wire import SquinToWire, remaining
+from bloqade.squin.passes.squin_to_wire import SquinToWire, target_violations
 from bloqade.squin.passes.wire_to_squin import WireToSquin
 from bloqade.squin.analysis.validation.wire import WireValidation
 
@@ -32,7 +32,7 @@ def test_a_emitted_kernel_gives_the_same_result_after_the_way_back(
 @pytest.mark.parametrize("kernel, args, expected", [*CASES, (calls, (), None)])
 def test_a_kernel_converts_completely(kernel, args, expected):
     mt = emitted(kernel)
-    assert all(not remaining(method) for method in reachable(mt))
+    assert all(not target_violations(method) for method in reachable(mt))
     assert not any(isinstance(n, qubit_stmts.New) for n in mt.callable_region.walk())
 
 

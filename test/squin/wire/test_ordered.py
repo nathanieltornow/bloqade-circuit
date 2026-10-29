@@ -13,7 +13,7 @@ from bloqade import squin
 from bloqade.jeff import WireToJeff
 from bloqade.types import Qubit
 from bloqade.squin.wire import WireConversionError, stmts
-from bloqade.squin.passes.squin_to_wire import SquinToWire, remaining
+from bloqade.squin.passes.squin_to_wire import SquinToWire, target_violations
 from bloqade.squin.passes.wire_to_squin import WireToSquin
 from bloqade.squin.analysis.validation.wire import WireValidation
 
@@ -40,7 +40,7 @@ def test_conversion_and_validation_need_no_reference_analysis(
     forbid_reference_analysis, kernel, args, expected
 ):
     wired = SquinToWire().emit(kernel)
-    assert not remaining(wired)
+    assert not target_violations(wired)
     WireValidation().check(wired)
     assert simulate(WireToSquin().emit(wired), *args) == expected
 

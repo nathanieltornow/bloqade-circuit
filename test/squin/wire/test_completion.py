@@ -7,7 +7,7 @@ from kirin.ir.exception import ValidationErrorGroup
 from bloqade import squin
 from bloqade.squin.emit.wire import EmitWire
 from bloqade.squin.wire.errors import WireConversionError
-from bloqade.squin.passes.squin_to_wire import SquinToWire, remaining
+from bloqade.squin.passes.squin_to_wire import SquinToWire, target_violations
 from bloqade.squin.analysis.validation.wire import WireValidation, BorrowValidation
 
 
@@ -33,7 +33,7 @@ def test_conversion_builds_wire_operations_and_validation_rejects_invalid_borrow
     before = kernel.code.print_str()
     method = kernel.similar()
     method = EmitWire(method.dialects, method, {}).emit_method().method
-    assert not remaining(method)
+    assert not target_violations(method)
     method.verify()
     method.verify_type()
     assert any(reason in str(error) for error in BorrowValidation().run(method)[1])

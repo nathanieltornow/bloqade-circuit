@@ -10,7 +10,7 @@ from kirin.passes.hint_const import HintConst
 from bloqade.constants import constant_int
 
 
-class LiteralIndices(RewriteRule):
+class RestoreIntegerHints(RewriteRule):
     """Restore exact integer hints after constant propagation widens loop values."""
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
@@ -27,7 +27,7 @@ class WireHints(HintConst):
     def unsafe_run(self, mt: ir.Method) -> RewriteResult:
         """Restore literal hints before type inference checks quantum tuple fields."""
         result = super().unsafe_run(mt)
-        return Walk(LiteralIndices()).rewrite(mt.code).join(result)
+        return Walk(RestoreIntegerHints()).rewrite(mt.code).join(result)
 
 
 def infer_wire_types(method: ir.Method) -> None:

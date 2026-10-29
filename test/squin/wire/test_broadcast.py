@@ -14,7 +14,7 @@ from bloqade.types import Qubit
 from bloqade.pyqrack import DynamicMemorySimulator
 from bloqade.squin.wire.traits import Twin
 from bloqade.native.dialects.gate import stmts as native_stmts
-from bloqade.squin.passes.squin_to_wire import SquinToWire, remaining
+from bloqade.squin.passes.squin_to_wire import SquinToWire, target_violations
 from bloqade.squin.passes.wire_to_squin import WireToSquin
 from bloqade.squin.analysis.validation.wire import WireValidation
 
@@ -123,7 +123,7 @@ def paired_noise(n: int, m: int):
 def test_runtime_broadcasts_emit_completely_and_preserve_results(kernel, bit, n):
     converter = SquinToWire()
     wired = converter.emit(kernel)
-    assert remaining(wired) == []
+    assert target_violations(wired) == []
     assert any(isinstance(node, scf.For) for node in wired.callable_region.walk())
     WireValidation().check(wired)
     back = WireToSquin().emit(wired)
@@ -137,7 +137,7 @@ def test_an_unknown_length_broadcast_keeps_a_borrowing_call():
         node for node in wired.callable_region.walk() if isinstance(node, func.Invoke)
     )
     assert call.callee.sym_name == "flip_all"
-    assert remaining(call.callee) == []
+    assert target_violations(call.callee) == []
 
 
 @pytest.mark.parametrize("sizes", [(0, 2), (3, 1), (1, 3)])
