@@ -12,7 +12,7 @@ from bloqade.analysis.indices import Affine
 from bloqade.squin.wire.errors import WireConversionError
 
 from .base import EmitWire, WireFrame, index_of
-from .values import Location, contains_location
+from .values import Value, Location, contains_location
 
 
 @qubit.dialect.register(key="emit.squin_wire")
@@ -96,51 +96,62 @@ class Indexing(interp.MethodTable):
     """Select source quantum locations and emit ordinary classical indexing."""
 
     @interp.impl(py.GetItem)
-    def getitem(self, emit: EmitWire, frame: WireFrame, stmt):
-        """Resolve one source element or slice using already emitted operands."""
-        obj, at = frame.get_values(stmt.args)
-        index = emit.classical_value(frame, at)
-        if isinstance(obj, ir.SSAValue):
+    def getitem(self, emit: EmitWire, frame: WireFrame, stmt: py.GetItem):
+        """Return the meaning of one source element or slice."""
+        container, index_meaning = frame.get_values(stmt.args)
+        index = emit.classical_value(frame, index_meaning)
+        if isinstance(container, ir.SSAValue):
             return emit.eval_fallback(frame, stmt)
         if index.type.is_subseteq(types.Slice):
-            start, stop, step = slice_bounds(index, stmt)
-            if isinstance(obj, Location):
-                return (obj.slice(start, stop, step, stmt),)
-            if isinstance(obj, tuple) and all(
-                bound is None or bound.constant is not None for bound in (start, stop)
-            ):
-                return (
-                    obj[
-                        slice(
-                            None if start is None else start.constant,
-                            None if stop is None else stop.constant,
-                            step,
-                        )
-                    ],
-                )
-        else:
-            position = index_of(index)
-            if isinstance(obj, Location):
-                return (obj.select(position, stmt),)
-            if (
-                isinstance(obj, tuple)
-                and (item := position.constant) is not None
-                and -len(obj) <= item < len(obj)
-            ):
-                return (obj[item],)
-            if isinstance(obj, tuple) and not contains_location(obj):
-                return (
-                    frame.push(
-                        py.GetItem(emit.classical_value(frame, obj), index)
-                    ).results[0],
-                )
-        raise WireConversionError(
-            "A quantum container requires a tuple read at a constant index or a resolved register element.",
-            stmt,
-        )
+            return (slice_item(container, index, stmt),)
+        return (element_item(emit, frame, container, index, stmt),)
 
 
-def slice_bounds(value: ir.SSAValue, at: ir.Statement):
+UNRESOLVED_ITEM = (
+    "A quantum container requires a tuple read at a constant index"
+    " or a resolved register element."
+)
+"""The error message for an index that names no known item of a container."""
+
+
+def slice_item(container: Value, index: ir.SSAValue, stmt: py.GetItem) -> Value:
+    """Return the meaning of `container[index]` for the emitted slice `index`."""
+    start, stop, step = slice_bounds(index, stmt)
+    if isinstance(container, Location):
+        return container.select_slice(start, stop, step, stmt)
+    if isinstance(container, tuple) and all(
+        bound is None or bound.constant is not None for bound in (start, stop)
+    ):
+        first = None if start is None else start.constant
+        last = None if stop is None else stop.constant
+        return container[first:last:step]
+    raise WireConversionError(UNRESOLVED_ITEM, stmt)
+
+
+def element_item(
+    emit: EmitWire,
+    frame: WireFrame,
+    container: Value,
+    index: ir.SSAValue,
+    stmt: py.GetItem,
+) -> Value:
+    """Return the meaning of `container[index]` for the emitted integer `index`."""
+    position = index_of(index)
+    if isinstance(container, Location):
+        return container.select(position, stmt)
+    if isinstance(container, tuple):
+        item = position.constant
+        if item is not None and -len(container) <= item < len(container):
+            return container[item]
+        if not contains_location(container):
+            packed = emit.classical_value(frame, container)
+            return frame.push(py.GetItem(packed, index)).results[0]
+    raise WireConversionError(UNRESOLVED_ITEM, stmt)
+
+
+def slice_bounds(
+    value: ir.SSAValue, at: ir.Statement
+) -> tuple[Affine | None, Affine | None, int]:
     """Read supported slice bounds from an emitted slice operation."""
     node = value.owner
     if isinstance(node, py_slice.Slice):

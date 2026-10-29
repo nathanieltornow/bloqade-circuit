@@ -51,11 +51,25 @@ class Location:
         return self.root_length
 
     def select(self, index: Affine, at: ir.Statement) -> Location:
-        """Resolve one element through the dimensions and selection of this location."""
+        """Return the location of item `index` of this view.
+
+        An item of a nested view is a row. An item of a flat view is one qubit.
+        """
         if self.scalar:
             raise WireConversionError("A scalar qubit has no indexed elements.", at)
-        length = self.length
-        count = None if length is None else length.constant
+        index = self._checked_index(index, at)
+        if len(self.shape) > 1:
+            return self._row(index, at)
+        if isinstance(self.selection, Slice):
+            index = self.selection.item(index)
+        return Location(self.root, self.root_length, index)
+
+    def _checked_index(self, index: Affine, at: ir.Statement) -> Affine:
+        """Count a negative constant index from the end and check a constant index.
+
+        The bounds check runs only if both the index and the view length are known.
+        """
+        count = None if self.length is None else self.length.constant
         position = index.constant
         if position is not None and position < 0:
             if count is None:
@@ -69,27 +83,31 @@ class Location:
             raise WireConversionError(
                 "The register index has no place in this allocation.", at
             )
-        if len(self.shape) > 1:
-            width = 1
-            for dimension in self.shape[1:]:
-                if dimension is None:
-                    raise WireConversionError(
-                        "Nested register indexing requires known inner dimensions.", at
-                    )
-                width *= dimension
-            start = index.scale(width)
-            if isinstance(self.selection, Slice):
-                start = self.selection.item(start)
-            row = Slice(start, 1, Affine(width))
-            return Location(self.root, self.root_length, row, self.shape[1:])
-        if isinstance(self.selection, Slice):
-            index = self.selection.item(index)
-        return Location(self.root, self.root_length, index)
+        return index
 
-    def slice(
+    def _row(self, index: Affine, at: ir.Statement) -> Location:
+        """Return the location of row `index` of a nested register view."""
+        width = 1
+        for dimension in self.shape[1:]:
+            if dimension is None:
+                raise WireConversionError(
+                    "Nested register indexing requires known inner dimensions.", at
+                )
+            width *= dimension
+        start = index.scale(width)
+        if isinstance(self.selection, Slice):
+            start = self.selection.item(start)
+        row = Slice(start, 1, Affine(width))
+        return Location(self.root, self.root_length, row, self.shape[1:])
+
+    def select_slice(
         self, start: Affine | None, stop: Affine | None, step: int, at: ir.Statement
     ) -> Value:
-        """Compose a Python slice with this register selection."""
+        """Return the meaning of this view sliced with `start:stop:step`.
+
+        A flat view gives one location with the composed slice selection. A nested
+        view gives a tuple with the location of each selected row.
+        """
         length = self.length
         count = None if length is None else length.constant
         if len(self.shape) > 1:
