@@ -1,4 +1,12 @@
-"""Emit structured regions once with explicit incoming and outgoing wire values."""
+"""Emit structured regions once with explicit incoming and outgoing wire values.
+
+A loop or a branch carries every wire of the enclosing frame. Its body gets one
+block argument or one copied entry for each allocation root in `current`. The body
+yields the next wire of each root in the same order, after its classical results.
+"""
+
+from contextlib import contextmanager
+from collections.abc import Iterator, Sequence
 
 from kirin import ir, interp
 from kirin.dialects import scf, ssacfg
@@ -6,7 +14,60 @@ from kirin.dialects import scf, ssacfg
 from bloqade.squin.wire.errors import WireConversionError
 
 from .base import EmitWire, WireFrame
-from .values import contains_location
+from .values import Value, contains_location
+
+
+@contextmanager
+def region(emit: EmitWire, frame: WireFrame, node: ir.Statement) -> Iterator[WireFrame]:
+    """Open the frame of a body that `node` owns inside `frame`.
+
+    The body can read the source values of `frame` and keeps its library call site.
+    """
+    with emit.new_frame(node, has_parent_access=True) as body:
+        body.site = frame.site
+        body.current_stmt = node
+        yield body
+
+
+def carry_wires(frame: WireFrame, body: WireFrame) -> tuple[ir.SSAValue, ...]:
+    """Add one block argument to `body` for each current wire of `frame`.
+
+    The result holds the allocation roots in block argument order.
+    """
+    roots = tuple(frame.current)
+    body.current = {
+        root: body.output.args.append_from(frame.current[root].type) for root in roots
+    }
+    return roots
+
+
+def yield_wires(
+    body: WireFrame, roots: Sequence[ir.SSAValue], classical: Sequence[ir.SSAValue]
+) -> None:
+    """Free the body's local allocations and yield its classical results and wires."""
+    body.finish()
+    body.push(scf.Yield(*classical, *(body.current[root] for root in roots)))
+
+
+def resume(
+    frame: WireFrame,
+    made: ir.Statement,
+    roots: Sequence[ir.SSAValue],
+    values: Sequence[Value],
+    classical_indices: Sequence[int],
+) -> tuple[Value, ...]:
+    """Continue `frame` after the loop or branch `made` and return its source results.
+
+    The results of `made` hold one classical value for each entry of
+    `classical_indices` and then the next wire of each root. The returned source
+    results equal `values` with those classical entries replaced.
+    """
+    count = len(classical_indices)
+    frame.current.update(zip(roots, made.results[count:], strict=True))
+    results = list(values)
+    for i, value in zip(classical_indices, made.results[:count], strict=True):
+        results[i] = value
+    return tuple(results)
 
 
 @ssacfg.dialect.register(key="emit.squin_wire")
@@ -27,29 +88,23 @@ class ControlFlow(interp.MethodTable):
     def loop(self, emit: EmitWire, frame: WireFrame, stmt: scf.For):
         """Convert the body once and carry all available outer wires through the loop."""
         initial = frame.get_values(stmt.initializers)
-        positions = tuple(
+        classical_indices = tuple(
             i for i, value in enumerate(initial) if not contains_location(value)
         )
-        classical = tuple(emit.classical(frame, initial[i]) for i in positions)
-        roots = tuple(frame.current)
-        incoming = tuple(frame.current[root] for root in roots)
+        classical = tuple(emit.classical(frame, initial[i]) for i in classical_indices)
         iterable = emit.classical(frame, frame.get(stmt.iterable))
-        with emit.new_frame(stmt, has_parent_access=True) as body:
-            body.site = frame.site
-            body.current_stmt = stmt
+        source_args = stmt.body.blocks[0].args
+        with region(emit, frame, stmt) as body:
             arguments = list(initial)
             index = body.output.args.append_from(
-                stmt.body.blocks[0].args[0].type, stmt.body.blocks[0].args[0].name
+                source_args[0].type, source_args[0].name
             )
-            for position, value in zip(positions, classical, strict=True):
-                source = stmt.body.blocks[0].args[position + 1]
-                arguments[position] = body.output.args.append_from(
-                    value.type, source.name
+            for i, value in zip(classical_indices, classical, strict=True):
+                arguments[i] = body.output.args.append_from(
+                    value.type, source_args[i + 1].name
                 )
-            wires = tuple(
-                body.output.args.append_from(value.type) for value in incoming
-            )
-            body.current = dict(zip(roots, wires, strict=True))
+            roots = carry_wires(frame, body)
+            incoming = tuple(frame.current[root] for root in roots)
             # The loop must own the body block before the body is emitted. Only then
             # does `IndexAnalysis` give the loop index its range, which symbolic slices
             # such as `qs[0:i]` need. `scf.For` reads its result count from the body
@@ -65,26 +120,17 @@ class ControlFlow(interp.MethodTable):
                     "A loop must yield its source state in initializer order.", stmt
                 )
             for i, value in enumerate(initial):
-                if i not in positions and value != yielded[i]:
+                if i not in classical_indices and value != yielded[i]:
                     raise WireConversionError(
                         "Cannot resolve a value carried by a loop or branch.", stmt
                     )
-            outputs = tuple(emit.classical(body, yielded[i]) for i in positions)
-            body.finish()
-            body.push(scf.Yield(*outputs, *(body.current[root] for root in roots)))
-        for result, value in zip(
-            made.results,
-            (*outputs, *(body.current[root] for root in roots)),
-            strict=True,
-        ):
+            outputs = tuple(emit.classical(body, yielded[i]) for i in classical_indices)
+            yield_wires(body, roots, outputs)
+        end = body.output.last_stmt
+        assert isinstance(end, scf.Yield)
+        for result, value in zip(made.results, end.values, strict=True):
             result.type = value.type
-        frame.current.update(zip(roots, made.results[len(positions) :], strict=True))
-        result = list(initial)
-        for position, value in zip(
-            positions, made.results[: len(positions)], strict=True
-        ):
-            result[position] = value
-        return tuple(result)
+        return resume(frame, made, roots, initial, classical_indices)
 
     @interp.impl(scf.IfElse)
     def branch(self, emit: EmitWire, frame: WireFrame, stmt: scf.IfElse):
@@ -92,16 +138,14 @@ class ControlFlow(interp.MethodTable):
         condition = emit.classical(frame, frame.get(stmt.cond))
         roots = tuple(frame.current)
         bodies, yields = [], []
-        for region in (stmt.then_body, stmt.else_body):
-            with emit.new_frame(stmt, has_parent_access=True) as body:
-                body.site = frame.site
-                body.current_stmt = stmt
+        for source in (stmt.then_body, stmt.else_body):
+            with region(emit, frame, stmt) as body:
                 arguments = tuple(
                     body.output.args.append_from(arg.type, arg.name)
-                    for arg in region.blocks[0].args
+                    for arg in source.blocks[0].args
                 )
                 body.current = dict(frame.current)
-                yielded = emit.frame_call_region(body, stmt, region, *arguments)
+                yielded = emit.frame_call_region(body, stmt, source, *arguments)
                 if not isinstance(yielded, tuple):
                     raise WireConversionError("A branch must end with a yield.", stmt)
                 bodies.append(body)
@@ -109,8 +153,7 @@ class ControlFlow(interp.MethodTable):
         left, right = yields
         if len(left) != len(right):
             raise WireConversionError("Branch results must have matching counts.", stmt)
-        positions = []
-        results = list(left)
+        classical_indices = []
         for i, (a, b) in enumerate(zip(left, right, strict=True)):
             if contains_location(a) or contains_location(b):
                 if a != b:
@@ -118,19 +161,13 @@ class ControlFlow(interp.MethodTable):
                         "A branch reference has no place in one known allocation.", stmt
                     )
             else:
-                positions.append(i)
+                classical_indices.append(i)
         for body, yielded in zip(bodies, yields, strict=True):
-            outputs = tuple(emit.classical(body, yielded[i]) for i in positions)
-            body.finish()
-            body.push(scf.Yield(*outputs, *(body.current[root] for root in roots)))
+            outputs = tuple(emit.classical(body, yielded[i]) for i in classical_indices)
+            yield_wires(body, roots, outputs)
         made = scf.IfElse(
             condition, ir.Region(bodies[0].output), ir.Region(bodies[1].output)
         )
         made.attributes.update(stmt.attributes)
         frame.push(made)
-        frame.current.update(zip(roots, made.results[len(positions) :], strict=True))
-        for position, value in zip(
-            positions, made.results[: len(positions)], strict=True
-        ):
-            results[position] = value
-        return tuple(results)
+        return resume(frame, made, roots, left, classical_indices)

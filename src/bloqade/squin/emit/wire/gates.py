@@ -12,6 +12,7 @@ from bloqade.squin.wire.traits import Twin
 
 from .base import EmitWire, WireFrame
 from .values import Location
+from .control import region, resume, carry_wires, yield_wires
 
 
 def scalar_gate(
@@ -24,27 +25,27 @@ def scalar_gate(
     twin = TWINS[type(source)]
     trait = twin.get_present_trait(Twin)
     inputs = {
-        name: emit.acquire(frame, location)
-        for (_, name), location in zip(trait.wires, locations, strict=True)
+        wire_field: emit.acquire(frame, location)
+        for (_, wire_field), location in zip(trait.wires, locations, strict=True)
     }
     fields = getattr(twin, "__kirin_stmt_fields")
-    quantum = {name for _, name in trait.wires}
     classical = {
         name: emit.classical(frame, frame.get(getattr(source, name)))
         for name in fields.std_args
-        if name not in quantum
+        if name not in inputs
     }
     attributes = {name: getattr(source, name) for name in fields.attributes}
     made = frame.push(twin(**inputs, **classical, **attributes))
-    for (_, name), location in zip(trait.wires, locations, strict=True):
-        emit.restore(frame, location, getattr(made, f"{name}_out"))
-    return tuple(getattr(made, result) for _, result in trait.results)
+    # `make_twin` gives each wire field `x` the result field `x_out`.
+    for wire_field, location in zip(inputs, locations, strict=True):
+        emit.restore(frame, location, getattr(made, f"{wire_field}_out"))
+    return tuple(getattr(made, wire_result) for _, wire_result in trait.results)
 
 
 def emit_gate(emit: EmitWire, frame: WireFrame, source: ir.Statement):
     """Expand known broadcast operands or emit one loop for runtime lengths."""
     trait = TWINS[type(source)].get_present_trait(Twin)
-    operands = tuple(frame.get(getattr(source, name)) for name, _ in trait.wires)
+    operands = tuple(frame.get(getattr(source, field)) for field, _ in trait.wires)
     groups = tuple(emit.items(value, source) for value in operands)
     if any(group is None for group in groups):
         return broadcast_loop(emit, frame, source, operands)
@@ -67,9 +68,9 @@ def emit_gate(emit: EmitWire, frame: WireFrame, source: ir.Statement):
             collected.append(value)
     return tuple(
         frame.push(
-            ilist.New(tuple(values), elem_type=getattr(source, name).type.vars[0])
+            ilist.New(tuple(values), elem_type=getattr(source, field).type.vars[0])
         ).results[0]
-        for (name, _), values in zip(trait.results, outputs, strict=True)
+        for (field, _), values in zip(trait.results, outputs, strict=True)
     )
 
 
@@ -102,26 +103,18 @@ def broadcast_loop(emit: EmitWire, frame: WireFrame, source: ir.Statement, opera
                 py.Constant(f"'{source.name}' requires equal qubit-list lengths.")
             ).results[0]
             frame.push(assertion.Assert(equal, message))
-    roots = tuple(frame.current)
-    incoming = tuple(frame.current[root] for root in roots)
+    elements = tuple(getattr(source, field).type.vars[0] for field, _ in trait.results)
     empty = tuple(
-        frame.push(ilist.New((), elem_type=getattr(source, name).type.vars[0])).results[
-            0
-        ]
-        for name, _ in trait.results
+        frame.push(ilist.New((), elem_type=element)).results[0] for element in elements
     )
-    with emit.new_frame(source, has_parent_access=True) as body:
-        body.site = frame.site
-        body.current_stmt = source
+    with region(emit, frame, source) as body:
         index = body.output.args.append_from(types.Int, "i")
         lists = tuple(
-            body.output.args.append_from(
-                ilist.IListType[getattr(source, name).type.vars[0], types.Int]
-            )
-            for name, _ in trait.results
+            body.output.args.append_from(ilist.IListType[element, types.Int])
+            for element in elements
         )
-        wires = tuple(body.output.args.append_from(value.type) for value in incoming)
-        body.current = dict(zip(roots, wires, strict=True))
+        roots = carry_wires(frame, body)
+        incoming = tuple(frame.current[root] for root in roots)
         locations = []
         for operand in operands:
             if not isinstance(operand, Location):
@@ -137,10 +130,9 @@ def broadcast_loop(emit: EmitWire, frame: WireFrame, source: ir.Statement, opera
             appended = body.push(py.Add(previous, singleton))
             appended.results[0].type = previous.type
             collected.append(appended.results[0])
-        body.push(scf.Yield(*collected, *(body.current[root] for root in roots)))
+        yield_wires(body, roots, collected)
     start = frame.push(py.Constant(0)).results[0]
     step = frame.push(py.Constant(1)).results[0]
     iterable = frame.push(ilist_stmts.Range(start, size, step)).results[0]
     made = frame.push(scf.For(iterable, ir.Region(body.output), *empty, *incoming))
-    frame.current.update(zip(roots, made.results[len(empty) :], strict=True))
-    return tuple(made.results[: len(empty)])
+    return resume(frame, made, roots, empty, range(len(empty)))
