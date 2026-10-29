@@ -1,11 +1,13 @@
 """Check wire structure, types, uses, borrows and positions."""
 
-from .position import PositionValidation as PositionValidation
-from .validation import (
+from .borrows import (
     Slots as Slots,
     BorrowCheck as BorrowCheck,
-    WireValidation as WireValidation,
     BorrowValidation as BorrowValidation,
-    LinearityValidation as LinearityValidation,
+)
+from .position import PositionValidation as PositionValidation
+from .linearity import LinearityValidation as LinearityValidation
+from .validation import (
+    WireValidation as WireValidation,
     StructureValidation as StructureValidation,
 )

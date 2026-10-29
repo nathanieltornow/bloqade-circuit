@@ -6,7 +6,7 @@ from kirin.dialects import py
 
 from bloqade.analysis.indices import Affine
 from bloqade.squin.wire.types import WireType, RegisterType
-from bloqade.squin.analysis.validation.wire.identities import Handle, Origin
+from bloqade.squin.analysis.validation.wire.origins import Handle, Origin
 
 
 def test_origin_join_and_meet_obey_lattice_laws():

@@ -229,7 +229,7 @@ def test_conversion_resolves_references_without_a_recorded_identity_table(
     monkeypatch, kernel
 ):
     """Require emission to resolve source values independently of validator state."""
-    from bloqade.squin.analysis.validation.wire.origins import PositionAnalysis
+    from bloqade.squin.analysis.validation.wire.position import PositionAnalysis
 
     def forbid_table(*args, **kwargs):
         raise AssertionError("Conversion must resolve the current source definitions.")
