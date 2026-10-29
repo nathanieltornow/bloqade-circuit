@@ -269,9 +269,9 @@ def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
 
 def static_length(value: Value, parameters: frozenset[ir.SSAValue]) -> Affine | None:
     """Return the length of a returned register if the parameters determine it."""
-    if isinstance(value, Location) and value.length is not None:
-        if value.length.symbols() <= parameters:
-            return value.length
+    if isinstance(value, Location) and value.root_length is not None:
+        if value.root_length.symbols() <= parameters:
+            return value.root_length
     return None
 
 

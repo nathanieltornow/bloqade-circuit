@@ -165,10 +165,10 @@ class EmitWire(EmitABC[WireFrame, Value]):
         if isinstance(value, tuple):
             return self.integer(frame, Affine(len(value)))
         if isinstance(value, Location):
-            if value.size is not None and (
-                value.size.constant is not None or isinstance(value.selection, Slice)
+            if value.length is not None and (
+                value.length.constant is not None or isinstance(value.selection, Slice)
             ):
-                return self.integer(frame, value.size)
+                return self.integer(frame, value.length)
             if value.selection is not None:
                 raise WireConversionError(
                     "The register view requires a known length.", frame.current_stmt
@@ -184,8 +184,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
         """Expand source containers whose logical lengths are known during compilation."""
         if isinstance(value, tuple):
             return value
-        if isinstance(value, Location) and value.size is not None:
-            if (count := value.size.constant) is not None:
+        if isinstance(value, Location) and value.length is not None:
+            if (count := value.length.constant) is not None:
                 return tuple(value.select(Affine(i), at) for i in range(max(0, count)))
         return None
 
