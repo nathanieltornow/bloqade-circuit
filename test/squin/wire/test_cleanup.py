@@ -1,4 +1,4 @@
-"""Check that nested branches release references that promotion no longer needs."""
+"""Check complete emission of calls within nested loops and branches."""
 
 import pytest
 from test_roundtrip import simulate
@@ -35,7 +35,7 @@ def branch_in_loop(n: int, flag: bool):
 
 @pytest.mark.parametrize("n", [0, 1, 2, 3])
 @pytest.mark.parametrize("flag", [False, True])
-def test_nested_control_flow_drops_every_reference_after_promotion(n, flag):
+def test_nested_control_flow_emits_complete_wire_methods(n, flag):
     converter = SquinToWire()
     wired = converter.emit(branch_in_loop)
     assert all(remaining(method) == [] for method in converter.prepared.values())

@@ -540,12 +540,12 @@ def tuple_at_runtime(n: int, k: int) -> int:
 @pytest.mark.parametrize(
     "kernel, reason",
     [
-        (twice, "may name one qubit"),
+        (twice, "available wire at this operation"),
         (concatenated, "requires scalar numeric operands"),
         (mistyped, "Bottom"),
         (mixed, "cannot convert a runtime integer to a float"),
         (uneven, "requires qubit lists of equal length"),
-        (unsized_not, "requires scalar numeric operands"),
+        (unsized_not, "Invalid type for measurements"),
         (tuple_in_loop, "has no jeff value"),
         (tuple_from_branch, "requires separate scalar or array results"),
         (returns_qubits, "must own one whole allocation"),
@@ -569,19 +569,22 @@ def test_refusals(kernel, reason):
 
 
 @pytest.mark.parametrize(
-    "kernel",
+    "kernel, reason",
     [
-        passes_twice,
-        nested,
-        passes_tuple,
-        over_list,
-        strided_to_a_call,
-        broadcast,
-        register_and_its_slot,
+        (passes_twice, "separate quantum locations"),
+        (nested, "requires function, loop or branch regions"),
+        (passes_tuple, "separate arguments for tuple fields"),
+        (over_list, "classical operation cannot consume a quantum reference"),
+        (strided_to_a_call, "whole registers or individual qubits"),
+        (register_and_its_slot, "separate quantum locations"),
     ],
 )
-def test_normalization_makes_reference_programs_convertible(kernel):
-    converted(kernel)
+def test_direct_emission_rejects_unsupported_reference_forms(kernel, reason):
+    refused(kernel, reason)
+
+
+def test_direct_emission_converts_a_broadcast():
+    converted(broadcast)
 
 
 @squin.kernel
@@ -590,15 +593,17 @@ def rows_and_slices(
     qs: ilist.IList[Qubit, Literal[4]],
 ) -> None:
     squin.h(qs[0:2][0])
-    flip_pair(qs[1:3])
-    flip_pair(qss[2])
+    squin.x(qs[1])
+    squin.x(qs[2])
+    squin.x(qss[2][0])
+    squin.x(qss[2][1])
     squin.cx(qss[0][1], qss[1][0])
     for i in range(3):
         squin.cx(qs[i], qs[i + 1])
 
 
 def test_rows_slices_and_ladders_convert():
-    """A register of registers is one flat register, and a slice moves as a block."""
+    """Convert nested register indices and element access through a slice."""
     mt = converted(rows_and_slices)
     grid, line = mt.callable_region.blocks[0].args[1:]
     assert grid.type == QuregType and line.type == QuregType

@@ -1,380 +1,292 @@
-"""Verify explicit qubit origins and reference transfers with ordered region checks.
-
-Each check follows operation operands and declared wire continuations.
-Calls verify their callees, and structured regions get separate transfer states.
-"""
+"""Check wire positions through Kirin frames and operation method tables."""
 
 from dataclasses import field, dataclass
 
-from kirin import ir, types
-from kirin.rewrite import Walk
+from kirin import ir, interp
+from kirin.analysis import Forward
 from kirin.dialects import py, scf, func
-from kirin.rewrite.abc import RewriteRule, RewriteResult
+from kirin.analysis.forward import ForwardFrame
 
-from bloqade.qubit import stmts as qubit_stmts, qalloc
-from bloqade.types import holds_qubits
 from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Affine
-from bloqade.squin.wire.types import WireType, RegisterType, is_linear
+from bloqade.analysis.indices import Affine, IndexAnalysis
+from bloqade.squin.wire.types import is_linear
 from bloqade.squin.wire.traits import Threads
-from bloqade.squin.wire.ownership import owns_inputs
-from bloqade.squin.rewrite.wire.handles import (
-    Handle,
-    Handles,
-    Unknown,
-    Descriptor,
-    merge,
-    roots,
-    distinct,
-    quantum_type,
-    typed_length,
-)
+from bloqade.squin.wire.ownership import KEY as OWNED
+
+from .identities import Handle, Origin
+
+KEY = "squin.wire.positions"
 
 
 @dataclass
-class Origins(RewriteRule):
-    """Follow definition identities while checking positions or reference ownership."""
+class PositionAnalysis(Forward[Origin]):
+    """Follow allocation origins in Kirin frames and report positional contract failures."""
 
-    positions: bool = True
-    references: bool = True
-    handles: Handles = field(default_factory=Handles)
-    out: dict[Handle, ir.SSAValue | None] = field(default_factory=dict)
-    errors: list[ir.ValidationError] = field(default_factory=list)
-    active: set[ir.Statement] = field(default_factory=set)
-    method: ir.Method | None = None
-    returned: Descriptor = None
+    keys = (KEY,)
+    lattice = Origin
+    functions: list[ir.Statement] = field(default_factory=list, init=False)
+    indices: IndexAnalysis = field(default_factory=IndexAnalysis, init=False)
 
-    def error(self, node: ir.Statement, message: str) -> None:
-        """Record a contract violation at its operation."""
-        self.errors.append(ir.ValidationError(node, message))
+    def initialize(self):
+        """Reset function context and integer facts before each validation run."""
+        super().initialize()
+        self.functions = []
+        self.indices = IndexAnalysis()
+        return self
+
+    def method_self(self, method: ir.Method) -> Origin:
+        """Give the function object an unknown quantum origin."""
+        return Origin.top()
+
+    def error(self, node: ir.IRNode, message: str) -> None:
+        """Record a validation error at the operation that violates its contract."""
+        self.add_validation_error(node, ir.ValidationError(node, message))
 
     def expect(
-        self, node: ir.Statement, actual: Descriptor, expected: Descriptor, message: str
+        self, node: ir.Statement, actual: Origin, expected: Origin, message: str
     ) -> None:
-        """Require two values to continue the same allocation and element."""
-        if self.positions and not (isinstance(actual, Handle) and actual == expected):
+        """Require both values to identify the same allocation and element."""
+        if not isinstance(actual.data, Handle) or actual != expected:
             self.error(node, message)
 
-    def walk(self, region: ir.Region) -> None:
-        """Visit one region while structured rules visit nested bodies explicitly."""
-        Walk(
-            self, skip=lambda node: isinstance(node, ir.Region) and node is not region
-        ).rewrite(region)
+    @property
+    def borrowing(self) -> bool:
+        """Identify functions whose quantum parameters require positional return continuity."""
+        return self.functions[-1].attributes.get(OWNED) != ir.PyAttr(True)
 
-    def run(
-        self, method: ir.Method, inputs: tuple[Descriptor, ...] | None = None
-    ) -> Descriptor:
-        """Check one function with declared parameter origins or caller-provided origins."""
-        self.method = method
-        if method.code in self.active:
-            self.error(method.code, "Wire validation does not support recursive calls.")
-            return Unknown()
-        self.active.add(method.code)
-        for i, parameter in enumerate(method.callable_region.blocks[0].args[1:]):
-            if inputs is not None:
-                self.handles.values[parameter] = inputs[i]
-            elif (kind := quantum_type(parameter.type)) is not None:
-                length = typed_length(parameter.type)
-                self.handles.values[parameter] = Handle(
-                    parameter, kind, None if length is None else Affine(length)
-                )
-        self.walk(method.callable_region)
-        self.active.remove(method.code)
-        return self.returned
-
-    def child(self) -> "Origins":
-        """Give a structured body its own outstanding transfers and the shared definition map."""
-        return Origins(
-            self.positions,
-            self.references,
-            self.handles,
-            dict(self.out),
-            self.errors,
-            self.active,
-            self.method,
-        )
-
-    def region(self, region: ir.Region) -> "Origins":
-        """Check a body and require it to restore its incoming reference ownership."""
-        inner = self.child()
-        inner.walk(region)
-        if self.references and inner.out.keys() != self.out.keys():
-            assert region.parent_node is not None
-            self.error(
-                region.parent_node,
-                "A structured body changes which qubits are out as wires.",
-            )
-        return inner
-
-    def allocate(
-        self, node: ir.Statement, kind: types.TypeAttribute, size: int | None = None
-    ) -> None:
-        """Assign a new origin to a source or wire allocation."""
-        self.handles.values[node.results[0]] = Handle(
-            node.results[0], kind, None if size is None else Affine(size)
-        )
-
-    def reference_access(self, node: ir.Statement) -> None:
-        """Track ownership transfers and require wraps to restore their original qubits."""
-        reference = self.handles.get(node.args[0])
-        if not isinstance(reference, Handle):
-            if self.references:
-                self.error(node, f"'{node.name}' reads a reference that has no place.")
-            if node.results:
-                self.handles.values[node.results[0]] = Unknown()
-            return
-        if isinstance(node, (stmts.Unwrap, stmts.UnwrapRegister)):
-            if self.references and any(
-                not distinct(reference, held) for held in self.out
-            ):
-                self.error(node, f"'{node.name}' takes a qubit that is already out.")
-            self.out[reference] = node.results[0]
-            self.handles.values[node.results[0]] = reference
-        else:
-            self.expect(
-                node,
-                self.handles.get(node.args[1]),
-                reference,
-                f"'{node.name}' must restore the qubits of its reference.",
-            )
-            if reference not in self.out:
-                if self.references:
+    def frame_call(
+        self,
+        frame: ForwardFrame[Origin],
+        node: ir.Statement,
+        *args: Origin,
+        **kwargs: Origin,
+    ) -> Origin:
+        """Check borrowed returns after Kirin interprets the function body."""
+        if node in self.functions:
+            self.error(node, "Wire validation does not support recursive calls.")
+            return Origin.top()
+        self.functions.append(node)
+        try:
+            result = super().frame_call(frame, node, *args, **kwargs)
+            if self.borrowing:
+                region = node.get_present_trait(
+                    ir.CallableStmtInterface
+                ).get_callable_region(node)
+                parameters = [
+                    arg for arg in region.blocks[0].args[1:] if is_linear(arg.type)
+                ]
+                outputs = result.data if isinstance(result.data, tuple) else (result,)
+                end = region.blocks[0].last_stmt
+                assert end is not None
+                if len(outputs) < len(parameters):
                     self.error(
-                        node, f"'{node.name}' puts back a qubit that is not out."
+                        end, "The return suffix must include every borrowed parameter."
                     )
-            else:
-                del self.out[reference]
+                elif parameters:
+                    for i, (actual, parameter) in enumerate(
+                        zip(outputs[-len(parameters) :], parameters)
+                    ):
+                        self.expect(
+                            end,
+                            actual,
+                            frame.get(parameter),
+                            f"return suffix position {i} must continue borrowed parameter {i}",
+                        )
+            return result
+        finally:
+            self.functions.pop()
 
-    def observer(self, node: ir.Statement) -> None:
-        """Reject a source operation that accesses a reference whose qubit travels as a wire."""
-
-        def leaves(value):
-            if isinstance(value, Handle):
-                return (value,)
-            if isinstance(value, tuple):
-                return tuple(item for member in value for item in leaves(member))
-            if isinstance(value, Unknown):
-                return (value,)
-            return ()
-
-        if not self.references or not self.out:
-            return
-        for value in node.args:
-            if not holds_qubits(value.type):
-                continue
-            for item in leaves(self.handles.get(value)):
-                if isinstance(item, Unknown) or any(
-                    not distinct(item, held) for held in self.out
-                ):
-                    self.error(
-                        node, f"'{node.name}' touches a qubit that is out as a wire."
-                    )
-                    return
-
-    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
-        """Check an operation and record the identities of its results."""
-        if isinstance(node, scf.For):
-            return self.loop(node)
-        if isinstance(node, scf.IfElse):
-            return self.branch(node)
-        if isinstance(node, scf.Yield):
-            return RewriteResult()
-        if isinstance(node, func.Return):
-            self.return_(node)
-            return RewriteResult()
-        if isinstance(node, (stmts.Alloc, qubit_stmts.New)):
-            self.allocate(node, WireType)
-        elif isinstance(node, stmts.AllocRegister):
-            self.allocate(node, RegisterType, constant_int(node.size))
-        elif isinstance(node, func.Invoke) and node.callee is qalloc:
-            size = constant_int(node.inputs[0])
-            self.allocate(node, RegisterType, None if size is None else max(0, size))
-        elif isinstance(node, (stmts.Reference, stmts.ReferenceRegister)):
-            fill = node.next_stmt
-            valid = (
-                isinstance(fill, (stmts.Wrap, stmts.WrapRegister))
-                and fill.args[0] is node.results[0]
-            )
-            if not valid:
-                if self.references:
-                    self.error(
-                        node,
-                        f"'{node.name}' needs a wrap of its result right after it.",
-                    )
-                self.allocate(
-                    node,
-                    WireType if isinstance(node, stmts.Reference) else RegisterType,
-                )
-            else:
-                assert fill is not None
-                self.handles.values[node.results[0]] = self.handles.get(fill.args[1])
-            handle = self.handles.get(node.results[0])
-            if isinstance(handle, Handle):
-                self.out[handle] = None
-        elif isinstance(
-            node, (stmts.Unwrap, stmts.UnwrapRegister, stmts.Wrap, stmts.WrapRegister)
-        ):
-            self.reference_access(node)
-        elif isinstance(node, (stmts.Borrow, stmts.Take)):
-            register = self.handles.get(node.register)
-            self.handles.values[node.register_out] = register
-            self.handles.values[node.wire] = (
-                register.pick(self.handles.indices.of(node.index))
-                if isinstance(register, Handle)
-                else Unknown()
-            )
-        elif isinstance(node, stmts.Release):
-            register = self.handles.get(node.register)
-            expected = (
-                register.pick(self.handles.indices.of(node.index))
-                if isinstance(register, Handle)
-                else Unknown()
-            )
-            self.expect(
-                node,
-                self.handles.get(node.wire),
-                expected,
-                "A release must restore the qubit from its register slot.",
-            )
-            self.handles.values[node.register_out] = register
-        elif isinstance(
-            node,
-            (
-                stmts.Put,
-                stmts.PackRegister,
-                stmts.JoinRegister,
-                stmts.SplitRegister,
-                stmts.TakeSlice,
-                stmts.PutSlice,
-            ),
-        ):
-            for value in node.results:
-                self.handles.values[value] = Handle(value, RegisterType)
-        elif isinstance(node, func.Invoke):
-            self.observer(node)
-            inner = Origins(
-                self.positions, self.references, errors=self.errors, active=self.active
-            )
-            result = inner.run(
-                node.callee, tuple(self.handles.get(value) for value in node.inputs)
-            )
-            passed = set()
-            for value in node.inputs:
-                passed.update(roots(self.handles.get(value)) or ())
-
-            def returned(value):
-                if isinstance(value, Handle) and value.root not in passed:
-                    return Handle(
-                        (node, value.root),
-                        value.kind,
-                        value.length,
-                        value.selection,
-                        value.shape,
-                    )
-                if isinstance(value, tuple):
-                    return tuple(returned(item) for item in value)
-                return value
-
-            self.handles.values[node.result] = returned(result)
-        elif self.handles.record(node):
-            pass
-        elif threads := node.get_trait(Threads):
+    def eval_fallback(self, frame: ForwardFrame[Origin], node: ir.Statement):
+        """Follow declared wire continuations and assign unknown origins to other results."""
+        outputs = {result: Origin.top() for result in node.results}
+        if threads := node.get_trait(Threads):
             for operand, result in threads.threads(node):
-                self.handles.values[result] = self.handles.get(operand)
-        else:
-            self.observer(node)
-        return RewriteResult()
+                outputs[result] = frame.get(operand)
+        return tuple(outputs.values())
 
-    def return_(self, node: func.Return) -> None:
-        """Check borrowed return positions and outstanding transfers at the function exit."""
-        result = self.handles.get(node.value)
-        self.returned = result
-        assert self.method is not None
-        parameters = [
-            arg
-            for arg in self.method.callable_region.blocks[0].args[1:]
-            if is_linear(arg.type) and not owns_inputs(self.method)
-        ]
-        outputs = result if isinstance(result, tuple) else (result,)
-        if self.positions and len(outputs) < len(parameters):
-            self.error(node, "The return suffix must include every borrowed parameter.")
-        elif parameters:
-            for i, (actual, parameter) in enumerate(
-                zip(outputs[-len(parameters) :], parameters)
-            ):
-                self.expect(
-                    node,
-                    actual,
-                    self.handles.get(parameter),
-                    f"return suffix position {i} must continue borrowed parameter {i}",
-                )
-        returned = {node.value}
-        if isinstance(node.value.owner, py.tuple.New):
-            returned.update(node.value.owner.args)
-        if self.references and any(
-            value not in returned for value in self.out.values()
+
+@stmts.dialect.register(key=KEY)
+class WirePositions(interp.MethodTable):
+    """Track origins through allocation and register operations."""
+
+    @interp.impl(stmts.Alloc)
+    @interp.impl(stmts.AllocRegister)
+    @interp.impl(stmts.Put)
+    @interp.impl(stmts.PackRegister)
+    @interp.impl(stmts.JoinRegister)
+    @interp.impl(stmts.SplitRegister)
+    @interp.impl(stmts.TakeSlice)
+    @interp.impl(stmts.PutSlice)
+    def allocate(
+        self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: ir.Statement
+    ):
+        """Assign independent result identities to allocations and consuming register operations."""
+        size = (
+            constant_int(stmt.size) if isinstance(stmt, stmts.AllocRegister) else None
+        )
+        return tuple(
+            Origin(Handle(value, value.type, None if size is None else Affine(size)))
+            for value in stmt.results
+        )
+
+    @interp.impl(stmts.Borrow)
+    @interp.impl(stmts.Take)
+    def borrow(
+        self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: stmts.Borrow
+    ):
+        """Keep the register's origin and identify the selected element."""
+        register = frame.get(stmt.register)
+        selected = (
+            register.data.pick(check.indices.of(stmt.index))
+            if isinstance(register.data, Handle)
+            else Origin.top()
+        )
+        return register, selected
+
+    @interp.impl(stmts.Release)
+    def release(
+        self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: stmts.Release
+    ):
+        """Require a release to restore the qubit from its original register element."""
+        register = frame.get(stmt.register)
+        expected = (
+            register.data.pick(check.indices.of(stmt.index))
+            if isinstance(register.data, Handle)
+            else Origin.top()
+        )
+        check.expect(
+            stmt,
+            frame.get(stmt.wire),
+            expected,
+            "A release must restore the qubit from its register slot.",
+        )
+        return (register,)
+
+
+@py.assign.dialect.register(key=KEY)
+class Aliases(interp.MethodTable):
+    """Preserve origins across aliases."""
+
+    @interp.impl(py.assign.Alias)
+    def alias(
+        self,
+        check: PositionAnalysis,
+        frame: ForwardFrame[Origin],
+        stmt: py.assign.Alias,
+    ):
+        """Read the operand's origin from the current frame."""
+        return (frame.get(stmt.value),)
+
+
+@py.tuple.dialect.register(key=KEY)
+class Tuples(interp.MethodTable):
+    """Keep separate origins for tuple fields."""
+
+    @interp.impl(py.tuple.New)
+    def new(
+        self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: py.tuple.New
+    ):
+        """Collect the origins of the tuple's fields in declaration order."""
+        return (Origin(frame.get_values(stmt.args)),)
+
+
+@py.indexing.dialect.register(key=KEY)
+class Indexing(interp.MethodTable):
+    """Read known tuple fields from their frame values."""
+
+    @interp.impl(py.GetItem)
+    def getitem(
+        self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: py.GetItem
+    ):
+        """Select a tuple field when its index is a known integer."""
+        obj = frame.get(stmt.obj).data
+        index = check.indices.of(stmt.index).constant
+        if (
+            isinstance(obj, tuple)
+            and index is not None
+            and -len(obj) <= index < len(obj)
         ):
-            self.error(node, "The function returns while qubits are out as wires.")
+            return (obj[index],)
+        return (Origin.top(),)
 
-    def loop(self, node: scf.For) -> RewriteResult:
-        """Check one iteration with explicit input origins and require positional continuity."""
-        block = node.body.blocks[0]
-        end = block.last_stmt
+
+@func.dialect.register(key=KEY)
+class Functions(interp.MethodTable):
+    """Validate calls with independent frames and preserve each result's origin."""
+
+    @interp.impl(func.Invoke)
+    def invoke(
+        self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: func.Invoke
+    ):
+        """Run the callee with input origins and distinguish its fresh results by call site."""
+        inputs = frame.get_values(stmt.inputs)
+        _, result = check.call(stmt.callee.code, Origin.top(), *inputs)
+        roots = frozenset(root for value in inputs for root in value.roots())
+        return (result.at_call(stmt, roots),)
+
+    @interp.impl(func.Return)
+    def return_(
+        self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: func.Return
+    ):
+        """Return the value's origin to the function validation hook."""
+        return interp.ReturnValue(frame.get(stmt.value))
+
+
+@scf.dialect.register(key=KEY)
+class ControlFlow(interp.MethodTable):
+    """Check positional continuity while Kirin interprets each structured body once."""
+
+    @interp.impl(scf.Yield)
+    def yield_(
+        self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: scf.Yield
+    ):
+        """Return yielded origins to the enclosing region handler."""
+        return interp.YieldValue(frame.get_values(stmt.values))
+
+    @interp.impl(scf.For)
+    def loop(self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: scf.For):
+        """Compare one iteration's outputs with its incoming wire origins."""
+        initial = frame.get_values(stmt.initializers)
+        with check.new_frame(stmt, has_parent_access=True) as body:
+            yielded = check.frame_call_region(
+                body, stmt, stmt.body, Origin.top(), *initial
+            )
+        assert isinstance(yielded, tuple)
+        end = stmt.body.blocks[0].last_stmt
         assert isinstance(end, scf.Yield)
-        initial = [self.handles.get(value) for value in node.initializers]
-        for i, (argument, descriptor) in enumerate(zip(block.args[1:], initial)):
-            if holds_qubits(argument.type) and end.values[i] not in (
-                argument,
-                node.initializers[i],
-            ):
-                descriptor = Unknown()
-            self.handles.values[argument] = descriptor
-        self.region(node.body)
-        for i, (result, value, argument, before) in enumerate(
-            zip(node.results, end.values, block.args[1:], initial)
+        for i, (argument, actual, expected) in enumerate(
+            zip(stmt.body.blocks[0].args[1:], yielded, initial)
         ):
-            actual = self.handles.get(value)
-            if (
-                is_linear(argument.type)
-                and self.method is not None
-                and not owns_inputs(self.method)
-            ):
-                self.expect(
+            if check.borrowing and is_linear(argument.type):
+                check.expect(
                     end,
                     actual,
-                    self.handles.get(argument),
+                    expected,
                     f"yield position {i} must continue loop input position {i}",
                 )
-                self.handles.values[result] = actual
-            else:
-                self.handles.values[result] = merge(before, actual)
-        return RewriteResult()
+        return tuple(before.join(after) for before, after in zip(initial, yielded))
 
-    def branch(self, node: scf.IfElse) -> RewriteResult:
-        """Check both branches from the same incoming origins and outstanding transfers."""
-        self.region(node.then_body)
-        self.region(node.else_body)
-        left, right = (
-            node.then_body.blocks[0].last_stmt,
-            node.else_body.blocks[0].last_stmt,
-        )
-        if not isinstance(left, scf.Yield) or not isinstance(right, scf.Yield):
-            return RewriteResult()
-        for i, (result, a, b) in enumerate(
-            zip(node.results, left.values, right.values)
-        ):
-            first, second = self.handles.get(a), self.handles.get(b)
-            if (
-                is_linear(result.type)
-                and self.method is not None
-                and not owns_inputs(self.method)
-            ):
-                self.expect(
-                    node,
+    @interp.impl(scf.IfElse)
+    def branch(
+        self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: scf.IfElse
+    ):
+        """Analyze both paths independently and compare their wire result origins."""
+        yielded = []
+        for region in (stmt.then_body, stmt.else_body):
+            with check.new_frame(stmt, has_parent_access=True) as body:
+                result = check.frame_call_region(
+                    body, stmt, region, *(Origin.top() for _ in region.blocks[0].args)
+                )
+            assert isinstance(result, tuple)
+            yielded.append(result)
+        left, right = yielded
+        for i, (value, first, second) in enumerate(zip(stmt.results, left, right)):
+            if check.borrowing and is_linear(value.type):
+                check.expect(
+                    stmt,
                     second,
                     first,
                     f"both branches must continue the same qubit at yield position {i}",
                 )
-            self.handles.values[result] = merge(first, second)
-        return RewriteResult()
+        return tuple(first.join(second) for first, second in zip(left, right))

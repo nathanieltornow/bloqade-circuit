@@ -1,11 +1,9 @@
 """Check wire squin with the kirin validation suite `WireValidation`.
 
-The suite runs five kirin validation passes. `StructureValidation` runs kirin's
+`StructureValidation` runs kirin's
 own `verify` and `verify_type`. `LinearityValidation` checks the use rule below.
 `BorrowValidation` checks that each `Borrow` has a matching `Release`.
 `PositionValidation` checks the order of wires across control flow and calls.
-`ReferenceValidation`, in `references`, checks how wires leave and enter
-qubit references.
 
 The use rule:
 
@@ -27,7 +25,7 @@ passes it to a call. `BorrowCheck` is a kirin forward analysis over the lattice
 `Slots`.
 """
 
-from dataclasses import field, dataclass
+from dataclasses import field, replace, dataclass
 from collections.abc import Iterable
 
 from kirin import ir, types, interp
@@ -47,8 +45,8 @@ from bloqade.squin.wire.types import (
     linear_paths,
     contains_linear,
 )
+from bloqade.squin.wire.errors import UnresolvedBorrowSeparation
 from bloqade.squin.analysis.validation.wire.position import PositionValidation
-from bloqade.squin.analysis.validation.wire.references import ReferenceValidation
 
 KEY = "squin.wire.linearity"
 """Name the registry key of the method tables of `LinearityCheck`."""
@@ -509,9 +507,12 @@ class _Borrows(interp.MethodTable):
         if key in held:
             check.error(stmt, "'borrow' takes a slot that is already borrowed")
         elif any(not separated(key, previous) for previous in held):
-            check.error(
+            check.add_validation_error(
                 stmt,
-                "'borrow' requires indices that provably differ from every outstanding borrow",
+                UnresolvedBorrowSeparation(
+                    stmt,
+                    "'borrow' requires indices that provably differ from every outstanding borrow",
+                ),
             )
         return (Slots(held | {key}, frame.get(stmt.register).length), Slots.top())
 
@@ -706,16 +707,17 @@ class StructureValidation(ValidationPass[None]):
     def run(self, method: ir.Method) -> tuple[None, list[ir.ValidationError]]:
         """Return the error of `verify` or `verify_type`, if either check fails."""
         try:
-            method.verify()
-            method.verify_type()
+            method.code.verify()
+            method.code.verify_type()
         except ir.ValidationError as error:
+            error.source = None if error.source is None else replace(error.source)
             return None, [error]
         return None, []
 
 
 @dataclass
 class WireValidation:
-    """Run the wire structure, linearity, borrow, position and reference checks."""
+    """Run the wire structure, linearity, borrow and position checks."""
 
     def check(self, method: ir.Method) -> None:
         """Raise a `ValidationErrorGroup` that lists every broken rule of `method`."""
@@ -725,7 +727,6 @@ class WireValidation:
                 LinearityValidation,
                 BorrowValidation,
                 PositionValidation,
-                ReferenceValidation,
             ]
         )
         suite.validate(method).raise_if_invalid()

@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 from kirin.dialects import ilist
+from kirin.ir.exception import ValidationErrorGroup
 
 from bloqade import squin
 from bloqade.types import Qubit, MeasurementResult
@@ -36,13 +37,18 @@ def two_registers(flag: bool) -> ilist.IList[MeasurementResult, Any]:
 
 
 @pytest.mark.parametrize(
-    "kernel, reason",
-    [(maybe_the_same_qubit, "may name one qubit"), (two_registers, "has no place")],
+    "kernel, error, reason",
+    [
+        (maybe_the_same_qubit, ValidationErrorGroup, "provably differ"),
+        (two_registers, WireConversionError, "has no place"),
+    ],
 )
-def test_unresolved_references_fail_conversion_and_preserve_the_source(kernel, reason):
+def test_unresolved_references_fail_conversion_and_preserve_the_source(
+    kernel, error, reason
+):
     before = kernel.code.print_str()
     helper_before = opaque_partner.code.print_str()
-    with pytest.raises(WireConversionError, match=reason):
+    with pytest.raises(error, match=reason):
         SquinToWire().emit(kernel)
     assert kernel.code.print_str() == before
     assert opaque_partner.code.print_str() == helper_before

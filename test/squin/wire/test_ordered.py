@@ -1,13 +1,13 @@
-"""Check ordered conversion, independent validation and partial reference lifetimes."""
+"""Check ordered conversion, independent validation and source failure isolation."""
 
 import sys
 from typing import Literal
 
 import pytest
-from test_partial import two_registers
 from test_position import assert_only_positions_fail
 from kirin.dialects import func, ilist
 from test_roundtrip import CASES, calls, simulate
+from test_rejections import two_registers
 
 from bloqade import squin
 from bloqade.jeff import WireToJeff
@@ -57,14 +57,13 @@ def test_calls_and_direct_jeff_emission_need_no_reference_analysis(
     emitted.verify_type()
 
 
-@pytest.mark.parametrize("flag", [False, True])
-def test_partial_conversion_needs_no_reference_analysis(
-    forbid_reference_analysis, flag
+def test_unresolved_references_fail_without_reference_analysis(
+    forbid_reference_analysis,
 ):
-    converter = SquinToWire(partial=True)
-    wired = converter.emit(two_registers)
-    assert converter.report
-    assert simulate(WireToSquin().emit(wired), flag) == simulate(two_registers, flag)
+    before = two_registers.code.print_str()
+    with pytest.raises(WireConversionError, match="has no place"):
+        SquinToWire().emit(two_registers)
+    assert two_registers.code.print_str() == before
 
 
 @squin.kernel
@@ -99,16 +98,14 @@ def mixed_gate(flag: bool):
         (mixed_gate, (True,), [0, 1, 0]),
     ],
 )
-def test_partial_conversion_preserves_every_possible_allocation(
+def test_unresolved_allocations_fail_without_changing_the_source(
     forbid_reference_analysis, kernel, args, expected
 ):
     before = kernel.code.print_str()
     with pytest.raises(WireConversionError):
         SquinToWire().emit(kernel)
     assert kernel.code.print_str() == before
-    wired = SquinToWire(partial=True).emit(kernel)
     assert simulate(kernel, *args) == expected
-    assert simulate(WireToSquin().emit(wired), *args) == expected
 
 
 @squin.kernel

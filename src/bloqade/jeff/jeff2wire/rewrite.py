@@ -23,7 +23,7 @@ from bloqade.squin.wire import stmts as wire
 from bloqade.jeff.dialects import stmts
 from bloqade.squin.wire.twins import TWINS
 from bloqade.squin.wire.types import WireType, RegisterType
-from bloqade.squin.rewrite.wire.lower import packed_type
+from bloqade.squin.wire.signature import packed_type
 from bloqade.jeff.analysis.validation.to_squin.gates import (
     SINGLE,
     ROTATION,
