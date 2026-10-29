@@ -79,9 +79,9 @@ The operation tables live in `squin.emit.wire`:
 
 | File | Responsibility |
 | --- | --- |
-| `base.py` | Define the emitter, the frame and the operations on latest wires. |
+| `base.py` | Define the emitter, the frame and the operations on latest wires, and copy classical operations. |
 | `functions.py` | Emit function boundaries, library wrappers and calls. |
-| `references.py` | Resolve source qubit references and copy classical operations. |
+| `references.py` | Resolve qubit references in allocations, aliases, lists, tuples, additions, lengths and indexing. |
 | `control.py` | Convert loop and branch regions through Kirin's region interpreter. |
 | `gates.py` | Emit wire gates and runtime broadcast loops. |
 | `values.py` | Define locations and compose element and slice selections. |
@@ -213,6 +213,7 @@ func main() -> int:
     FreeRegister(r2)
     Return(total)
 ```
+
 Each fresh quantum result creates a new allocation identity in the caller.
 Two calls to the same allocating function create distinct identities.
 

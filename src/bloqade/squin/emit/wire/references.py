@@ -1,4 +1,4 @@
-"""Resolve source qubit references and copy classical operations."""
+"""Resolve qubit references in allocations, aliases, containers, lengths and indexing."""
 
 from kirin import ir, types, interp
 from kirin.dialects import py, ilist
