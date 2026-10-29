@@ -182,8 +182,8 @@ class Functions(interp.MethodTable):
             frame.current[root] = root
             frame.local_roots.append(root)
             length = index_of(size)
-            if length.constant is not None:
-                length = Affine(max(0, length.const))
+            if (count := length.constant) is not None:
+                length = Affine(max(0, count))
             return (Location(root, length, shape=register_shape(stmt.result.type)),)
         if is_library(stmt.callee):
             # The wrapper emits into the caller's block and continues the caller's
@@ -257,8 +257,8 @@ def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
             continue
         if length is not None:
             length = length.substitute(mapping)
-            if length.constant is not None:
-                length = Affine(max(0, length.const))
+            if (count := length.constant) is not None:
+                length = Affine(max(0, count))
         ordinary.append(Location(result, length))
         frame.current[result] = result
         frame.local_roots.append(result)
@@ -415,8 +415,8 @@ class Indexing(interp.MethodTable):
                 return (
                     obj[
                         slice(
-                            None if start is None else start.const,
-                            None if stop is None else stop.const,
+                            None if start is None else start.constant,
+                            None if stop is None else stop.constant,
                             step,
                         )
                     ],
@@ -427,10 +427,10 @@ class Indexing(interp.MethodTable):
                 return (obj.select(position, stmt),)
             if (
                 isinstance(obj, tuple)
-                and position.constant is not None
-                and -len(obj) <= position.const < len(obj)
+                and (item := position.constant) is not None
+                and -len(obj) <= item < len(obj)
             ):
-                return (obj[position.const],)
+                return (obj[item],)
             if isinstance(obj, tuple) and not contains_location(obj):
                 return (
                     frame.push(py.GetItem(emit.classical(frame, obj), index)).results[

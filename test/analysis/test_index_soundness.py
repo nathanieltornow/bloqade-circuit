@@ -19,10 +19,10 @@ def test_affine_proofs_agree_with_concrete_integer_indices():
         if same(left, right) is False:
             for x, y in assignments:
                 values = {i: x, j: y}
-                lhs = left.const + sum(
+                lhs = left.offset + sum(
                     coefficient * values[symbol] for symbol, coefficient in left.terms
                 )
-                rhs = right.const + sum(
+                rhs = right.offset + sum(
                     coefficient * values[symbol] for symbol, coefficient in right.terms
                 )
                 assert lhs != rhs

@@ -100,8 +100,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
 
     def integer(self, frame: WireFrame, expression: Affine) -> ir.SSAValue:
         """Materialize an integer expression whose symbols already belong to the output IR."""
-        if expression.constant is not None:
-            return frame.push(py.Constant(expression.const)).results[0]
+        if (value := expression.constant) is not None:
+            return frame.push(py.Constant(value)).results[0]
         total = None
         for symbol, coefficient in expression.terms:
             if isinstance(symbol, Iter) and isinstance(symbol.stmt, scf.For):
@@ -116,8 +116,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
                 term = self.binary(frame, py.Mult, term, constant)
             total = term if total is None else self.binary(frame, py.Add, total, term)
         assert total is not None
-        if expression.const:
-            constant = frame.push(py.Constant(expression.const)).results[0]
+        if expression.offset:
+            constant = frame.push(py.Constant(expression.offset)).results[0]
             total = self.binary(frame, py.Add, total, constant)
         return total
 
@@ -184,14 +184,9 @@ class EmitWire(EmitABC[WireFrame, Value]):
         """Expand source containers whose logical lengths are known during compilation."""
         if isinstance(value, tuple):
             return value
-        if (
-            isinstance(value, Location)
-            and value.size is not None
-            and value.size.constant is not None
-        ):
-            return tuple(
-                value.select(Affine(i), at) for i in range(max(0, value.size.const))
-            )
+        if isinstance(value, Location) and value.size is not None:
+            if (count := value.size.constant) is not None:
+                return tuple(value.select(Affine(i), at) for i in range(max(0, count)))
         return None
 
     def eval_fallback(self, frame: WireFrame, node: ir.Statement):

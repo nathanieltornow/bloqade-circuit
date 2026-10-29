@@ -40,22 +40,20 @@ class Location:
         if self.scalar:
             raise WireConversionError("A scalar qubit has no indexed elements.", at)
         size = self.size
-        if index.constant is not None and index.const < 0:
-            if size is None or size.constant is None:
+        count = None if size is None else size.constant
+        position = index.constant
+        if position is not None and position < 0:
+            if count is None:
                 raise WireConversionError(
                     "Cannot resolve a negative index into a register of unknown length.",
                     at,
                 )
-            index = size + index
-        if (
-            size is not None
-            and size.constant is not None
-            and index.constant is not None
-        ):
-            if not 0 <= index.const < size.const:
-                raise WireConversionError(
-                    "The register index has no place in this allocation.", at
-                )
+            position += count
+            index = Affine(position)
+        if count is not None and position is not None and not 0 <= position < count:
+            raise WireConversionError(
+                "The register index has no place in this allocation.", at
+            )
         if len(self.shape) > 1:
             width = 1
             for dimension in self.shape[1:]:
@@ -80,19 +78,18 @@ class Location:
         """Compose a Python slice with this register selection."""
         size = self.size
         if len(self.shape) > 1:
-            if (
-                size is None
-                or size.constant is None
-                or any(x is not None and x.constant is None for x in (start, stop))
+            count = None if size is None else size.constant
+            if count is None or any(
+                x is not None and x.constant is None for x in (start, stop)
             ):
                 raise WireConversionError(
                     "A nested register slice requires constant bounds and an outer length.",
                     at,
                 )
-            selected = range(size.const)[
+            selected = range(count)[
                 slice(
-                    None if start is None else start.const,
-                    None if stop is None else stop.const,
+                    None if start is None else start.constant,
+                    None if stop is None else stop.constant,
                     step,
                 )
             ]

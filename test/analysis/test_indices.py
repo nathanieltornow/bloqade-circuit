@@ -44,7 +44,9 @@ def test_constant_slices_match_python():
                     stop = None if b is None else Affine(b)
                     got = python_slice(start, stop, step, size)
                     assert got is not None and got.length is not None
-                    items = [got.item(Affine(j)).const for j in range(got.length.const)]
+                    items = [
+                        got.item(Affine(j)).offset for j in range(got.length.offset)
+                    ]
                     assert items == list(range(size))[a:b:step], (size, a, b, step)
 
 

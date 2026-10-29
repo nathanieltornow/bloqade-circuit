@@ -68,14 +68,15 @@ def _values(sym: Sym) -> range | None:
 
 @dataclass(frozen=True, repr=False)
 class Affine:
-    """The index `const + sum(a * s for s, a in terms)`.
+    """The index `offset + sum(a * s for s, a in terms)`.
 
     `terms` holds each symbol at most once, and no symbol has the coefficient 0. So
     two equal indices have equal fields. Use `Affine.make` to build an index from a
-    mapping that may hold zero coefficients.
+    mapping that may hold zero coefficients. `offset` is the constant term, and
+    `constant` is the value of an index without symbols.
     """
 
-    const: int = 0
+    offset: int = 0
     terms: frozenset[tuple[Sym, int]] = frozenset()
 
     def __repr__(self) -> str:
@@ -88,15 +89,15 @@ class Affine:
             parts.append(f"{sign} {factor}{name}" if parts else f"{sign}{factor}{name}")
         text = " ".join(parts).removeprefix("+")
         if not text:
-            return str(self.const)
-        if self.const:
-            text += f" {'-' if self.const < 0 else '+'} {abs(self.const)}"
+            return str(self.offset)
+        if self.offset:
+            text += f" {'-' if self.offset < 0 else '+'} {abs(self.offset)}"
         return text
 
     @staticmethod
-    def make(const: int, coeffs: Mapping[Sym, int]) -> Affine:
-        """Return the index with the constant `const` and the coefficients `coeffs`."""
-        return Affine(const, frozenset((s, a) for s, a in coeffs.items() if a))
+    def make(offset: int, coeffs: Mapping[Sym, int]) -> Affine:
+        """Return the index with the constant term `offset` and the coefficients `coeffs`."""
+        return Affine(offset, frozenset((s, a) for s, a in coeffs.items() if a))
 
     @staticmethod
     def of(sym: Sym) -> Affine:
@@ -106,7 +107,7 @@ class Affine:
     @property
     def constant(self) -> int | None:
         """Return the value of an index without symbols, or None if it has one."""
-        return None if self.terms else self.const
+        return None if self.terms else self.offset
 
     def __add__(self, other: Affine | int) -> Affine:
         """Return the sum of two indices."""
@@ -114,7 +115,7 @@ class Affine:
         coeffs = dict(self.terms)
         for s, a in other.terms:
             coeffs[s] = coeffs.get(s, 0) + a
-        return Affine.make(self.const + other.const, coeffs)
+        return Affine.make(self.offset + other.offset, coeffs)
 
     def __sub__(self, other: Affine | int) -> Affine:
         """Return the difference of two indices."""
@@ -122,7 +123,7 @@ class Affine:
 
     def scale(self, k: int) -> Affine:
         """Return the index multiplied by the constant `k`."""
-        return Affine.make(self.const * k, {s: a * k for s, a in self.terms})
+        return Affine.make(self.offset * k, {s: a * k for s, a in self.terms})
 
     def substitute(self, mapping: Mapping[Sym, Affine]) -> Affine:
         """Replace each symbol that `mapping` holds with its index.
@@ -130,7 +131,7 @@ class Affine:
         A call uses this to replace a parameter of the callee with the index of the
         argument that the caller passes.
         """
-        out = Affine(self.const)
+        out = Affine(self.offset)
         for s, a in self.terms:
             out = out + mapping.get(s, Affine.of(s)).scale(a)
         return out
@@ -145,7 +146,7 @@ class Affine:
         The bounds treat each symbol on its own, so they can be wider than the true
         range. If a symbol has no constant range, the result is None.
         """
-        lo = hi = self.const
+        lo = hi = self.offset
         for s, a in self.terms:
             if not (values := _values(s)):
                 return None
@@ -176,7 +177,7 @@ def same(a: Affine, b: Affine) -> bool | None:
         return d.constant == 0
     # The GCD test: if the GCD of the coefficients does not divide the constant,
     # `d` is never 0. For example, `2*i` and `2*i + 1` never meet.
-    if d.const % math.gcd(*(c for _, c in d.terms)):
+    if d.offset % math.gcd(*(c for _, c in d.terms)):
         return False
     limits = d.bounds()
     if limits is not None and (limits[0] > 0 or limits[1] < 0):
@@ -242,7 +243,7 @@ def python_slice(
         return None
     bounds = (start, stop)
     if size is not None and all(b is None or b.constant is not None for b in bounds):
-        first, last = (None if b is None else b.const for b in bounds)
+        first, last = (None if b is None else b.constant for b in bounds)
         items = range(size)[slice(first, last, step)]
         return Slice(Affine(items.start), items.step, Affine(len(items)))
     if step < 0:

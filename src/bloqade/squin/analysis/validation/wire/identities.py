@@ -26,17 +26,15 @@ class Handle:
         """Identify an element of a whole register when its index permits a valid selection."""
         if self.kind == WireType or self.selection is not None:
             return Origin.top()
-        if index.constant is not None and index.const < 0:
+        position = index.constant
+        if position is not None and position < 0:
             if self.length is None:
                 return Origin.top()
             index = self.length + index
-        if (
-            self.length is not None
-            and self.length.constant is not None
-            and index.constant is not None
-        ):
-            if not 0 <= index.const < self.length.const:
-                return Origin.top()
+            position = index.constant
+        size = None if self.length is None else self.length.constant
+        if size is not None and position is not None and not 0 <= position < size:
+            return Origin.top()
         return Origin(Handle(self.root, self.kind, self.length, index))
 
 
