@@ -126,7 +126,10 @@ def select(location: Location, index: Affine, at: ir.Statement) -> Location:
 
 
 def checked_index(length: Affine | None, index: Affine, at: ir.Statement) -> Affine:
-    """Count a negative constant index from the end and check a constant index."""
+    """Count a negative constant index from the end and check the index bounds.
+
+    The check rejects an index that lies outside the length in any execution.
+    """
     count = None if length is None else length.constant
     position = index.constant
     if position is not None and position < 0:
@@ -140,6 +143,12 @@ def checked_index(length: Affine | None, index: Affine, at: ir.Statement) -> Aff
     if count is not None and position is not None and not 0 <= position < count:
         raise WireConversionError(
             "The register index has no place in this allocation.", at
+        )
+    lowest = index.bounds()
+    gap = None if length is None else (length - index).bounds()
+    if (lowest is not None and lowest[0] < 0) or (gap is not None and gap[0] <= 0):
+        raise WireConversionError(
+            "The register index can lie outside this allocation.", at
         )
     return index
 

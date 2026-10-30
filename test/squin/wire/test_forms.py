@@ -12,7 +12,7 @@ from test_roundtrip import trip, simulate
 
 from bloqade import squin
 from bloqade.types import Qubit
-from bloqade.squin.wire import stmts
+from bloqade.squin.wire import WireConversionError, stmts
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
 
@@ -153,3 +153,25 @@ def test_the_length_of_a_nested_register_counts_its_rows():
         return back(qs)
 
     assert simulate(run_flat) == 3
+
+
+@squin.kernel
+def past_a_growing_slice():
+    qs = squin.qalloc(3)
+    for i in range(1, 3):
+        squin.x(qs[0:i][2])
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def past_the_register():
+    qs = squin.qalloc(3)
+    for i in range(5):
+        squin.x(qs[i])
+    return squin.broadcast.measure(qs)
+
+
+@pytest.mark.parametrize("kernel", [past_a_growing_slice, past_the_register])
+def test_an_index_that_can_lie_outside_the_register_is_rejected(kernel):
+    with pytest.raises(WireConversionError, match="can lie outside"):
+        SquinToWire().emit(kernel)
