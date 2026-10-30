@@ -15,7 +15,7 @@ from bloqade.squin.wire.traits import Threads
 from bloqade.squin.wire.ownership import KEY as OWNED
 
 from .calls import CachedCalls
-from .origins import Handle, Origin
+from .origins import Handle, Origin, element_of, fresh_origin
 
 KEY = "squin.wire.positions"
 
@@ -135,10 +135,8 @@ class WirePositions(interp.MethodTable):
         size = (
             constant_int(stmt.size) if isinstance(stmt, stmts.AllocRegister) else None
         )
-        return tuple(
-            Origin(Handle(value, value.type, None if size is None else Affine(size)))
-            for value in stmt.results
-        )
+        length = None if size is None else Affine(size)
+        return tuple(fresh_origin(value, length) for value in stmt.results)
 
     @interp.impl(stmts.Borrow)
     @interp.impl(stmts.Take)
@@ -147,12 +145,7 @@ class WirePositions(interp.MethodTable):
     ):
         """Keep the register's origin and identify the selected element."""
         register = frame.get(stmt.register)
-        selected = (
-            register.data.element(check.indices.of(stmt.index))
-            if isinstance(register.data, Handle)
-            else Origin.top()
-        )
-        return register, selected
+        return register, element_of(register, check.indices.of(stmt.index))
 
     @interp.impl(stmts.Release)
     def release(
@@ -160,11 +153,7 @@ class WirePositions(interp.MethodTable):
     ):
         """Require a release to restore the qubit from its original register element."""
         register = frame.get(stmt.register)
-        expected = (
-            register.data.element(check.indices.of(stmt.index))
-            if isinstance(register.data, Handle)
-            else Origin.top()
-        )
+        expected = element_of(register, check.indices.of(stmt.index))
         check.expect(
             stmt,
             frame.get(stmt.wire),
@@ -315,7 +304,7 @@ class PositionValidation(ValidationPass[ForwardFrame[Origin]]):
         """Run origin analysis with a distinct identity for each quantum parameter."""
         check = PositionAnalysis(method.dialects)
         inputs = tuple(
-            Origin(Handle(arg, arg.type)) if is_linear(arg.type) else Origin.top()
+            fresh_origin(arg) if is_linear(arg.type) else Origin.top()
             for arg in method.args
         )
         frame, _ = check.run(method, *inputs)

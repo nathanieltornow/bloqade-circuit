@@ -5,12 +5,16 @@ from itertools import product
 from kirin.dialects import py
 
 from bloqade.analysis.indices import Affine
-from bloqade.squin.wire.types import WireType, RegisterType
-from bloqade.squin.analysis.validation.wire.origins import Handle, Origin
+from bloqade.squin.analysis.validation.wire.origins import (
+    Origin,
+    QubitHandle,
+    RegisterHandle,
+    element_of,
+)
 
 
 def test_origin_join_and_meet_obey_lattice_laws():
-    a, b = Origin(Handle("a", WireType)), Origin(Handle("b", WireType))
+    a, b = Origin(QubitHandle("a")), Origin(QubitHandle("b"))
     top, bottom = Origin.top(), Origin.bottom()
     values = (
         top,
@@ -35,13 +39,13 @@ def test_origin_join_and_meet_obey_lattice_laws():
 
 
 def test_tuple_joins_keep_the_fields_that_agree():
-    a, b = Origin(Handle("a", WireType)), Origin(Handle("b", WireType))
+    a, b = Origin(QubitHandle("a")), Origin(QubitHandle("b"))
     assert Origin((a, b)).join(Origin((a, a))) == Origin((a, Origin.top()))
 
 
 def test_call_results_keep_borrowed_roots_and_distinguish_fresh_roots():
-    borrowed = Origin(Handle("input", WireType))
-    fresh = Origin(Handle("local", WireType))
+    borrowed = Origin(QubitHandle("input"))
+    fresh = Origin(QubitHandle("local"))
     outputs = Origin((borrowed, fresh))
     first = outputs.at_call(py.Constant(0), frozenset({"input"}))
     second = outputs.at_call(py.Constant(0), frozenset({"input"}))
@@ -51,8 +55,8 @@ def test_call_results_keep_borrowed_roots_and_distinguish_fresh_roots():
 
 
 def test_register_origins_resolve_negative_indices_and_reject_invalid_elements():
-    register = Handle("register", RegisterType, Affine(3))
-    assert register.element(Affine(-1)) == register.element(Affine(2))
-    assert register.element(Affine(3)) == Origin.top()
-    assert register.element(Affine(-4)) == Origin.top()
-    assert Handle("wire", WireType).element(Affine(0)) == Origin.top()
+    register = Origin(RegisterHandle("register", Affine(3)))
+    assert element_of(register, Affine(-1)) == element_of(register, Affine(2))
+    assert element_of(register, Affine(3)) == Origin.top()
+    assert element_of(register, Affine(-4)) == Origin.top()
+    assert element_of(Origin(QubitHandle("wire")), Affine(0)) == Origin.top()

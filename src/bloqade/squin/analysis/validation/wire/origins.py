@@ -1,12 +1,17 @@
-"""Represent exact wire origins and tuple fields in a bounded validation lattice."""
+"""Represent exact wire origins and tuple fields in a bounded validation lattice.
+
+A handle identifies one allocation, or one element of a register allocation, by its
+root. A root is an SSA value for a parameter or an allocation. For a fresh result
+of a call, it is a pair of the call and the callee root.
+"""
 
 from __future__ import annotations
 
-from typing import Literal
-from dataclasses import dataclass
+from typing import Literal, TypeAlias
+from dataclasses import replace, dataclass
 from collections.abc import Hashable
 
-from kirin import ir, types
+from kirin import ir
 from kirin.lattice import BoundedLattice
 
 from bloqade.analysis.indices import Affine
@@ -14,40 +19,63 @@ from bloqade.squin.wire.types import WireType
 
 
 @dataclass(frozen=True)
-class Handle:
-    """Identify a wire allocation or one element of a register."""
+class QubitHandle:
+    """Identify one standalone qubit allocation."""
 
     root: Hashable
-    """The allocation identity.
+    """The identity of the allocation."""
 
-    It is an SSA value for a parameter or an allocation. It is a pair of a call and
-    a callee root for a fresh result of a call.
-    """
-    wire_type: types.TypeAttribute
-    """The type of the allocation, which is `Wire` or `Register`."""
+
+@dataclass(frozen=True)
+class RegisterHandle:
+    """Identify one whole register allocation."""
+
+    root: Hashable
+    """The identity of the allocation."""
     length: Affine | None = None
-    """The number of elements of a register, or None if it is unknown."""
-    selection: Affine | None = None
-    """The selected register element, or None for the whole allocation."""
+    """The number of elements of the register, or None if it is unknown."""
 
-    def element(self, index: Affine) -> Origin:
-        """Return the origin of element `index` of a whole register.
 
-        The result is unknown for a wire, for an element, and for an index outside
-        a known length.
-        """
-        if self.wire_type == WireType or self.selection is not None:
+@dataclass(frozen=True)
+class ElementHandle:
+    """Identify one element of a register allocation."""
+
+    root: Hashable
+    """The identity of the register allocation."""
+    index: Affine
+    """The index of the element in the register."""
+
+
+Handle: TypeAlias = QubitHandle | RegisterHandle | ElementHandle
+"""Identify an allocation or one element of a register allocation."""
+
+
+def fresh_origin(value: ir.SSAValue, length: Affine | None = None) -> Origin:
+    """Return the origin of the new allocation that `value` names."""
+    if value.type == WireType:
+        return Origin(QubitHandle(value))
+    return Origin(RegisterHandle(value, length))
+
+
+def element_of(origin: Origin, index: Affine) -> Origin:
+    """Return the origin of element `index` of a whole register origin.
+
+    The result is unknown for any other origin and for an index outside a known
+    length.
+    """
+    register = origin.data
+    if not isinstance(register, RegisterHandle):
+        return Origin.top()
+    position = index.constant
+    if position is not None and position < 0:
+        if register.length is None:
             return Origin.top()
+        index = register.length + index
         position = index.constant
-        if position is not None and position < 0:
-            if self.length is None:
-                return Origin.top()
-            index = self.length + index
-            position = index.constant
-        size = None if self.length is None else self.length.constant
-        if size is not None and position is not None and not 0 <= position < size:
-            return Origin.top()
-        return Origin(Handle(self.root, self.wire_type, self.length, index))
+    size = None if register.length is None else register.length.constant
+    if size is not None and position is not None and not 0 <= position < size:
+        return Origin.top()
+    return Origin(ElementHandle(register.root, index))
 
 
 @dataclass(frozen=True)
@@ -121,11 +149,7 @@ class Origin(BoundedLattice["Origin"]):
         """Give each fresh result a call-specific identity while preserving borrowed input identities."""
         value = self.data
         if isinstance(value, Handle) and value.root not in inputs:
-            return Origin(
-                Handle(
-                    (call, value.root), value.wire_type, value.length, value.selection
-                )
-            )
+            return Origin(replace(value, root=(call, value.root)))
         if isinstance(value, tuple):
             return Origin(tuple(item.at_call(call, inputs) for item in value))
         return self
