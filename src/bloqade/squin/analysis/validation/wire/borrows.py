@@ -20,7 +20,7 @@ from kirin.validation import ValidationPass
 from kirin.analysis.forward import ForwardFrame
 
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Sym, Slice, Affine, IndexAnalysis, same
+from bloqade.analysis.indices import Sym, Slice, Affine, Indices, same
 from bloqade.squin.wire.types import (
     RegisterType,
 )
@@ -135,13 +135,14 @@ class BorrowCheck(CachedCalls[Slots]):
 
     keys = (BORROW_KEY, "absint")
     lattice = Slots
-    indices: IndexAnalysis = field(default_factory=IndexAnalysis, init=False)
+    indices: Indices = field(init=False)
+    """The affine index of each wire value, computed once per function."""
     lengths: dict[Sym, Affine] = field(default_factory=dict, init=False)
     """The known register length that each `Length` result reads."""
 
     def initialize(self) -> "BorrowCheck":
         """Clear index facts before checking a method that can have changed."""
-        self.indices = IndexAnalysis()
+        self.indices = Indices(self.dialects)
         self.lengths = {}
         return super().initialize()
 

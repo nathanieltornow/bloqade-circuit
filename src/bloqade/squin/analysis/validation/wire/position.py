@@ -10,7 +10,7 @@ from kirin.analysis.forward import ForwardFrame
 
 from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Affine, IndexAnalysis
+from bloqade.analysis.indices import Affine, Indices
 from bloqade.squin.wire.types import is_linear
 from bloqade.squin.wire.traits import Threads
 from bloqade.squin.wire.ownership import KEY as OWNED
@@ -29,13 +29,14 @@ class PositionAnalysis(CachedCalls[Origin]):
     lattice = Origin
     active_functions: list[ir.Statement] = field(default_factory=list, init=False)
     """The functions that the analysis interprets now, innermost last."""
-    indices: IndexAnalysis = field(default_factory=IndexAnalysis, init=False)
+    indices: Indices = field(init=False)
+    """The affine index of each wire value, computed once per function."""
 
     def initialize(self) -> Self:
         """Reset function context and integer facts before each validation run."""
         super().initialize()
         self.active_functions = []
-        self.indices = IndexAnalysis()
+        self.indices = Indices(self.dialects)
         return self
 
     def method_self(self, method: ir.Method) -> Origin:

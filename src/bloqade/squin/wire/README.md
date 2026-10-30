@@ -78,7 +78,8 @@ A source list holds its element locations in a tuple.
 
 Emission uses these frame entries for all source reference resolution.
 Each reference operation reads the meanings of its operands from that frame.
-`IndexAnalysis` in `bloqade.analysis.indices` reads integer arithmetic from definitions.
+`IndexAnalysis` in `bloqade.analysis.indices` is a Kirin forward analysis of integer arithmetic.
+`Indices` runs it once on each function, on the first lookup of a value of that function.
 It represents expressions such as `i + 1` and proves simple index separation.
 The emitter analyzes source integers, so the symbols of an index are source values.
 A loop symbol carries the constant range of its source loop.

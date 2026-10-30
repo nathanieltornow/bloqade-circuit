@@ -13,7 +13,8 @@ from kirin.dialects.py.len import Len
 
 from bloqade.types import holds_qubits
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Sym, Iter, Affine, IndexAnalysis
+from bloqade.analysis.indices import Sym, Iter, Affine, Indices
+from bloqade.squin.wire.group import reference_kernel
 from bloqade.squin.wire.twins import TWINS
 from bloqade.squin.wire.types import WireType
 from bloqade.squin.wire.errors import WireConversionError
@@ -89,9 +90,9 @@ class EmitWire(EmitABC[WireFrame, Value]):
     source: ir.Method
     contracts: Mapping[ir.Method, Contract]
     result: Contract | None = field(default=None, init=False)
-    indices: IndexAnalysis = field(default_factory=IndexAnalysis, init=False)
-    """The affine index of each source integer, whose symbols are source values."""
     """The contract of the emitted method, which the function handler sets at its end."""
+    indices: Indices = field(init=False)
+    """The affine index of each source integer, whose symbols are source values."""
 
     def initialize_frame(
         self, node: ir.Statement, *, has_parent_access: bool = False
@@ -104,7 +105,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
         self.callables = EmitTable(prefix="")
         self.callable_to_emit = WorkList()
         self.result = None
-        self.indices = IndexAnalysis()
+        self.indices = Indices(reference_kernel)
 
     def emit_method(self) -> Contract:
         """Emit one source method using the supplied checked callee contracts.
