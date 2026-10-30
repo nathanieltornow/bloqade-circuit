@@ -20,6 +20,8 @@ from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.signature import Contract
 
 from .values import (
+    Grid,
+    Rows,
     View,
     Qubit,
     Value,
@@ -27,6 +29,7 @@ from .values import (
     Location,
     Register,
     select,
+    row_width,
     contains_location,
 )
 
@@ -176,7 +179,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
     def _int_op(
         self,
         frame: WireFrame,
-        kind: type[py.Add] | type[py.Mult],
+        kind: type[py.Add] | type[py.Mult] | type[py.FloorDiv],
         left: ir.SSAValue,
         right: ir.SSAValue,
     ) -> ir.SSAValue:
@@ -203,12 +206,12 @@ class EmitWire(EmitABC[WireFrame, Value]):
                 node = frame.push(stmts.Borrow(value, self.emit_affine(frame, index)))
                 frame.latest[root] = node.results[0]
                 return node.results[1]
-            case View():
+            case View() | Rows():
                 raise WireConversionError(
                     "A whole-register operation requires a whole allocation.",
                     frame.current_stmt,
                 )
-            case Qubit(root) | Register(root):
+            case Qubit(root) | Register(root) | Grid(root):
                 del frame.latest[root]
                 return value
 
@@ -233,27 +236,38 @@ class EmitWire(EmitABC[WireFrame, Value]):
         if isinstance(value, tuple):
             return self.emit_affine(frame, Affine(len(value)))
         match value:
-            case View(length=length) if length is not None:
+            case View(length=length) | Rows(length=length) if length is not None:
                 return self.emit_affine(frame, length)
-            case View() | Element() | Qubit():
+            case View() | Rows() | Element() | Qubit():
                 raise WireConversionError(
                     "The register view requires a known length.", frame.current_stmt
                 )
-            case Register(length=length) if (
+            case Register(length=length) | Grid(length=length) if (
                 length is not None and length.constant is not None
             ):
                 return self.emit_affine(frame, length)
             case Register(root):
-                node = frame.push(stmts.Length(frame.latest[root]))
-                frame.latest[root] = node.results[0]
-                return node.results[1]
+                return self.register_length(frame, root)
+            case Grid(root, _, row_shape):
+                # `Length` counts qubits, and each row holds `row_width` of them.
+                qubits = self.register_length(frame, root)
+                width = frame.push(
+                    py.Constant(row_width(row_shape, frame.current_stmt))
+                ).results[0]
+                return self._int_op(frame, py.FloorDiv, qubits, width)
         return frame.push(Len(self.classical_value(frame, value))).results[0]
+
+    def register_length(self, frame: WireFrame, root: ir.SSAValue) -> ir.SSAValue:
+        """Emit `Length` on the latest value of `root` and return the qubit count."""
+        node = frame.push(stmts.Length(frame.latest[root]))
+        frame.latest[root] = node.results[0]
+        return node.results[1]
 
     def known_items(self, value: Value, at: ir.Statement) -> tuple[Value, ...] | None:
         """Return the item meanings of a container whose length is known, or None."""
         if isinstance(value, tuple):
             return value
-        if isinstance(value, (Register, View)) and value.length is not None:
+        if isinstance(value, (Register, View, Grid, Rows)) and value.length is not None:
             if (count := value.length.constant) is not None:
                 return tuple(select(value, Affine(i), at) for i in range(max(0, count)))
         return None

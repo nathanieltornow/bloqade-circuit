@@ -29,7 +29,7 @@ from bloqade.squin.wire.signature import (
 )
 
 from .base import EmitWire, WireFrame
-from .values import View, Qubit, Value, Element, Register, contains_location
+from .values import Grid, Rows, View, Qubit, Value, Element, Register, contains_location
 
 LIBRARIES = ("bloqade.squin.stdlib", "bloqade.qubit.stdlib", "bloqade.native.stdlib")
 """The modules whose kernels wrap source quantum operations for users."""
@@ -79,7 +79,7 @@ class Functions(interp.MethodTable):
         source_parameters = frozenset(block.args[1:])
         lengths = tuple(static_length(value, source_parameters) for value in ordinary)
         borrowed = [
-            cast(Qubit | Register, parameter_values[i])
+            cast(Qubit | Register | Grid, parameter_values[i])
             for i in layout.borrowed_positions
         ]
         results = (
@@ -140,7 +140,10 @@ def add_parameter(
         return Qubit(argument)
     shape = register_shape(source.type)
     outer = shape[0] if shape else None
-    return Register(argument, None if outer is None else Affine(outer), shape[1:])
+    length = None if outer is None else Affine(outer)
+    if len(shape) > 1:
+        return Grid(argument, length, shape[1:])
+    return Register(argument, length)
 
 
 def ordinary_values(
@@ -168,7 +171,7 @@ def ordinary_values(
 
 def static_length(value: Value, parameters: frozenset[ir.SSAValue]) -> Affine | None:
     """Return the length of a returned register if the parameters determine it."""
-    if isinstance(value, Register) and value.length is not None and not value.inner:
+    if isinstance(value, Register) and value.length is not None:
         if value.length.symbols() <= parameters:
             return value.length
     return None
@@ -179,7 +182,7 @@ def ordinary_wires(
     frame: WireFrame,
     end: func.Return,
     ordinary: tuple[Value, ...],
-    borrowed: list[Qubit | Register],
+    borrowed: list[Qubit | Register | Grid],
 ) -> list[ir.SSAValue]:
     """Return the wire value of each ordinary result of a function.
 
@@ -190,11 +193,11 @@ def ordinary_wires(
     wires: list[ir.SSAValue] = []
     seen: set[ir.SSAValue] = set()
     for value in ordinary:
-        if isinstance(value, (Element, View)):
+        if isinstance(value, (Element, View, Rows)):
             raise UnsupportedCallContract(
                 "A quantum return must own one whole allocation.", end
             )
-        if isinstance(value, (Qubit, Register)):
+        if isinstance(value, (Qubit, Register, Grid)):
             if value.root in borrowed_roots:
                 raise UnsupportedCallContract(
                     "A function cannot return a borrowed quantum parameter as an ordinary output.",
@@ -257,8 +260,7 @@ def allocate_register(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Re
     root = frame.push(stmts.AllocRegister(size)).results[0]
     frame.latest[root] = root
     frame.local_roots.append(root)
-    inner = register_shape(stmt.result.type)[1:]
-    return Register(root, clamped(emit.index(stmt.inputs[0])), inner)
+    return Register(root, clamped(emit.index(stmt.inputs[0])))
 
 
 def run_library(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
@@ -315,25 +317,25 @@ def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
 
 def borrowed_operands(
     arguments: tuple[Value, ...], layout: Layout, stmt: func.Invoke
-) -> list[Qubit | Register | Element]:
+) -> list[Qubit | Register | Grid | Element]:
     """Return the borrowed call operands after checking that they are separate qubits.
 
     Each operand must be one qubit or one whole register.
     """
     operands = [arguments[i] for i in layout.borrowed_positions]
     for i, operand in enumerate(operands):
-        if not isinstance(operand, (Qubit, Register, Element)):
+        if not isinstance(operand, (Qubit, Register, Grid, Element)):
             raise UnsupportedCallContract(
                 "A call requires whole registers or individual qubits.", stmt
             )
         for other in operands[i + 1 :]:
-            if not isinstance(other, (Qubit, Register, Element)) or not separated(
+            if not isinstance(other, (Qubit, Register, Grid, Element)) or not separated(
                 operand, other
             ):
                 raise UnresolvedArgumentSeparation(
                     "Call arguments require separate quantum locations.", stmt
                 )
-    return cast(list[Qubit | Register | Element], operands)
+    return cast(list[Qubit | Register | Grid | Element], operands)
 
 
 def call_results(
@@ -404,7 +406,7 @@ def unpack(
 
 
 def separated(
-    left: Qubit | Register | Element, right: Qubit | Register | Element
+    left: Qubit | Register | Grid | Element, right: Qubit | Register | Grid | Element
 ) -> bool:
     """Check whether two call operands name provably separate quantum locations."""
     if left.root is not right.root:

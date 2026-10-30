@@ -4,7 +4,7 @@ Some kernels use `fold=False`, because constant folding would otherwise remove t
 tuple slice, the tuple length or the unused call before the emitter sees them.
 """
 
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 from kirin.dialects import func, ilist
@@ -137,3 +137,19 @@ def test_a_runtime_index_reaches_the_wire_borrow_unchanged():
     parameter = wired.callable_region.blocks[0].args[1]
     assert borrow.index is parameter
     assert simulate(trip(runtime_index), 2) == [0, 0, 1]
+
+
+@squin.kernel
+def row_count(grid: ilist.IList[ilist.IList[Qubit, Literal[2]], Any]) -> int:
+    return len(grid)
+
+
+def test_the_length_of_a_nested_register_counts_its_rows():
+    back = WireToSquin().emit(SquinToWire().emit(row_count))
+
+    @squin.kernel
+    def run_flat() -> int:
+        qs = squin.qalloc(6)
+        return back(qs)
+
+    assert simulate(run_flat) == 3
