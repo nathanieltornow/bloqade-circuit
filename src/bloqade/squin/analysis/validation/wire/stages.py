@@ -1,5 +1,6 @@
 """Check source representation through Kirin's validation and interpreter infrastructure."""
 
+from typing import TypeVar, cast
 from dataclasses import field, replace, dataclass
 
 from kirin import ir, interp
@@ -7,10 +8,15 @@ from kirin.lattice import EmptyLattice
 from kirin.analysis import Forward
 from kirin.dialects import scf, func
 from kirin.validation import ValidationPass, ValidationSuite
+from typing_extensions import Self
+from kirin.interp.value import RegionResult
+from kirin.analysis.forward import ForwardFrame
 
 from .validation import StructureValidation
 
 KEY = "squin.source.validation"
+
+AnalysisT = TypeVar("AnalysisT")
 
 
 @dataclass
@@ -21,7 +27,7 @@ class SourceAnalysis(Forward[EmptyLattice]):
     lattice = EmptyLattice
     callees: set[ir.Method] = field(default_factory=set, init=False)
 
-    def initialize(self):
+    def initialize(self) -> Self:
         """Reset collected callees before checking a source method."""
         super().initialize()
         self.callees.clear()
@@ -46,17 +52,31 @@ class SourceAnalysis(Forward[EmptyLattice]):
         if node.regions and not isinstance(node, (func.Function, scf.For, scf.IfElse)):
             self.error(node, "Wire emission requires function, loop or branch regions.")
 
-    def frame_eval(self, frame, node):
+    def frame_eval(
+        self, frame: ForwardFrame[EmptyLattice], node: ir.Statement
+    ) -> interp.StatementResult[EmptyLattice]:
         """Check each operation before its method table runs."""
         self.check_node(node)
         return super().frame_eval(frame, node)
 
-    def frame_call(self, frame, node, *args, **kwargs):
+    def frame_call(
+        self,
+        frame: ForwardFrame[EmptyLattice],
+        node: ir.Statement,
+        *args: EmptyLattice,
+        **kwargs: EmptyLattice,
+    ) -> EmptyLattice:
         """Check the function operation before Kirin enters its body."""
         self.check_node(node)
         return super().frame_call(frame, node, *args, **kwargs)
 
-    def frame_call_region(self, frame, node, region, *args):
+    def frame_call_region(
+        self,
+        frame: ForwardFrame[EmptyLattice],
+        node: ir.Statement,
+        region: ir.Region,
+        *args: EmptyLattice,
+    ) -> RegionResult[EmptyLattice]:
         """Check region parameters and terminators before interpreting a source block."""
         if len(region.blocks) != 1:
             self.error(
@@ -79,7 +99,9 @@ class SourceAnalysis(Forward[EmptyLattice]):
                 return None
         return super().frame_call_region(frame, node, region, *args)
 
-    def eval_fallback(self, frame, node):
+    def eval_fallback(
+        self, frame: ForwardFrame[EmptyLattice], node: ir.Statement
+    ) -> tuple[EmptyLattice, ...]:
         """Treat ordinary source operations and static calls as opaque to structural validation."""
         return tuple(EmptyLattice.top() for _ in node.results)
 
@@ -90,7 +112,12 @@ class Regions(interp.MethodTable):
 
     @interp.impl(scf.For)
     @interp.impl(scf.IfElse)
-    def structured(self, check: SourceAnalysis, frame, stmt):
+    def structured(
+        self,
+        check: SourceAnalysis,
+        frame: ForwardFrame[EmptyLattice],
+        stmt: scf.For | scf.IfElse,
+    ) -> tuple[EmptyLattice, ...]:
         """Pass abstract region arguments to Kirin's region interpreter."""
         for region in stmt.regions:
             count = len(stmt.initializers) + 1 if isinstance(stmt, scf.For) else 1
@@ -101,7 +128,9 @@ class Regions(interp.MethodTable):
         return tuple(EmptyLattice.top() for _ in stmt.results)
 
     @interp.impl(scf.Yield)
-    def yield_(self, check: SourceAnalysis, frame, stmt):
+    def yield_(
+        self, check: SourceAnalysis, frame: ForwardFrame[EmptyLattice], stmt: scf.Yield
+    ) -> interp.YieldValue[EmptyLattice]:
         """End a region with an abstract value for each yielded operand."""
         return interp.YieldValue(tuple(EmptyLattice.top() for _ in stmt.values))
 
@@ -111,7 +140,12 @@ class Functions(interp.MethodTable):
     """End source function validation at its return statement."""
 
     @interp.impl(func.Return)
-    def return_(self, check: SourceAnalysis, frame, stmt):
+    def return_(
+        self,
+        check: SourceAnalysis,
+        frame: ForwardFrame[EmptyLattice],
+        stmt: func.Return,
+    ) -> interp.ReturnValue[EmptyLattice]:
         """Return an empty abstract value to the function driver."""
         return interp.ReturnValue(EmptyLattice.top())
 
@@ -123,17 +157,20 @@ class SourceValidation(ValidationPass[SourceAnalysis]):
         """Return the diagnostic name for source representation checks."""
         return "squin source"
 
-    def run(self, method: ir.Method):
+    def run(self, method: ir.Method) -> tuple[SourceAnalysis, list[ir.ValidationError]]:
         """Return the source analysis and its validation errors."""
         check = SourceAnalysis(method.dialects)
         check.run(method)
         return check, check.get_validation_errors()
 
 
-def check_stage(method: ir.Method, stage: type[ValidationPass]):
-    """Check structure, types and the declared stage contract before emission."""
+def check_stage(method: ir.Method, stage: type[ValidationPass[AnalysisT]]) -> AnalysisT:
+    """Check structure, types and the declared stage contract before emission.
+
+    The result is the analysis that the stage ran, such as a `SourceAnalysis`.
+    """
     result = ValidationSuite([StructureValidation, stage], fail_fast=True).validate(
         method
     )
     result.raise_if_invalid()
-    return result.frames[stage().name()]
+    return cast(AnalysisT, result.frames[stage().name()])

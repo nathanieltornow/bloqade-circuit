@@ -5,6 +5,7 @@ from dataclasses import field, dataclass
 from kirin import ir, interp
 from kirin.dialects import py, scf, func
 from kirin.validation import ValidationPass
+from typing_extensions import Self
 from kirin.analysis.forward import ForwardFrame
 
 from bloqade.constants import constant_int
@@ -30,7 +31,7 @@ class PositionAnalysis(CachedCalls[Origin]):
     """The functions that the analysis interprets now, innermost last."""
     indices: IndexAnalysis = field(default_factory=IndexAnalysis, init=False)
 
-    def initialize(self):
+    def initialize(self) -> Self:
         """Reset function context and integer facts before each validation run."""
         super().initialize()
         self.active_functions = []
@@ -107,7 +108,9 @@ class PositionAnalysis(CachedCalls[Origin]):
                 f"return suffix position {i} must continue borrowed parameter {i}",
             )
 
-    def eval_fallback(self, frame: ForwardFrame[Origin], node: ir.Statement):
+    def eval_fallback(
+        self, frame: ForwardFrame[Origin], node: ir.Statement
+    ) -> tuple[Origin, ...]:
         """Follow declared wire continuations and assign unknown origins to other results."""
         outputs = {result: Origin.top() for result in node.results}
         if threads := node.get_trait(Threads):
@@ -130,7 +133,7 @@ class WirePositions(interp.MethodTable):
     @interp.impl(stmts.PutSlice)
     def allocate(
         self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: ir.Statement
-    ):
+    ) -> tuple[Origin, ...]:
         """Assign independent result identities to allocations and consuming register operations."""
         size = (
             constant_int(stmt.size) if isinstance(stmt, stmts.AllocRegister) else None
@@ -141,8 +144,11 @@ class WirePositions(interp.MethodTable):
     @interp.impl(stmts.Borrow)
     @interp.impl(stmts.Take)
     def borrow(
-        self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: stmts.Borrow
-    ):
+        self,
+        check: PositionAnalysis,
+        frame: ForwardFrame[Origin],
+        stmt: stmts.Borrow | stmts.Take,
+    ) -> tuple[Origin, ...]:
         """Keep the register's origin and identify the selected element."""
         register = frame.get(stmt.register)
         return register, element_of(register, check.indices.of(stmt.index))
@@ -150,7 +156,7 @@ class WirePositions(interp.MethodTable):
     @interp.impl(stmts.Release)
     def release(
         self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: stmts.Release
-    ):
+    ) -> tuple[Origin, ...]:
         """Require a release to restore the qubit from its original register element."""
         register = frame.get(stmt.register)
         expected = element_of(register, check.indices.of(stmt.index))
@@ -173,7 +179,7 @@ class Aliases(interp.MethodTable):
         check: PositionAnalysis,
         frame: ForwardFrame[Origin],
         stmt: py.assign.Alias,
-    ):
+    ) -> tuple[Origin, ...]:
         """Read the operand's origin from the current frame."""
         return (frame.get(stmt.value),)
 
@@ -185,7 +191,7 @@ class Tuples(interp.MethodTable):
     @interp.impl(py.tuple.New)
     def new(
         self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: py.tuple.New
-    ):
+    ) -> tuple[Origin, ...]:
         """Collect the origins of the tuple's fields in declaration order."""
         return (Origin(frame.get_values(stmt.args)),)
 
@@ -197,7 +203,7 @@ class Indexing(interp.MethodTable):
     @interp.impl(py.GetItem)
     def getitem(
         self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: py.GetItem
-    ):
+    ) -> tuple[Origin, ...]:
         """Select a tuple field when its index is a known integer."""
         obj = frame.get(stmt.obj).data
         index = check.indices.of(stmt.index).constant
@@ -217,7 +223,7 @@ class Functions(interp.MethodTable):
     @interp.impl(func.Invoke)
     def invoke(
         self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: func.Invoke
-    ):
+    ) -> tuple[Origin, ...]:
         """Run the callee with input origins and distinguish its fresh results by call site."""
         inputs = frame.get_values(stmt.inputs)
         _, result = check.call(stmt.callee.code, Origin.top(), *inputs)
@@ -227,7 +233,7 @@ class Functions(interp.MethodTable):
     @interp.impl(func.Return)
     def return_(
         self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: func.Return
-    ):
+    ) -> interp.ReturnValue[Origin]:
         """Return the value's origin to the function validation hook."""
         return interp.ReturnValue(frame.get(stmt.value))
 
@@ -239,12 +245,14 @@ class ControlFlow(interp.MethodTable):
     @interp.impl(scf.Yield)
     def yield_(
         self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: scf.Yield
-    ):
+    ) -> interp.YieldValue[Origin]:
         """Return yielded origins to the enclosing region handler."""
         return interp.YieldValue(frame.get_values(stmt.values))
 
     @interp.impl(scf.For)
-    def loop(self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: scf.For):
+    def loop(
+        self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: scf.For
+    ) -> tuple[Origin, ...]:
         """Compare one iteration's outputs with its incoming wire origins."""
         initial = frame.get_values(stmt.initializers)
         with check.new_frame(stmt, has_parent_access=True) as body:
@@ -269,9 +277,9 @@ class ControlFlow(interp.MethodTable):
     @interp.impl(scf.IfElse)
     def branch(
         self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: scf.IfElse
-    ):
+    ) -> tuple[Origin, ...]:
         """Analyze both paths independently and compare their wire result origins."""
-        yielded = []
+        yielded: list[tuple[Origin, ...]] = []
         for region in (stmt.then_body, stmt.else_body):
             with check.new_frame(stmt, has_parent_access=True) as body:
                 result = check.frame_call_region(

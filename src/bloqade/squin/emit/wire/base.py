@@ -154,7 +154,11 @@ class EmitWire(EmitABC[WireFrame, Value]):
         return total
 
     def _int_op(
-        self, frame: WireFrame, kind, left: ir.SSAValue, right: ir.SSAValue
+        self,
+        frame: WireFrame,
+        kind: type[py.Add] | type[py.Mult],
+        left: ir.SSAValue,
+        right: ir.SSAValue,
     ) -> ir.SSAValue:
         """Emit one integer operation and give its result the type `int`."""
         node = frame.push(kind(left, right))
@@ -234,7 +238,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
                 return tuple(select(value, Affine(i), at) for i in range(max(0, count)))
         return None
 
-    def eval_fallback(self, frame: WireFrame, node: ir.Statement):
+    def eval_fallback(self, frame: WireFrame, node: ir.Statement) -> tuple[Value, ...]:
         """Emit declared quantum twins or copy supported classical operations with mapped operands."""
         if type(node) in TWINS:
             # `gates` imports this module, so this import must stay local.

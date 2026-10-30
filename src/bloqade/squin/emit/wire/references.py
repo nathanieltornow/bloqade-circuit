@@ -20,7 +20,9 @@ class Qubits(interp.MethodTable):
     """Emit standalone qubit allocations."""
 
     @interp.impl(qubit.stmts.New)
-    def new(self, emit: EmitWire, frame: WireFrame, stmt):
+    def new(
+        self, emit: EmitWire, frame: WireFrame, stmt: qubit.stmts.New
+    ) -> tuple[Value]:
         """Create a qubit and record its lifetime in the current region."""
         root = frame.push(stmts.Alloc()).results[0]
         frame.latest[root] = root
@@ -33,7 +35,9 @@ class Aliases(interp.MethodTable):
     """Resolve source aliases from their previously emitted operands."""
 
     @interp.impl(py.assign.Alias)
-    def alias(self, emit: EmitWire, frame: WireFrame, stmt):
+    def alias(
+        self, emit: EmitWire, frame: WireFrame, stmt: py.assign.Alias
+    ) -> tuple[Value]:
         """Retain the source value's emitted value or quantum location."""
         return (frame.get(stmt.value),)
 
@@ -43,7 +47,9 @@ class Lists(interp.MethodTable):
     """Retain quantum lists as location sequences and emit classical lists."""
 
     @interp.impl(ilist.New)
-    def new(self, emit: EmitWire, frame: WireFrame, stmt):
+    def new(
+        self, emit: EmitWire, frame: WireFrame, stmt: ilist.New
+    ) -> tuple[Value, ...]:
         """Build a source container or copy a classical list into the output."""
         values = frame.get_values(stmt.values)
         if holds_qubits(stmt.result.type) or any(
@@ -58,7 +64,7 @@ class Tuples(interp.MethodTable):
     """Keep source tuple fields available for indexing and function returns."""
 
     @interp.impl(py.tuple.New)
-    def new(self, emit: EmitWire, frame: WireFrame, stmt):
+    def new(self, emit: EmitWire, frame: WireFrame, stmt: py.tuple.New) -> tuple[Value]:
         """Record tuple fields without emitting a redundant source container."""
         return (frame.get_values(stmt.args),)
 
@@ -68,7 +74,7 @@ class Arithmetic(interp.MethodTable):
     """Resolve quantum list concatenation and emit ordinary arithmetic."""
 
     @interp.impl(py.Add)
-    def add(self, emit: EmitWire, frame: WireFrame, stmt):
+    def add(self, emit: EmitWire, frame: WireFrame, stmt: py.Add) -> tuple[Value, ...]:
         """Concatenate known quantum sequences or copy the classical addition."""
         left, right = frame.get_values(stmt.args)
         if contains_location(left) or contains_location(right):
@@ -86,7 +92,9 @@ class Lengths(interp.MethodTable):
     """Emit the length of a source sequence."""
 
     @interp.impl(py_len.Len)
-    def length(self, emit: EmitWire, frame: WireFrame, stmt):
+    def length(
+        self, emit: EmitWire, frame: WireFrame, stmt: py_len.Len
+    ) -> tuple[Value]:
         """Read the source sequence's known or runtime length."""
         return (emit.length_value(frame, frame.get(stmt.value)),)
 
@@ -96,7 +104,9 @@ class Indexing(interp.MethodTable):
     """Select source quantum locations and emit ordinary classical indexing."""
 
     @interp.impl(py.GetItem)
-    def getitem(self, emit: EmitWire, frame: WireFrame, stmt: py.GetItem):
+    def getitem(
+        self, emit: EmitWire, frame: WireFrame, stmt: py.GetItem
+    ) -> tuple[Value, ...]:
         """Return the meaning of one source element or slice."""
         container, index_meaning = frame.get_values(stmt.args)
         index = emit.classical_value(frame, index_meaning)

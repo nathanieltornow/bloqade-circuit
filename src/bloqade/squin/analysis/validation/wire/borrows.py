@@ -242,17 +242,23 @@ class _Borrows(interp.MethodTable):
         return (Slots.top(),)
 
     @interp.impl(stmts.AllocRegister)
-    def alloc(self, check: BorrowCheck, frame, stmt: stmts.AllocRegister):
+    def alloc(
+        self, check: BorrowCheck, frame: ForwardFrame[Slots], stmt: stmts.AllocRegister
+    ) -> tuple[Slots, ...]:
         """Record the length of a newly allocated complete register."""
         return (KnownSlots(length=check.indices.of(stmt.size)),)
 
     @interp.impl(stmts.PackRegister)
-    def pack(self, check: BorrowCheck, frame, stmt: stmts.PackRegister):
+    def pack(
+        self, check: BorrowCheck, frame: ForwardFrame[Slots], stmt: stmts.PackRegister
+    ) -> tuple[Slots, ...]:
         """Record the number of consumed qubits in the new register."""
         return (KnownSlots(length=Affine(len(stmt.wires))),)
 
     @interp.impl(stmts.Length)
-    def length(self, check: BorrowCheck, frame, stmt: stmts.Length):
+    def length(
+        self, check: BorrowCheck, frame: ForwardFrame[Slots], stmt: stmts.Length
+    ) -> tuple[Slots, ...]:
         """Keep the unavailable slots and record a known length for slice checks."""
         state = frame.get(stmt.register)
         if (length := known_length(state)) is not None:
@@ -260,7 +266,9 @@ class _Borrows(interp.MethodTable):
         return state, Slots.top()
 
     @interp.impl(stmts.SplitRegister)
-    def split(self, check: BorrowCheck, frame, stmt: stmts.SplitRegister):
+    def split(
+        self, check: BorrowCheck, frame: ForwardFrame[Slots], stmt: stmts.SplitRegister
+    ) -> tuple[Slots, ...]:
         """Require a complete register and compute the two result lengths."""
         check.expect_empty(frame, stmt, stmt.args)
         at = check.indices.of(stmt.index)
@@ -269,7 +277,9 @@ class _Borrows(interp.MethodTable):
         return KnownSlots(length=at), KnownSlots(length=rest)
 
     @interp.impl(stmts.JoinRegister)
-    def join(self, check: BorrowCheck, frame, stmt: stmts.JoinRegister):
+    def join(
+        self, check: BorrowCheck, frame: ForwardFrame[Slots], stmt: stmts.JoinRegister
+    ) -> tuple[Slots, ...]:
         """Require complete registers and add their known lengths."""
         check.expect_empty(frame, stmt, stmt.args)
         a = known_length(frame.get(stmt.first))
@@ -277,7 +287,9 @@ class _Borrows(interp.MethodTable):
         return (KnownSlots(length=None if a is None or b is None else a + b),)
 
     @interp.impl(stmts.TakeSlice)
-    def take_slice(self, check: BorrowCheck, frame, stmt: stmts.TakeSlice):
+    def take_slice(
+        self, check: BorrowCheck, frame: ForwardFrame[Slots], stmt: stmts.TakeSlice
+    ) -> tuple[Slots, ...]:
         """Record a moved contiguous range and the extracted register's length."""
         state = frame.get(stmt.register)
         size = check.indices.of(stmt.length)
@@ -294,7 +306,9 @@ class _Borrows(interp.MethodTable):
         return KnownSlots(unavailable, state.length), KnownSlots(length=size)
 
     @interp.impl(stmts.PutSlice)
-    def put_slice(self, check: BorrowCheck, frame, stmt: stmts.PutSlice):
+    def put_slice(
+        self, check: BorrowCheck, frame: ForwardFrame[Slots], stmt: stmts.PutSlice
+    ) -> tuple[Slots, ...]:
         """Require a complete slice that exactly fills one moved range."""
         check.expect_empty(frame, stmt, (stmt.slice_register,))
         state = frame.get(stmt.register)
@@ -312,7 +326,12 @@ class _Borrows(interp.MethodTable):
         return (Slots.top(),)
 
     @interp.impl(stmts.DiscardRegister)
-    def discard(self, check: BorrowCheck, frame, stmt: stmts.DiscardRegister):
+    def discard(
+        self,
+        check: BorrowCheck,
+        frame: ForwardFrame[Slots],
+        stmt: stmts.DiscardRegister,
+    ) -> tuple[Slots, ...]:
         """Permit moved-out elements and require every outstanding borrow to return."""
         state = frame.get(stmt.register)
         if isinstance(state, UnknownSlots) or (

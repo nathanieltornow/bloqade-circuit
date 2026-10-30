@@ -6,6 +6,7 @@ from dataclasses import field, dataclass
 
 from kirin import ir, lattice
 from kirin.analysis import Forward
+from typing_extensions import Self
 from kirin.analysis.forward import ForwardFrame
 
 LatticeType = TypeVar("LatticeType", bound=lattice.BoundedLattice)
@@ -27,7 +28,7 @@ class CachedCalls(Forward[LatticeType], ABC):
     )
     """The frame and the result of each finished call, keyed by callee and arguments."""
 
-    def initialize(self):
+    def initialize(self) -> Self:
         """Forget the results of the previous analysis run."""
         super().initialize()
         self.calls = {}

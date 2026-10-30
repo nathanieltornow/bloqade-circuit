@@ -50,7 +50,9 @@ class Functions(interp.MethodTable):
     """Emit function boundaries and calls in the calling convention of `Layout`."""
 
     @interp.impl(func.Function)
-    def function(self, emit: EmitWire, frame: WireFrame, stmt: func.Function):
+    def function(
+        self, emit: EmitWire, frame: WireFrame, stmt: func.Function
+    ) -> tuple[()]:
         """Emit the wire form of the source function and record its contract."""
         if isinstance(stmt.signature.output, types.BottomType):
             raise WireConversionError(
@@ -111,7 +113,9 @@ class Functions(interp.MethodTable):
         return interp.ReturnValue(frame.get(stmt.value))
 
     @interp.impl(func.Invoke)
-    def invoke(self, emit: EmitWire, frame: WireFrame, stmt: func.Invoke):
+    def invoke(
+        self, emit: EmitWire, frame: WireFrame, stmt: func.Invoke
+    ) -> tuple[Value]:
         """Allocate a register, run a library wrapper or call a converted function."""
         if stmt.callee is qubit.qalloc:
             return (allocate_register(emit, frame, stmt),)
@@ -184,7 +188,7 @@ def ordinary_wires(
     """
     borrowed_roots = {location.root for location in borrowed}
     wires: list[ir.SSAValue] = []
-    seen = set()
+    seen: set[ir.SSAValue] = set()
     for value in ordinary:
         if isinstance(value, (Element, View)):
             raise UnsupportedCallContract(
@@ -387,7 +391,7 @@ def unpack(
     frame: WireFrame, packed: ir.SSAValue, kinds: tuple[types.TypeAttribute, ...]
 ) -> tuple[ir.SSAValue, ...]:
     """Read each field of the tuple value `packed` and give it the type in `kinds`."""
-    fields = []
+    fields: list[ir.SSAValue] = []
     for i, kind in enumerate(kinds):
         index = frame.push(py.Constant(i)).results[0]
         item = frame.push(py.GetItem(packed, index))

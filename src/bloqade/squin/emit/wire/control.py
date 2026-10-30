@@ -71,12 +71,16 @@ class ControlFlow(interp.MethodTable):
     """Construct loop and branch bodies, each with its own `latest` map."""
 
     @interp.impl(scf.Yield)
-    def yield_(self, emit: EmitWire, frame: WireFrame, stmt: scf.Yield):
+    def yield_(
+        self, emit: EmitWire, frame: WireFrame, stmt: scf.Yield
+    ) -> interp.YieldValue[Value]:
         """Return source meanings to the region handler that constructs the output yield."""
         return interp.YieldValue(frame.get_values(stmt.values))
 
     @interp.impl(scf.For)
-    def loop(self, emit: EmitWire, frame: WireFrame, stmt: scf.For):
+    def loop(
+        self, emit: EmitWire, frame: WireFrame, stmt: scf.For
+    ) -> tuple[Value, ...]:
         """Convert the body once and carry all available outer wires through the loop."""
         initial = frame.get_values(stmt.initializers)
         classical_indices = tuple(
@@ -131,11 +135,14 @@ class ControlFlow(interp.MethodTable):
         return resume(frame, made, roots, initial, classical_indices)
 
     @interp.impl(scf.IfElse)
-    def branch(self, emit: EmitWire, frame: WireFrame, stmt: scf.IfElse):
+    def branch(
+        self, emit: EmitWire, frame: WireFrame, stmt: scf.IfElse
+    ) -> tuple[Value, ...]:
         """Convert both paths from the same incoming state and join their explicit wire results."""
         condition = emit.classical_value(frame, frame.get(stmt.cond))
         roots = tuple(frame.latest)
-        bodies, yields = [], []
+        bodies: list[WireFrame] = []
+        yields: list[tuple[Value, ...]] = []
         for source in (stmt.then_body, stmt.else_body):
             with emit.new_frame(stmt, has_parent_access=True) as body:
                 body.site, body.current_stmt = frame.site, stmt
@@ -154,7 +161,7 @@ class ControlFlow(interp.MethodTable):
         left, right = yields
         if len(left) != len(right):
             raise WireConversionError("Branch results must have matching counts.", stmt)
-        classical_indices = []
+        classical_indices: list[int] = []
         for i, (a, b) in enumerate(zip(left, right, strict=True)):
             if contains_location(a) or contains_location(b):
                 if a != b:

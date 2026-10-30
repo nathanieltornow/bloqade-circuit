@@ -13,7 +13,7 @@ from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.traits import Twin
 
 from .base import EmitWire, WireFrame
-from .values import View, Location, Register, select, is_qubit
+from .values import View, Value, Location, Register, select, is_qubit
 from .control import resume, carry_wires, yield_wires
 
 
@@ -22,7 +22,7 @@ def scalar_gate(
     frame: WireFrame,
     source: ir.Statement,
     locations: tuple[Location, ...],
-):
+) -> tuple[ir.SSAValue, ...]:
     """Emit one wire gate and restore its operands to their source locations."""
     twin = TWINS[type(source)]
     trait = twin.get_present_trait(Twin)
@@ -44,7 +44,9 @@ def scalar_gate(
     return tuple(getattr(made, wire_result) for _, wire_result in trait.results)
 
 
-def emit_gate(emit: EmitWire, frame: WireFrame, source: ir.Statement):
+def emit_gate(
+    emit: EmitWire, frame: WireFrame, source: ir.Statement
+) -> tuple[Value, ...]:
     """Expand known broadcast operands or emit one loop for runtime lengths."""
     trait = TWINS[type(source)].get_present_trait(Twin)
     operands = tuple(
@@ -58,7 +60,7 @@ def emit_gate(emit: EmitWire, frame: WireFrame, source: ir.Statement):
         raise WireConversionError(
             f"'{source.name}' requires qubit lists of equal length.", source
         )
-    outputs = [[] for _ in trait.results]
+    outputs: list[list[ir.SSAValue]] = [[] for _ in trait.results]
     # Each step takes the next qubit of every operand, like Python's `zip`.
     for qubits in zip(*operand_items):
         if not all(is_qubit(location) for location in qubits):
@@ -79,7 +81,9 @@ def emit_gate(emit: EmitWire, frame: WireFrame, source: ir.Statement):
     )
 
 
-def broadcast_loop(emit: EmitWire, frame: WireFrame, source: ir.Statement, operands):
+def broadcast_loop(
+    emit: EmitWire, frame: WireFrame, source: ir.Statement, operands: tuple[Value, ...]
+) -> tuple[Value, ...]:
     """Emit indexed gate applications and collect classical results in loop-carried lists."""
     trait = TWINS[type(source)].get_present_trait(Twin)
     if not all(
@@ -118,7 +122,7 @@ def broadcast_loop(emit: EmitWire, frame: WireFrame, source: ir.Statement, opera
             select(register, Affine.of(index), source) for register in registers
         )
         values = scalar_gate(emit, body, source, qubits)
-        collected = []
+        collected: list[ir.SSAValue] = []
         for previous, value in zip(lists, values, strict=True):
             singleton = body.push(ilist.New((value,), elem_type=value.type)).results[0]
             appended = body.push(py.Add(previous, singleton))

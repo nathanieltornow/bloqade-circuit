@@ -134,7 +134,7 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
         reads the field counts as a use. The check records an error for each use
         that cannot consume a quantum value.
         """
-        users = []
+        users: list[ir.Statement] = []
         for use in value.uses:
             user = use.stmt
             if path and isinstance(user, py.GetItem) and use.index == 0:
@@ -169,7 +169,12 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
             return None
         return index % size
 
-    def require_same_paths(self, node, actual, declared):
+    def require_same_paths(
+        self,
+        node: ir.Statement,
+        actual: types.TypeAttribute,
+        declared: types.TypeAttribute,
+    ) -> None:
         """Require a boundary type to retain every quantum ownership path."""
         try:
             if linear_paths(actual) != linear_paths(declared):
@@ -177,7 +182,9 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
         except ValueError as error:
             self.error(node, str(error))
 
-    def frame_eval(self, frame, node):
+    def frame_eval(
+        self, frame: ForwardFrame[EmptyLattice], node: ir.Statement
+    ) -> interp.StatementResult[EmptyLattice]:
         """Check results before dispatch so every operation checks ownership."""
         if node.dialect is stmts.dialect and any(
             isinstance(value.type, types.BottomType)
@@ -187,7 +194,7 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
         self.check_uses(node.results, node)
         return super().frame_eval(frame, node)
 
-    def require_flat(self, node, values):
+    def require_flat(self, node: ir.Statement, values: Iterable[ir.SSAValue]) -> None:
         """Require control-flow state to carry each quantum value separately."""
         if any(
             contains_linear(value.type) and not is_linear(value.type)
@@ -240,7 +247,12 @@ class _TupleLinearity(interp.MethodTable):
     """Check ownership types when an operation constructs a tuple."""
 
     @interp.impl(py.tuple.New)
-    def new(self, check: LinearityCheck, frame, stmt: py.tuple.New):
+    def new(
+        self,
+        check: LinearityCheck,
+        frame: ForwardFrame[EmptyLattice],
+        stmt: py.tuple.New,
+    ) -> tuple[EmptyLattice, ...]:
         """Require each tuple field to retain its constructing operand's type."""
         expected = types.Generic(tuple, *(value.type for value in stmt.args))
         if contains_linear(expected) and stmt.result.type != expected:
@@ -255,7 +267,12 @@ class _FunctionLinearity(interp.MethodTable):
     """Preserve quantum ownership through declared call and return types."""
 
     @interp.impl(func.Invoke)
-    def invoke(self, check: LinearityCheck, frame, stmt: func.Invoke):
+    def invoke(
+        self,
+        check: LinearityCheck,
+        frame: ForwardFrame[EmptyLattice],
+        stmt: func.Invoke,
+    ) -> tuple[EmptyLattice, ...]:
         """Check call types and validate the callee with Kirin's call machinery."""
         parameters = stmt.callee.callable_region.blocks[0].args[1:]
         for argument, parameter in zip(stmt.inputs, parameters):
@@ -273,7 +290,12 @@ class _FunctionLinearity(interp.MethodTable):
         return (EmptyLattice.top(),)
 
     @interp.impl(func.Return)
-    def return_(self, check: LinearityCheck, frame, stmt: func.Return):
+    def return_(
+        self,
+        check: LinearityCheck,
+        frame: ForwardFrame[EmptyLattice],
+        stmt: func.Return,
+    ) -> interp.ReturnValue[EmptyLattice]:
         """Require the function result type to retain its returned quantum fields."""
         owner = stmt.parent_stmt
         while owner is not None and not isinstance(owner, func.Function):

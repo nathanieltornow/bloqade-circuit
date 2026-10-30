@@ -8,7 +8,10 @@ references. Complete conversion rejects every violation.
 from dataclasses import field, dataclass
 
 from kirin import ir
+from kirin.lattice import EmptyLattice
 from kirin.dialects import func
+from kirin.interp.value import RegionResult
+from kirin.analysis.forward import ForwardFrame
 
 from bloqade import qubit
 from bloqade.squin import gate, noise
@@ -60,7 +63,13 @@ class ConversionTarget(SourceAnalysis):
         if not (legal_dialect and legal_values and legal_call and legal_signature):
             self.violations.append(node.name)
 
-    def frame_call_region(self, frame, node, region, *args):
+    def frame_call_region(
+        self,
+        frame: ForwardFrame[EmptyLattice],
+        node: ir.Statement,
+        region: ir.Region,
+        *args: EmptyLattice,
+    ) -> RegionResult[EmptyLattice]:
         """Record reference parameters before Kirin checks the region body."""
         if any(holds_qubits(arg.type) for block in region.blocks for arg in block.args):
             self.violations.append("block argument")
