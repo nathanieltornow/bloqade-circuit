@@ -1,16 +1,7 @@
 """Check that each wire and register has exactly one use.
 
-A wire or a register must have exactly one use. The use must sit in the region
-that defines the value, with one exception. A branch of kirin's `scf.IfElse` has
-no carried block arguments, so each branch reads the outer wire itself. Each
-branch must then use the outer wire exactly once. A loop body must get every wire
-as a block argument, because the body runs more than once.
-
-`LinearityCheck` is a kirin forward analysis.
-Its dispatch hook checks the results of every statement.
-Its method tables check tuple fields, calls, returns and control-flow boundaries.
-The call rule runs each callee through Kirin's interpreter machinery.
-`CachedCalls` runs each callee once for each list of abstract arguments.
+The use must sit in the region that defines the value. A branch may use an outer wire
+once, and a loop body must take every wire as a block argument.
 """
 
 from dataclasses import dataclass
@@ -130,9 +121,8 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
     ) -> list[ir.Statement]:
         """Return the statements that use the quantum field at `path` of `value`.
 
-        An empty path names `value` itself. For a tuple field, each `GetItem` that
-        reads the field counts as a use. The check records an error for each use
-        that cannot consume a quantum value.
+        An empty path names `value` itself. The check records an error for each use that
+        cannot consume a quantum value.
         """
         users: list[ir.Statement] = []
         for use in value.uses:

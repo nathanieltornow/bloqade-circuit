@@ -419,9 +419,8 @@ def ordinary_meanings(
 ) -> tuple[Value, ...]:
     """Return the source meaning of each ordinary result of a call.
 
-    A classical result means itself. A quantum result becomes a new allocation in
-    the caller. A fresh register gets the static length from the contract, with the
-    caller's integer arguments in place of the callee's source parameters.
+    A quantum result becomes a new allocation in the caller. A fresh register gets its
+    contract length with the caller's integer arguments substituted.
     """
     parameters = callee.body.blocks[0].args[1:]
     mapping: dict[Sym, Affine] = {

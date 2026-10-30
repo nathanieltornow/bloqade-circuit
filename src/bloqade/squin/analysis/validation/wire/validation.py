@@ -1,10 +1,6 @@
 """Check wire squin with the kirin validation suite `WireValidation`.
 
-`StructureValidation` runs kirin's own `verify` and `verify_type`.
-`LinearityValidation` checks that each wire and register has one use.
-`BorrowValidation` checks that each borrowed element returns and that each moved
-element is filled or discarded.
-`PositionValidation` checks the order of wires across control flow and calls.
+The suite checks structure and types, single use, borrowed elements and qubit positions.
 """
 
 from dataclasses import replace, dataclass

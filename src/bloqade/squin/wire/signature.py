@@ -1,9 +1,7 @@
 """Describe the calling convention of converted wire functions.
 
-A source function borrows each quantum parameter. Its wire function returns the
-ordinary source results first. Then it returns each quantum parameter in
-declaration order, so that the caller gets the updated qubits back. For example,
-the source call `answer = f(q, n)` becomes `answer, q_next = f_wire(q_current, n)`.
+A wire function returns the ordinary source results and then each borrowed quantum
+parameter, so `answer = f(q, n)` becomes `answer, q_next = f_wire(q, n)`.
 """
 
 from __future__ import annotations

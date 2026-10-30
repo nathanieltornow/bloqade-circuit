@@ -1,8 +1,7 @@
-"""Represent exact wire origins and tuple fields in a bounded validation lattice.
+"""Represent wire origins and tuple fields in the position validation lattice.
 
-A handle identifies one allocation, or one element of a register allocation, by its
-root. A root is an SSA value for a parameter or an allocation. For a fresh result
-of a call, it is a pair of the call and the callee root.
+A handle names an allocation by its root, which is an SSA value or, for a fresh call
+result, a pair of the call and the callee root.
 """
 
 from __future__ import annotations

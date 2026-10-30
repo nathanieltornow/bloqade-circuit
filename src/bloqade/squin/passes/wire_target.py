@@ -1,8 +1,7 @@
 """Define which statements a complete wire conversion can keep.
 
-The target accepts wire operations and classical operations from the source
-dialect group. Every operand, result and block argument must exclude qubit
-references. Complete conversion rejects every violation.
+The target keeps wire operations and classical operations whose values hold no qubit
+references.
 """
 
 from dataclasses import field, dataclass

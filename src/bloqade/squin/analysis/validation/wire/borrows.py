@@ -1,11 +1,8 @@
 """Check that every borrowed register element returns to its register.
 
-A register value holds a set of unavailable slots. `Borrow` adds its index, and
-`Release` removes it. `Take` and `TakeSlice` add a moved element or range, and
-`Put` and `PutSlice` remove it. A slot must not be unavailable twice. A register
-must hold no unavailable slot when a statement frees it, yields it, returns it or
-passes it to a call. `DiscardRegister` permits moved slots and rejects borrowed
-slots. `BorrowCheck` is a kirin forward analysis over the lattice `Slots`.
+`BorrowCheck` tracks the borrowed and moved slots of each register in `Slots`. A
+register must hold no borrowed slot when a statement frees, yields, returns or passes
+it.
 """
 
 from __future__ import annotations
@@ -43,9 +40,8 @@ class Moved:
 class Slots(BoundedLattice["Slots"]):
     """Hold what the borrow check knows about the unavailable slots of one register.
 
-    `UnknownSlots` is the top, where the check cannot name the slots.
-    `UnreachableSlots` is the bottom, for a register that no execution reaches.
-    `KnownSlots` lists the slots.
+    The forms are the top `UnknownSlots`, the bottom `UnreachableSlots` and
+    `KnownSlots`.
     """
 
     @classmethod

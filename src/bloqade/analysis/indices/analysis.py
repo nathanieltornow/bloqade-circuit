@@ -28,9 +28,8 @@ def own_index(value: ir.SSAValue) -> KnownIndex:
 class IndexAnalysis(Forward[Index]):
     """Compute the affine index of every value of one function.
 
-    A constant gives a constant index, and `+`, `-` and a product with a constant
-    combine indices. The variable of an `scf.For` loop gives its `Iter` symbol. Any
-    other value, such as a parameter or `i * i`, is a symbol of its own.
+    Constants, `+`, `-`, products with a constant and loop variables give affine
+    indices. Any other value, such as a parameter or `i * i`, is a symbol of its own.
     """
 
     keys = (KEY,)

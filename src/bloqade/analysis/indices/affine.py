@@ -1,12 +1,7 @@
 """Represent the affine indices that name an item of a register.
 
-An affine index has the form `c + a1*s1 + ... + an*sn`. Each `c` and `a` is a
-constant integer. Each symbol `s` is an integer parameter or the iteration variable
-of an `scf.For` loop. Indices such as `i`, `i + 1`, `2*i + 1` and `n - 1 - i` are
-affine, and `i * i` and `i % 2` are not.
-
-The converter and wire validators use these expressions to compare register indices.
-Two affine indices are equal when their difference is zero.
+An affine index such as `2*i + 1` has constant coefficients over integer symbols. Two
+affine indices are equal when their difference is zero.
 """
 
 from __future__ import annotations
@@ -26,8 +21,7 @@ from bloqade.constants import constant_int
 class Iter:
     """The iteration variable of the `scf.For` loop `stmt`.
 
-    If the loop runs over a constant range, `values` holds that range. Otherwise
-    `values` is None. Two `Iter` symbols of one statement name the same iteration.
+    `values` holds the constant range of the loop, or None if the range is not constant.
     """
 
     stmt: ir.Statement
@@ -75,10 +69,8 @@ def _values(sym: Sym) -> range | None:
 class Affine:
     """The index `offset + sum(a * s for s, a in terms)`.
 
-    `terms` holds each symbol at most once, and no symbol has the coefficient 0. So
-    two equal indices have equal fields. Use `Affine.make` to build an index from a
-    mapping that may hold zero coefficients. `offset` is the constant term, and
-    `constant` is the value of an index without symbols.
+    `terms` holds each symbol at most once with a nonzero coefficient, so equal indices
+    have equal fields. `Affine.make` drops zero coefficients.
     """
 
     offset: int = 0
@@ -168,14 +160,9 @@ def lift(value: Affine | int) -> Affine:
 def same(a: Affine, b: Affine) -> bool | None:
     """Check whether the indices `a` and `b` name the same item.
 
-    The result is True if `a` equals `b` for every value of the symbols. The result
-    is False if `a` equals `b` for no value of the symbols. Otherwise the result is
-    None.
-
-    A symbol has one value in both indices, so the check compares the indices at
-    one moment. A shared `Iter` symbol stands for one iteration in both indices.
-    So `same(i, i + 1)` is False, although item `i + 1` of iteration 0 is item `i`
-    of iteration 1.
+    The result is True if they are equal for every value of the symbols, False if they
+    are equal for none, and None otherwise. A shared `Iter` symbol stands for one
+    iteration, so `same(i, i + 1)` is False.
     """
     d = a - b
     if d.constant is not None:
@@ -217,9 +204,7 @@ class Slice:
     def then(self, inner: Slice) -> Slice | None:
         """Return the slice `inner` of this slice as a slice of the register.
 
-        If `inner` runs to the end of this slice, its length comes from the length
-        of this slice. For example, `(0:1:%i)[1:]` has the length `%i - 1`. The
-        result is None if that length is not affine or can be negative.
+        The result is None if the length of `inner` is not affine or can be negative.
         """
         length = inner.length
         if length is None and self.length is not None:
@@ -238,11 +223,8 @@ def python_slice(
 ) -> Slice | None:
     """Return the slice that `x[start:stop:step]` reads from a list of `size` items.
 
-    Python counts a negative bound from the end and clamps a bound past the end. If
-    every bound and `size` are constants, the result follows those rules exactly.
-    A bound with symbols must lie in the range 0 to `size`, or the result is None.
-    If `size` is None, a stop gives None, because Python clamps it to the size.
-    The result is also None for a zero step, and for a negative step with symbols.
+    Constant bounds follow Python's rules exactly. The result is None if a symbolic
+    bound can lie outside 0 to `size`, if a stop has no known size, or if the step is 0.
     """
     if step == 0:
         return None

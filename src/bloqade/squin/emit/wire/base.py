@@ -166,9 +166,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
     def emitted_symbol(self, frame: WireFrame, symbol: Sym) -> ir.SSAValue:
         """Return the emitted integer of a source index symbol.
 
-        An `Iter` symbol names the index of a source loop, whose meaning is the
-        emitted loop index. An `Emitted` symbol is already an emitted integer. Any
-        other symbol is a source integer.
+        An `Iter` symbol maps to the emitted loop index, and an `Emitted` symbol is
+        already emitted.
         """
         if isinstance(symbol, Emitted):
             return symbol.value
@@ -198,9 +197,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
     def acquire(self, frame: WireFrame, location: Location) -> ir.SSAValue:
         """Return the wire value of a location for an operation that consumes it.
 
-        A whole allocation leaves `latest` until `restore` puts its next value back.
-        An element emits a `Borrow`, and `restore` emits the matching `Release`.
-        Each of them emits the element index again from `location.index`.
+        A whole allocation leaves `latest` until `restore`. An element emits a `Borrow`,
+        and `restore` emits the matching `Release`.
         """
         value = frame.latest.get(location.root)
         if value is None:
@@ -233,12 +231,9 @@ class EmitWire(EmitABC[WireFrame, Value]):
     def length_value(self, frame: WireFrame, value: Value) -> ir.SSAValue:
         """Return the length of a source container as an emitted integer.
 
-        A constant length and a slice length become an index expression. The slice
-        helpers in `bloqade.analysis.indices` build only slice lengths that are never
-        negative. Any other register length emits `Length`, which also gives the next
-        register value. A symbolic root length such as `n` in `qalloc(n)` can be
-        negative, and the register then holds no qubits, so only `Length` gives its
-        real length.
+        A constant or slice length becomes an index expression. Any other register
+        length emits `Length`, because a symbolic length such as `n` in `qalloc(n)` can
+        be negative.
         """
         if isinstance(value, tuple):
             return self.emit_affine(frame, Affine(len(value)))

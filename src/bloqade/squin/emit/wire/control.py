@@ -1,12 +1,7 @@
 """Emit structured regions once with explicit incoming and outgoing wire values.
 
-A loop or a branch carries every wire of the enclosing frame. Its body gets one
-block argument or one copied entry for each allocation root in `latest`. The body
-yields the next wire of each root in the same order, after its classical results.
-
-Each body frame copies the library call site of its enclosing frame. It starts with
-its owner as the current statement, so that operations and errors before the first
-body statement take the owner's source location.
+A loop or a branch carries the latest wire of every root of the enclosing frame. A body
+yields its classical results and then those wires in the same order.
 """
 
 from collections.abc import Sequence
