@@ -12,6 +12,7 @@ from test_roundtrip import trip, simulate
 
 from bloqade import squin
 from bloqade.types import Qubit
+from bloqade.squin.wire import stmts
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
 
@@ -121,3 +122,18 @@ def test_a_row_of_a_nested_row_selects_its_flat_qubit():
         return squin.broadcast.measure(qs)
 
     assert simulate(run_flat) == [0, 0, 0, 0, 0, 1, 0, 0]
+
+
+@squin.kernel
+def runtime_index(k: int):
+    qs = squin.qalloc(3)
+    squin.x(qs[k])
+    return squin.broadcast.measure(qs)
+
+
+def test_a_runtime_index_reaches_the_wire_borrow_unchanged():
+    wired = SquinToWire().emit(runtime_index)
+    borrow = next(node for node in wired.code.walk() if isinstance(node, stmts.Borrow))
+    parameter = wired.callable_region.blocks[0].args[1]
+    assert borrow.index is parameter
+    assert simulate(trip(runtime_index), 2) == [0, 0, 1]

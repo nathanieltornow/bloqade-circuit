@@ -145,7 +145,12 @@ def element_item(
     index: ir.SSAValue,
     stmt: py.GetItem,
 ) -> Value:
-    """Return the meaning of `container[index]` for the emitted integer `index`."""
+    """Return the meaning of `container[index]` for the emitted integer `index`.
+
+    A wire index lies between 0 and the length minus 1. `select` counts a negative
+    constant index from the end. A runtime index must already be a valid wire
+    index, so a negative runtime index is invalid input, unlike in Python.
+    """
     position = emit.index(stmt.index)
     if isinstance(container, Location):
         return select(container, position, stmt)

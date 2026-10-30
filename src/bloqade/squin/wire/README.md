@@ -85,6 +85,13 @@ A loop symbol carries the constant range of its source loop.
 `emit_affine` maps each symbol to its emitted value through the frame entries.
 An integer that is not affine, such as `i * i`, is one opaque symbol.
 Two uses of one opaque symbol name the same element, and two different opaque symbols never provably differ.
+
+A wire register index lies between 0 and the register length minus 1, as in Jeff.
+The converter counts a negative constant index from the end and checks constant bounds.
+A runtime index must be a valid wire index, which is a precondition of the source program.
+The converter emits a runtime index unchanged and checks neither its sign nor its upper bound.
+So `qs[k]` with a runtime `k` of -1 is invalid input, although Python would read it as the last element.
+Jeff has no assertion statement, so the converter cannot emit a runtime check that Jeff keeps.
 Runtime register lengths come from wire `Length` operations.
 Nested register parameters use one flat register with their rows in source order.
 
