@@ -16,7 +16,7 @@ from bloqade.squin.wire.traits import Threads
 from bloqade.squin.wire.ownership import KEY as OWNED
 
 from .calls import CachedCalls
-from .origins import Handle, Origin, element_of, fresh_origin
+from .origins import Origin, TupleOrigin, HandleOrigin, element_of, fresh_origin
 
 KEY = "squin.wire.positions"
 
@@ -51,7 +51,7 @@ class PositionAnalysis(CachedCalls[Origin]):
         self, node: ir.Statement, actual: Origin, expected: Origin, message: str
     ) -> None:
         """Require both values to identify the same allocation and element."""
-        if not isinstance(actual.data, Handle) or actual != expected:
+        if not isinstance(actual, HandleOrigin) or actual != expected:
             self.error(node, message)
 
     @property
@@ -91,7 +91,7 @@ class PositionAnalysis(CachedCalls[Origin]):
             node
         )
         parameters = [arg for arg in region.blocks[0].args[1:] if is_linear(arg.type)]
-        outputs = result.data if isinstance(result.data, tuple) else (result,)
+        outputs = result.fields if isinstance(result, TupleOrigin) else (result,)
         end = region.blocks[0].last_stmt
         assert end is not None
         if len(outputs) < len(parameters):
@@ -194,7 +194,7 @@ class Tuples(interp.MethodTable):
         self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: py.tuple.New
     ) -> tuple[Origin, ...]:
         """Collect the origins of the tuple's fields in declaration order."""
-        return (Origin(frame.get_values(stmt.args)),)
+        return (TupleOrigin(frame.get_values(stmt.args)),)
 
 
 @py.indexing.dialect.register(key=KEY)
@@ -206,14 +206,14 @@ class Indexing(interp.MethodTable):
         self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: py.GetItem
     ) -> tuple[Origin, ...]:
         """Select a tuple field when its index is a known integer."""
-        obj = frame.get(stmt.obj).data
+        obj = frame.get(stmt.obj)
         index = check.indices.of(stmt.index).constant
         if (
-            isinstance(obj, tuple)
+            isinstance(obj, TupleOrigin)
             and index is not None
-            and -len(obj) <= index < len(obj)
+            and -len(obj.fields) <= index < len(obj.fields)
         ):
-            return (obj[index],)
+            return (obj.fields[index],)
         return (Origin.top(),)
 
 
