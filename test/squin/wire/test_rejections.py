@@ -1,6 +1,6 @@
 """Check that unsupported references cause conversion to fail without changing the source."""
 
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from kirin.dialects import ilist
@@ -9,6 +9,7 @@ from kirin.ir.exception import ValidationErrorGroup
 from bloqade import squin
 from bloqade.types import Qubit, MeasurementResult
 from bloqade.squin.wire import WireConversionError
+from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 
 
@@ -52,3 +53,50 @@ def test_unresolved_references_fail_conversion_and_preserve_the_source(
         SquinToWire().emit(kernel)
     assert kernel.code.print_str() == before
     assert opaque_partner.code.print_str() == helper_before
+
+
+@squin.kernel
+def past_the_end():
+    qs = squin.qalloc(3)
+    squin.x(qs[3])
+
+
+@squin.kernel
+def rows_of_unknown_count(grid: ilist.IList[ilist.IList[Qubit, Literal[2]], Any]):
+    squin.broadcast.x(grid[0:1][0])
+
+
+@squin.kernel
+def rows_of_unknown_width(grid: ilist.IList[ilist.IList[Qubit, Any], Literal[2]]):
+    squin.x(grid[0][0])
+
+
+@squin.kernel
+def sliced_by_a_parameter(qs: ilist.IList[Qubit, Any], s: slice):
+    squin.x(qs[s][0])
+
+
+@squin.kernel
+def mixed_broadcast(qs: ilist.IList[Qubit, Any]):
+    q = squin.qubit.new()
+    squin.broadcast.cx(qs, [q])
+
+
+@pytest.mark.parametrize(
+    "kernel, reason",
+    [
+        (past_the_end, "no place in this allocation"),
+        (rows_of_unknown_count, "nested register slice requires constant bounds"),
+        (rows_of_unknown_width, "requires known inner dimensions"),
+        (sliced_by_a_parameter, "slice bounds have no supported source form"),
+        (mixed_broadcast, "cannot index a heterogeneous quantum container"),
+    ],
+    ids=lambda x: x if isinstance(x, str) else x.sym_name,
+)
+def test_an_unresolved_register_form_names_its_reason(kernel, reason):
+    with pytest.raises(WireConversionError, match=reason):
+        SquinToWire().emit(kernel)
+
+
+def test_the_conversion_target_lists_the_reference_operations_of_a_source():
+    assert {"getitem", "invoke"} <= set(ConversionTarget.check(past_the_end))

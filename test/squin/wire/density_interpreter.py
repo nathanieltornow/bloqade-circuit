@@ -73,6 +73,13 @@ class DensityInterpreter(interp.Interpreter):
         self.rho = result
 
 
+@dataclass(frozen=True)
+class Hole:
+    """Mark the register slot that lent `qubit` to an outstanding borrow."""
+
+    qubit: int
+
+
 @stmts.dialect.register(key="wire.test.density")
 class WireSemantics(interp.MethodTable):
     """Implement the tested wire operations with independent matrix definitions."""
@@ -93,13 +100,21 @@ class WireSemantics(interp.MethodTable):
     @interp.impl(stmts.Borrow)
     def borrow(self, sim, frame, stmt):
         register, index = frame.get_values(stmt.args)
-        return register, register[index]
+        assert (
+            0 <= index < len(register)
+        ), f"borrow index {index} is outside the register"
+        qubit = register[index]
+        assert not isinstance(qubit, Hole), f"slot {index} is already borrowed"
+        return register[:index] + (Hole(qubit),) + register[index + 1 :], qubit
 
     @interp.impl(stmts.Release)
     def release(self, sim, frame, stmt):
         register, index, qubit = frame.get_values(stmt.args)
-        assert register[index] == qubit
-        return (register,)
+        assert (
+            0 <= index < len(register)
+        ), f"release index {index} is outside the register"
+        assert register[index] == Hole(qubit), f"slot {index} did not lend this qubit"
+        return (register[:index] + (qubit,) + register[index + 1 :],)
 
     @interp.impl(stmts.Length)
     def length(self, sim, frame, stmt):

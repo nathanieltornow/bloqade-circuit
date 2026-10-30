@@ -124,3 +124,16 @@ def test_pauli_channel_measurement_probabilities_match_the_channel_definition():
         _, result = simulator.run(method)
         distribution[int(result)] = simulator.probability
     assert distribution == pytest.approx({0: 0.7, 1: 0.3})
+
+
+@squin.kernel
+def flip_at(k: int):
+    qs = squin.qalloc(3)
+    squin.x(qs[k])
+
+
+@pytest.mark.parametrize("k", [-1, 3])
+def test_the_wire_interpreter_rejects_an_index_outside_the_register(k):
+    method = SquinToWire().emit(flip_at)
+    with pytest.raises(AssertionError, match="outside the register"):
+        DensityInterpreter(method.dialects).run(method, k)
