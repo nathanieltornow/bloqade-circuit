@@ -140,7 +140,8 @@ Returning a fresh allocation consumes that value before cleanup.
 A known-length broadcast emits one scalar gate per operand group.
 An unknown-length broadcast emits a loop with the same scalar gate handler.
 Measurement loops carry their classical result lists alongside the wire registers.
-Equal-length broadcasts check their operand lengths before entering the loop.
+Equal-length broadcasts check their operand lengths with an assertion before entering the loop.
+Jeff has no assertion statement, so `WireToJeff` rejects such a broadcast and names the missing assertion.
 Operations with shortest-list semantics use the minimum length.
 
 ## Loops and branches
@@ -241,7 +242,10 @@ Two calls to the same allocating function create distinct identities.
 Quantum call operands must name separate scalar qubits or whole registers.
 Calls with register slices, quantum containers or overlapping quantum arguments fail.
 A returned borrowed alias also fails.
-`UnsupportedCallContract` identifies unsupported argument and result layouts.
+A register argument must provably have the shape that its parameter type declares.
+A qubit parameter takes one qubit, and a register parameter takes a whole register.
+`UnsupportedCallContract` identifies unsupported argument layouts, argument shapes and result ownership.
+A function that returns one qubit twice fails with a plain `WireConversionError`.
 `UnresolvedArgumentSeparation` identifies quantum operands whose separation lacks proof.
 Callee validation failures propagate directly to the caller.
 Each conversion error retains its operation, source location and failed condition.
@@ -260,6 +264,11 @@ Repeated public conversions clear the contract cache.
 | `PositionValidation` | Releases, loop yields, branches and call return suffixes continue the correct qubits in order. |
 
 Linearity and borrow validation use Kirin forward analyses with operation method tables.
+The use of a value must sit in the region that defines it.
+A branch may use an outer wire, once on each path, because `scf.IfElse` carries no block arguments.
+A loop body must take every wire as a block argument, because the body runs more than once.
+A register must hold no borrowed element when a statement frees, yields, returns or passes it.
+`Take` and `TakeSlice` move elements out, and `DiscardRegister` accepts moved elements but no borrowed ones.
 Borrow validation tracks outstanding register indices in its `Slots` lattice.
 Its `Moved` entries name elements that `Take` or `TakeSlice` moved out of a register.
 
