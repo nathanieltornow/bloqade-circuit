@@ -29,7 +29,17 @@ from bloqade.squin.wire.signature import (
 )
 
 from .base import EmitWire, WireFrame
-from .values import Grid, Rows, View, Qubit, Value, Element, Register, contains_location
+from .values import (
+    Grid,
+    Rows,
+    View,
+    Qubit,
+    Value,
+    Element,
+    Register,
+    is_qubit,
+    contains_location,
+)
 
 LIBRARIES = ("bloqade.squin.stdlib", "bloqade.qubit.stdlib", "bloqade.native.stdlib")
 """The modules whose kernels wrap source quantum operations for users."""
@@ -294,6 +304,7 @@ def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
     contract = emit.contracts[stmt.callee]
     arguments = frame.get_values(stmt.inputs)
     borrowed = borrowed_operands(arguments, layout, stmt)
+    check_shapes(callee, layout, borrowed, stmt)
     location_at = dict(zip(layout.borrowed_positions, borrowed, strict=True))
     inputs = tuple(
         (
@@ -336,6 +347,50 @@ def borrowed_operands(
                     "Call arguments require separate quantum locations.", stmt
                 )
     return cast(list[Qubit | Register | Grid | Element], operands)
+
+
+def check_shapes(
+    callee: func.Function,
+    layout: Layout,
+    borrowed: list[Qubit | Register | Grid | Element],
+    stmt: func.Invoke,
+) -> None:
+    """Require each quantum argument to have the shape that its parameter declares.
+
+    The callee reads register dimensions from its parameter types, so an argument
+    of another shape would make it address the wrong qubits.
+    """
+    parameters = callee.body.blocks[0].args[1:]
+    for position, operand in zip(layout.borrowed_positions, borrowed, strict=True):
+        kind = parameters[position].type
+        if quantum_type(kind) == WireType:
+            if not is_qubit(operand):
+                raise UnsupportedCallContract(
+                    "A qubit parameter requires one qubit argument.", stmt
+                )
+            continue
+        if not isinstance(operand, (Register, Grid)):
+            raise UnsupportedCallContract(
+                "A register parameter requires a whole register argument.", stmt
+            )
+        expected = register_shape(kind)
+        actual = shape_of(operand)
+        if len(expected) != len(actual) or any(
+            size is not None and size != given for size, given in zip(expected, actual)
+        ):
+            raise UnsupportedCallContract(
+                "A register argument must provably have the shape that its"
+                " parameter declares.",
+                stmt,
+            )
+
+
+def shape_of(register: Register | Grid) -> tuple[int | None, ...]:
+    """Return the known dimensions of a whole register, outermost first."""
+    outer = None if register.length is None else register.length.constant
+    if isinstance(register, Grid):
+        return (outer, *register.row_shape)
+    return (outer,)
 
 
 def call_results(

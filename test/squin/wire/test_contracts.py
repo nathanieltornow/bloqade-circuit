@@ -1,8 +1,10 @@
 """Check conversion boundaries, failure isolation and bounded rewrite execution."""
 
+from typing import Literal
+
 import pytest
 from kirin import ir
-from kirin.dialects import py
+from kirin.dialects import py, ilist
 from test_roundtrip import calls, simulate, maybe_the_same_qubit
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 from kirin.ir.exception import ValidationErrorGroup
@@ -10,6 +12,7 @@ from kirin.ir.exception import ValidationErrorGroup
 from bloqade import squin
 from bloqade.types import Qubit
 from bloqade.squin.wire import WireConversionError
+from bloqade.squin.wire.errors import UnsupportedCallContract
 from bloqade.squin.rewrite.wire.driver import CheckedFixpoint
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
@@ -110,3 +113,49 @@ def test_validation_interprets_each_callee_once(monkeypatch):
     WireValidation().check(wired)
     assert len(visits) == 3 * 5
     assert set(visits.values()) == {1}
+
+
+@squin.kernel
+def three(qs: ilist.IList[Qubit, Literal[3]]):
+    squin.broadcast.x(qs)
+
+
+@squin.kernel
+def runtime_register(n: int):
+    qs = squin.qalloc(n)
+    three(qs)
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def four_qubits():
+    qs = squin.qalloc(4)
+    three(qs)
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def three_qubits():
+    qs = squin.qalloc(3)
+    three(qs)
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def wide(grid: ilist.IList[ilist.IList[Qubit, Literal[2]], Literal[3]]):
+    squin.x(grid[1][0])
+
+
+@squin.kernel
+def tall(grid: ilist.IList[ilist.IList[Qubit, Literal[3]], Literal[2]]):
+    wide(grid)  # pyright: ignore[reportArgumentType]
+
+
+@pytest.mark.parametrize("kernel", [runtime_register, four_qubits, tall])
+def test_a_register_argument_must_have_the_declared_shape(kernel):
+    with pytest.raises(UnsupportedCallContract, match="shape that its parameter"):
+        SquinToWire().emit(kernel)
+
+
+def test_a_register_argument_of_the_declared_length_converts():
+    assert simulate(WireToSquin().emit(SquinToWire().emit(three_qubits))) == [1, 1, 1]
