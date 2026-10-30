@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from kirin import ir, interp
+from kirin.dialects.py.assertion import Assert
 from kirin.validation import ValidationSuite
 from kirin.ir.exception import ValidationErrorGroup
 
@@ -32,6 +33,11 @@ class WireToJeff:
                     f"Jeff requires complete wire conversion: {', '.join(sorted(set(illegal)))}."
                 )
             WireValidation().check(callee)
+            if any(isinstance(node, Assert) for node in callee.code.walk()):
+                raise WireConversionError(
+                    f"Jeff has no assertion statement, so '{callee.sym_name}' cannot"
+                    " check that its runtime broadcast operands have equal lengths."
+                )
         emitter = WireEmitter(method.dialects)
         try:
             emitter.run(method.code)

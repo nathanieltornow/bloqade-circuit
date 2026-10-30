@@ -13,6 +13,7 @@ from bloqade.types import Qubit, MeasurementResult
 from bloqade.jeff.types import WireType, QuregType
 from bloqade.jeff.dialects import stmts
 from bloqade.jeff.squin2jeff import SquinToJeff, SquinToJeffValidation
+from bloqade.squin.wire.errors import WireConversionError
 
 from .build import validate
 from .helpers import roundtrips
@@ -659,3 +660,13 @@ def test_a_list_of_bits_is_a_bit_array_that_a_loop_carries():
     assert created.result in loop_stmt.state
     (read,) = statements(mt, stmts.IntArrayGet)
     assert read.bitwidth == 1
+
+
+@squin.kernel
+def paired(a: ilist.IList[Qubit, Any], b: ilist.IList[Qubit, Any]) -> None:
+    squin.broadcast.cx(a, b)
+
+
+def test_a_runtime_broadcast_check_names_the_missing_jeff_assertion():
+    with pytest.raises(WireConversionError, match="Jeff has no assertion statement"):
+        SquinToJeff().emit(paired)
