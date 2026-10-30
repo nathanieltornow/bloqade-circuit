@@ -80,14 +80,17 @@ class Functions(interp.MethodTable):
             add_parameter(frame, source, kind)
             for source, kind in zip(block.args[1:], input_types, strict=True)
         ]
-        # `None` is the meaning of the source self argument.
-        returned = emit.frame_call(frame, stmt, None, *parameter_values)
+        returned = emit.frame_call(frame, stmt, self_arg, *parameter_values)
         end = block.last_stmt
         assert isinstance(end, func.Return)
 
         ordinary = ordinary_values(emit, frame, stmt, end, layout, returned)
         source_parameters = frozenset(block.args[1:])
-        lengths = tuple(static_length(value, source_parameters) for value in ordinary)
+        lengths = {
+            i: length
+            for i, value in enumerate(ordinary)
+            if (length := static_length(value, source_parameters)) is not None
+        }
         borrowed = [
             cast(Qubit | Register | Grid, parameter_values[i])
             for i in layout.borrowed_positions
@@ -286,6 +289,7 @@ def run_library(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
         body.output = frame.output
         body.latest = frame.latest
         body.local_roots = frame.local_roots
+        # A wrapper body never uses its self argument, which has no emitted form.
         result = emit.frame_call(
             body, stmt.callee.code, None, *frame.get_values(stmt.inputs)
         )
@@ -426,10 +430,11 @@ def ordinary_meanings(
         if parameter.type.is_subseteq(types.Int)
     }
     meanings: list[Value] = []
-    for result, length in zip(results, contract.lengths, strict=True):
+    for i, result in enumerate(results):
         if result.type not in (WireType, RegisterType):
             meanings.append(result)
             continue
+        length = contract.register_lengths.get(i)
         if length is not None:
             length = clamped(length.substitute(mapping))
         meanings.append(

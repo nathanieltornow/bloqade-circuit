@@ -6,6 +6,7 @@ from .affine import (
     Iter as Iter,
     Slice as Slice,
     Affine as Affine,
+    Emitted as Emitted,
     lift as lift,
     same as same,
     loop_values as loop_values,

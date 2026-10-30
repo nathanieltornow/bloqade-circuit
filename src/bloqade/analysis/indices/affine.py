@@ -41,13 +41,24 @@ class Iter:
         return f"%{self.stmt.name}"
 
 
+@dataclass(frozen=True)
+class Emitted:
+    """A symbol for an integer of the output IR that has no source value."""
+
+    value: ir.SSAValue
+
+    def __repr__(self) -> str:
+        """Return the name of the emitted value, such as `%i`."""
+        return _name(self.value)
+
+
 def _name(value: ir.SSAValue) -> str:
     """Return the printed name of an SSA value, such as `%n`."""
     return f"%{value.name}" if value.name else "%?"
 
 
-Sym = ir.SSAValue | Iter
-"""Name an integer value or the iteration variable of a loop."""
+Sym = ir.SSAValue | Iter | Emitted
+"""Name an integer value, the iteration variable of a loop or an emitted integer."""
 
 
 def _symbol_name(sym: Sym) -> str:

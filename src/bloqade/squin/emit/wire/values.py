@@ -88,7 +88,11 @@ Part: TypeAlias = Register | View | Grid | Rows
 """Name a location that holds indexed items."""
 
 Value: TypeAlias = ir.SSAValue | Location | tuple["Value", ...] | None
-"""Represent an emitted classical value, a quantum location, or a source container."""
+"""Represent an emitted classical value, a quantum location, or a source container.
+
+None is the meaning of the self argument of a library wrapper, which has no
+emitted form.
+"""
 
 
 def is_qubit(value: Value) -> bool:

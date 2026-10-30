@@ -9,7 +9,7 @@ the source call `answer = f(q, n)` becomes `answer, q_next = f_wire(q_current, n
 from __future__ import annotations
 
 from dataclasses import dataclass
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from kirin import ir, types
 from kirin.dialects import func
@@ -93,10 +93,10 @@ class Contract:
 
     method: ir.Method
     """The converted wire function."""
-    lengths: tuple[Affine | None, ...]
-    """The static length of each ordinary result, in result order.
+    register_lengths: Mapping[int, Affine]
+    """The static length of each fresh register result, by ordinary result position.
 
-    A length is an affine expression in the integer parameters of `method`. The
-    caller replaces those parameters with its own arguments. An entry is None for
-    a classical result and for a register of unknown length.
+    A length is affine in the integer parameters of the source function, and the
+    caller substitutes its arguments. A register without an entry has an unknown
+    length.
     """

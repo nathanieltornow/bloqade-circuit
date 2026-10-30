@@ -13,7 +13,7 @@ from kirin.dialects.py.len import Len
 
 from bloqade.types import holds_qubits
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Sym, Iter, Affine, Indices
+from bloqade.analysis.indices import Sym, Iter, Affine, Emitted, Indices
 from bloqade.squin.wire.group import reference_kernel
 from bloqade.squin.wire.twins import TWINS
 from bloqade.squin.wire.types import WireType
@@ -120,12 +120,15 @@ class EmitWire(EmitABC[WireFrame, Value]):
     def classical_value(self, frame: WireFrame, value: Value) -> ir.SSAValue:
         """Return the emitted classical value of a meaning.
 
-        A tuple of meanings becomes an emitted tuple, and None becomes a `None` constant.
+        A tuple of meanings becomes an emitted tuple.
         """
         if isinstance(value, ir.SSAValue):
             return value
         if value is None:
-            return frame.push(func.ConstantNone()).results[0]
+            raise WireConversionError(
+                "A library wrapper cannot use its own function object.",
+                frame.current_stmt,
+            )
         if isinstance(value, tuple):
             return frame.push(
                 py.tuple.New(tuple(self.classical_value(frame, x) for x in value))
@@ -164,8 +167,11 @@ class EmitWire(EmitABC[WireFrame, Value]):
         """Return the emitted integer of a source index symbol.
 
         An `Iter` symbol names the index of a source loop, whose meaning is the
-        emitted loop index. Any other symbol is a source integer.
+        emitted loop index. An `Emitted` symbol is already an emitted integer. Any
+        other symbol is a source integer.
         """
+        if isinstance(symbol, Emitted):
+            return symbol.value
         if isinstance(symbol, Iter):
             source: ir.SSAValue = symbol.stmt.regions[0].blocks[0].args[0]
         else:
