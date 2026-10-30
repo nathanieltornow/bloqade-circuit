@@ -13,7 +13,7 @@ from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.traits import Twin
 
 from .base import EmitWire, WireFrame
-from .values import View, Whole, Location, select, is_qubit
+from .values import View, Location, Register, select, is_qubit
 from .control import resume, carry_wires, yield_wires
 
 
@@ -83,9 +83,7 @@ def broadcast_loop(emit: EmitWire, frame: WireFrame, source: ir.Statement, opera
     """Emit indexed gate applications and collect classical results in loop-carried lists."""
     trait = TWINS[type(source)].get_present_trait(Twin)
     if not all(
-        isinstance(value, (Whole, View))
-        and not is_qubit(value)
-        or isinstance(value, tuple)
+        isinstance(value, (Register, View)) or isinstance(value, tuple)
         for value in operands
     ):
         raise WireConversionError(
@@ -97,7 +95,7 @@ def broadcast_loop(emit: EmitWire, frame: WireFrame, source: ir.Statement, opera
             "A runtime broadcast cannot index a heterogeneous quantum container.",
             source,
         )
-    registers = cast(tuple[Whole | View, ...], operands)
+    registers = cast(tuple[Register | View, ...], operands)
     size = broadcast_length(frame, source, lengths, trait.truncate)
     elements = tuple(
         getattr(source, source_field).type.vars[0] for source_field, _ in trait.results

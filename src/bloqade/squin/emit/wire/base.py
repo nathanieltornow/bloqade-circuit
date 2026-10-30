@@ -19,7 +19,16 @@ from bloqade.squin.wire.types import WireType
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.signature import Contract
 
-from .values import View, Value, Whole, Element, Location, select, contains_location
+from .values import (
+    View,
+    Qubit,
+    Value,
+    Element,
+    Location,
+    Register,
+    select,
+    contains_location,
+)
 
 StatementT = TypeVar("StatementT", bound=ir.Statement)
 
@@ -175,7 +184,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
                     "A whole-register operation requires a whole allocation.",
                     frame.current_stmt,
                 )
-            case Whole(root):
+            case Qubit(root) | Register(root):
                 del frame.latest[root]
                 return value
 
@@ -202,15 +211,15 @@ class EmitWire(EmitABC[WireFrame, Value]):
         match value:
             case View(length=length) if length is not None:
                 return self.emit_affine(frame, length)
-            case View() | Element():
+            case View() | Element() | Qubit():
                 raise WireConversionError(
                     "The register view requires a known length.", frame.current_stmt
                 )
-            case Whole(length=length) if (
+            case Register(length=length) if (
                 length is not None and length.constant is not None
             ):
                 return self.emit_affine(frame, length)
-            case Whole(root):
+            case Register(root):
                 node = frame.push(stmts.Length(frame.latest[root]))
                 frame.latest[root] = node.results[0]
                 return node.results[1]
@@ -220,7 +229,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
         """Return the item meanings of a container whose length is known, or None."""
         if isinstance(value, tuple):
             return value
-        if isinstance(value, (Whole, View)) and value.length is not None:
+        if isinstance(value, (Register, View)) and value.length is not None:
             if (count := value.length.constant) is not None:
                 return tuple(select(value, Affine(i), at) for i in range(max(0, count)))
         return None

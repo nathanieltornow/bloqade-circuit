@@ -1,45 +1,50 @@
 """Describe source qubit references as immutable locations in emitted allocations.
 
-A location has one of three forms. For example, after `qs = squin.qalloc(4)` and
-`q = squin.qubit.new()`:
+A location has one of four forms. For example, after `q = squin.qubit.new()` and
+`qs = squin.qalloc(4)`:
 
-- `q` and `qs` are `Whole(q_root)` and `Whole(qs_root, Affine(4))`.
+- `q` is `Qubit(q_root)`.
+- `qs` is `Register(qs_root, Affine(4))`.
 - `qs[1]` is `Element(qs_root, Affine(1))`.
 - `qs[1:3]` is `View(qs_root, Slice(Affine(1), 1, Affine(2)))`.
 
-A nested register has one flat root register that holds its rows in order. A row
-of a nested register is a `View` that keeps the inner dimensions in `shape`.
+A nested register has one flat root register that holds its rows in order. The
+items of a nested register or of a nested row are rows, and `inner` holds the
+dimensions of one row. For a `grid` of 3 rows of 2 qubits, `grid` is
+`Register(grid_root, Affine(3), (2,))`, and `grid[1]` is the flat view
+`View(grid_root, Slice(Affine(2), 1, Affine(2)))`.
 """
 
 from __future__ import annotations
 
+import math
 from typing import TypeAlias
 from dataclasses import dataclass
 
 from kirin import ir
 
 from bloqade.analysis.indices import Slice, Affine, python_slice
-from bloqade.squin.wire.types import WireType
 from bloqade.squin.wire.errors import WireConversionError
 
 
 @dataclass(frozen=True)
-class Whole:
-    """Name one whole allocation, which is a standalone qubit or a whole register."""
+class Qubit:
+    """Name one standalone qubit allocation."""
 
     root: ir.SSAValue
-    """The emitted allocation, which is an allocation result, a call result or a parameter."""
-    size: Affine | None = None
-    """The number of qubits in a register, or None for a qubit or an unknown size."""
-    shape: tuple[int | None, ...] = ()
-    """The dimensions of a nested register, outermost first."""
+    """The emitted qubit, which is an allocation result, a call result or a parameter."""
 
-    @property
-    def length(self) -> Affine | None:
-        """Return the number of rows of a nested register, or else its number of qubits."""
-        if len(self.shape) > 1:
-            return None if self.shape[0] is None else Affine(self.shape[0])
-        return self.size
+
+@dataclass(frozen=True)
+class Register:
+    """Name one whole register allocation."""
+
+    root: ir.SSAValue
+    """The emitted register, which is an allocation result, a call result or a parameter."""
+    length: Affine | None = None
+    """The number of items, or None if it is unknown."""
+    inner: tuple[int | None, ...] = ()
+    """The dimensions of one item, or empty if each item is one qubit."""
 
 
 @dataclass(frozen=True)
@@ -59,19 +64,17 @@ class View:
     root: ir.SSAValue
     """The emitted register."""
     span: Slice
-    """The elements of the flat root register that the view holds."""
-    shape: tuple[int | None, ...] = ()
-    """The inner dimensions of a nested row, outermost first, or empty for a slice."""
+    """The flat root index where each item starts, with one entry per item."""
+    inner: tuple[int, ...] = ()
+    """The dimensions of one item, or empty if each item is one qubit."""
 
     @property
     def length(self) -> Affine | None:
-        """Return the number of rows of a nested row, or else its number of qubits."""
-        if len(self.shape) > 1:
-            return None if self.shape[0] is None else Affine(self.shape[0])
+        """Return the number of items, or None if it is unknown."""
         return self.span.length
 
 
-Location: TypeAlias = Whole | Element | View
+Location: TypeAlias = Qubit | Register | Element | View
 """Name the allocation, the qubit or the register part that a source reference holds."""
 
 Value: TypeAlias = ir.SSAValue | Location | tuple["Value", ...] | None
@@ -80,39 +83,38 @@ Value: TypeAlias = ir.SSAValue | Location | tuple["Value", ...] | None
 
 def is_qubit(value: Value) -> bool:
     """Check whether `value` names exactly one qubit."""
-    if isinstance(value, Element):
-        return True
-    return isinstance(value, Whole) and value.root.type == WireType
+    return isinstance(value, (Qubit, Element))
 
 
 def contains_location(value: Value) -> bool:
     """Identify source containers that still contain quantum locations."""
-    return isinstance(value, (Whole, Element, View)) or (
+    return isinstance(value, (Qubit, Register, Element, View)) or (
         isinstance(value, tuple) and any(contains_location(item) for item in value)
     )
 
 
-def register_part(location: Location, at: ir.Statement) -> Whole | View:
-    """Return `location` if it names more than one qubit, or raise an error."""
-    if isinstance(location, Element) or is_qubit(location):
+def register_part(location: Location, at: ir.Statement) -> Register | View:
+    """Return `location` if it holds items, or raise an error for one qubit."""
+    if not isinstance(location, (Register, View)):
         raise WireConversionError("A scalar qubit has no indexed elements.", at)
-    assert isinstance(location, (Whole, View))
     return location
 
 
 def select(location: Location, index: Affine, at: ir.Statement) -> Location:
     """Return the location of item `index` of a register or a register part.
 
-    An item of a nested register is a row. An item of a flat register is one qubit.
+    An item of a nested register or row is a row. Any other item is one qubit.
     """
     part = register_part(location, at)
     index = checked_index(part, index, at)
-    if len(part.shape) > 1:
-        return row(part, index, at)
-    return Element(part.root, root_index(part, index))
+    start = item_start(part, index, at)
+    if not part.inner:
+        return Element(part.root, start)
+    rows = known_dimensions(part, at)
+    return View(part.root, Slice(start, math.prod(rows[1:]), Affine(rows[0])), rows[1:])
 
 
-def checked_index(part: Whole | View, index: Affine, at: ir.Statement) -> Affine:
+def checked_index(part: Register | View, index: Affine, at: ir.Statement) -> Affine:
     """Count a negative constant index from the end and check a constant index.
 
     The bounds check runs only if both the index and the length are known.
@@ -134,22 +136,21 @@ def checked_index(part: Whole | View, index: Affine, at: ir.Statement) -> Affine
     return index
 
 
-def row(part: Whole | View, index: Affine, at: ir.Statement) -> View:
-    """Return the location of row `index` of a nested register."""
-    width = 1
-    for dimension in part.shape[1:]:
-        if dimension is None:
-            raise WireConversionError(
-                "Nested register indexing requires known inner dimensions.", at
-            )
-        width *= dimension
-    start = root_index(part, index.scale(width))
-    return View(part.root, Slice(start, 1, Affine(width)), part.shape[1:])
+def known_dimensions(part: Register | View, at: ir.Statement) -> tuple[int, ...]:
+    """Return the dimensions of one item of `part`, which must all be known."""
+    dimensions = tuple(size for size in part.inner if size is not None)
+    if len(dimensions) != len(part.inner):
+        raise WireConversionError(
+            "Nested register indexing requires known inner dimensions.", at
+        )
+    return dimensions
 
 
-def root_index(part: Whole | View, index: Affine) -> Affine:
-    """Return the index in the flat root register of item `index` of `part`."""
-    return part.span.item(index) if isinstance(part, View) else index
+def item_start(part: Register | View, index: Affine, at: ir.Statement) -> Affine:
+    """Return the flat root index where item `index` of `part` starts."""
+    if isinstance(part, View):
+        return part.span.item(index)
+    return index.scale(math.prod(known_dimensions(part, at)))
 
 
 def select_slice(
@@ -161,12 +162,12 @@ def select_slice(
 ) -> Value:
     """Return the meaning of a register or a register part sliced with `start:stop:step`.
 
-    A flat register gives one `View`. A nested register gives a tuple with the
+    A slice of qubits gives one `View`. A slice of rows gives a tuple with the
     location of each selected row.
     """
     part = register_part(location, at)
     count = None if part.length is None else part.length.constant
-    if len(part.shape) > 1:
+    if part.inner:
         if count is None or any(
             x is not None and x.constant is None for x in (start, stop)
         ):

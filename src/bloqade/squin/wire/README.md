@@ -57,17 +57,20 @@ An SSA value names one compiler value with one definition.
 | `output` | Hold the emitted block and its arguments. |
 | `site` | Name the user call that runs a library wrapper. It is None in user code. |
 
-A `Location` is one of three forms, and each form has a `root`.
+A `Location` is one of four forms, and each form has a `root`.
 The root is the emitted allocation result, a call result or a function parameter.
 
 | Form | Meaning | Example |
 | --- | --- | --- |
-| `Whole(root, size, shape)` | A standalone qubit or a whole register. | `q`, `qs` |
+| `Qubit(root)` | A standalone qubit. | `q` |
+| `Register(root, length, inner)` | A whole register. | `qs`, `grid` |
 | `Element(root, index)` | One qubit of a register. | `qs[i]` |
-| `View(root, span, shape)` | A slice of a register or a row of a nested register. | `qs[1:3]`, `grid[1]` |
+| `View(root, span, inner)` | A slice of a register or a row of a nested register. | `qs[1:3]`, `grid[1]` |
 
-`select` and `select_slice` in `values.py` derive an `Element` or a `View` from a `Whole` or a `View`.
-The `length` property of a `Whole` or a `View` gives its number of items.
+`length` counts items, and `inner` holds the dimensions of one item.
+An item is one qubit when `inner` is empty, and a row otherwise.
+The `span` of a view gives the flat root index where each item starts.
+`select` and `select_slice` in `values.py` derive an `Element` or a `View` from a `Register` or a `View`.
 The frame keeps locations stable while `latest` changes after each quantum operation.
 An alias copies its operand's frame entry.
 An index selects from that entry using the already emitted integer operand.

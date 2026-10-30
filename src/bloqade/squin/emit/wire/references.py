@@ -12,7 +12,7 @@ from bloqade.analysis.indices import Affine
 from bloqade.squin.wire.errors import WireConversionError
 
 from .base import EmitWire, WireFrame, index_of
-from .values import Value, Whole, Location, select, select_slice, contains_location
+from .values import Qubit, Value, Location, select, select_slice, contains_location
 
 
 @qubit.dialect.register(key="emit.squin_wire")
@@ -25,7 +25,7 @@ class Qubits(interp.MethodTable):
         root = frame.push(stmts.Alloc()).results[0]
         frame.latest[root] = root
         frame.local_roots.append(root)
-        return (Whole(root),)
+        return (Qubit(root),)
 
 
 @py.assign.dialect.register(key="emit.squin_wire")

@@ -1,6 +1,5 @@
 """Emit function boundaries, library wrappers and calls in the wire convention."""
 
-import math
 from typing import cast
 from dataclasses import replace
 
@@ -30,7 +29,7 @@ from bloqade.squin.wire.signature import (
 )
 
 from .base import EmitWire, WireFrame, index_of
-from .values import View, Value, Whole, Element, contains_location
+from .values import View, Qubit, Value, Element, Register, contains_location
 
 LIBRARIES = ("bloqade.squin.stdlib", "bloqade.qubit.stdlib", "bloqade.native.stdlib")
 """The modules whose kernels wrap source quantum operations for users."""
@@ -77,7 +76,10 @@ class Functions(interp.MethodTable):
         ordinary = ordinary_values(emit, frame, stmt, end, layout, returned)
         wire_parameters = frozenset(frame.output.args[1:])
         lengths = tuple(static_length(value, wire_parameters) for value in ordinary)
-        borrowed = [cast(Whole, parameter_values[i]) for i in layout.borrowed_positions]
+        borrowed = [
+            cast(Qubit | Register, parameter_values[i])
+            for i in layout.borrowed_positions
+        ]
         results = (
             *ordinary_wires(emit, frame, end, ordinary, borrowed),
             *(emit.acquire(frame, location) for location in borrowed),
@@ -123,18 +125,18 @@ def add_parameter(
 ) -> Value:
     """Add the wire parameter of a source parameter and return the source meaning.
 
-    A quantum parameter becomes the location of a whole allocation. Its length is
-    known if the source type gives every register dimension.
+    A quantum parameter becomes a whole `Qubit` or `Register`. A register knows its
+    dimensions if the source type gives them.
     """
     argument = frame.output.args.append_from(kind, source.name)
     if quantum_type(source.type) is None:
         return argument
-    shape = register_shape(source.type)
-    length = None
-    if shape and all(size is not None for size in shape):
-        length = Affine(math.prod(cast(tuple[int, ...], shape)))
     frame.latest[argument] = argument
-    return Whole(argument, length, shape)
+    if kind == WireType:
+        return Qubit(argument)
+    shape = register_shape(source.type)
+    outer = shape[0] if shape else None
+    return Register(argument, None if outer is None else Affine(outer), shape[1:])
 
 
 def ordinary_values(
@@ -162,9 +164,9 @@ def ordinary_values(
 
 def static_length(value: Value, parameters: frozenset[ir.SSAValue]) -> Affine | None:
     """Return the length of a returned register if the parameters determine it."""
-    if isinstance(value, Whole) and value.size is not None:
-        if value.size.symbols() <= parameters:
-            return value.size
+    if isinstance(value, Register) and value.length is not None and not value.inner:
+        if value.length.symbols() <= parameters:
+            return value.length
     return None
 
 
@@ -173,7 +175,7 @@ def ordinary_wires(
     frame: WireFrame,
     end: func.Return,
     ordinary: tuple[Value, ...],
-    borrowed: list[Whole],
+    borrowed: list[Qubit | Register],
 ) -> list[ir.SSAValue]:
     """Return the wire value of each ordinary result of a function.
 
@@ -188,7 +190,7 @@ def ordinary_wires(
             raise UnsupportedCallContract(
                 "A quantum return must own one whole allocation.", end
             )
-        if isinstance(value, Whole):
+        if isinstance(value, (Qubit, Register)):
             if value.root in borrowed_roots:
                 raise UnsupportedCallContract(
                     "A function cannot return a borrowed quantum parameter as an ordinary output.",
@@ -241,7 +243,7 @@ def wire_method(
     )
 
 
-def allocate_register(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Whole:
+def allocate_register(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Register:
     """Emit the register of a `qalloc` call and return its location.
 
     The library body of `qalloc` builds the register with a list map, which the
@@ -251,8 +253,8 @@ def allocate_register(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Wh
     root = frame.push(stmts.AllocRegister(size)).results[0]
     frame.latest[root] = root
     frame.local_roots.append(root)
-    shape = register_shape(stmt.result.type)
-    return Whole(root, clamped(index_of(size)), shape)
+    inner = register_shape(stmt.result.type)[1:]
+    return Register(root, clamped(index_of(size)), inner)
 
 
 def run_library(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
@@ -307,23 +309,25 @@ def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
 
 def borrowed_operands(
     arguments: tuple[Value, ...], layout: Layout, stmt: func.Invoke
-) -> list[Whole | Element]:
+) -> list[Qubit | Register | Element]:
     """Return the borrowed call operands after checking that they are separate qubits.
 
     Each operand must be one qubit or one whole register.
     """
     operands = [arguments[i] for i in layout.borrowed_positions]
     for i, operand in enumerate(operands):
-        if not isinstance(operand, (Whole, Element)):
+        if not isinstance(operand, (Qubit, Register, Element)):
             raise UnsupportedCallContract(
                 "A call requires whole registers or individual qubits.", stmt
             )
         for other in operands[i + 1 :]:
-            if not isinstance(other, (Whole, Element)) or not separated(operand, other):
+            if not isinstance(other, (Qubit, Register, Element)) or not separated(
+                operand, other
+            ):
                 raise UnresolvedArgumentSeparation(
                     "Call arguments require separate quantum locations.", stmt
                 )
-    return cast(list[Whole | Element], operands)
+    return cast(list[Qubit | Register | Element], operands)
 
 
 def call_results(
@@ -364,7 +368,9 @@ def ordinary_meanings(
             continue
         if length is not None:
             length = clamped(length.substitute(mapping))
-        meanings.append(Whole(result, length))
+        meanings.append(
+            Qubit(result) if result.type == WireType else Register(result, length)
+        )
         frame.latest[result] = result
         frame.local_roots.append(result)
     return tuple(meanings)
@@ -390,7 +396,9 @@ def unpack(
     return tuple(fields)
 
 
-def separated(left: Whole | Element, right: Whole | Element) -> bool:
+def separated(
+    left: Qubit | Register | Element, right: Qubit | Register | Element
+) -> bool:
     """Check whether two call operands name provably separate quantum locations."""
     if left.root is not right.root:
         return True
