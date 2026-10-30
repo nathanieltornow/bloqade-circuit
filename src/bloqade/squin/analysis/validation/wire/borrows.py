@@ -20,7 +20,7 @@ from kirin.validation import ValidationPass
 from kirin.analysis.forward import ForwardFrame
 
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Slice, Affine, IndexAnalysis, same
+from bloqade.analysis.indices import Sym, Slice, Affine, IndexAnalysis, same
 from bloqade.squin.wire.types import (
     RegisterType,
 )
@@ -136,11 +136,18 @@ class BorrowCheck(CachedCalls[Slots]):
     keys = (BORROW_KEY, "absint")
     lattice = Slots
     indices: IndexAnalysis = field(default_factory=IndexAnalysis, init=False)
+    lengths: dict[Sym, Affine] = field(default_factory=dict, init=False)
+    """The known register length that each `Length` result reads."""
 
     def initialize(self) -> "BorrowCheck":
         """Clear index facts before checking a method that can have changed."""
         self.indices = IndexAnalysis()
+        self.lengths = {}
         return super().initialize()
+
+    def index(self, value: ir.SSAValue) -> Affine:
+        """Return the affine index of `value`, with known register lengths filled in."""
+        return self.indices.of(value).substitute(self.lengths)
 
     def method_self(self, method: ir.Method) -> Slots:
         """Return the top element for the method object."""
@@ -198,9 +205,9 @@ class _Borrows(interp.MethodTable):
         """Add the borrowed index or the moved element to the unavailable slots."""
         state = frame.get(stmt.register)
         key = (
-            Moved(check.indices.of(stmt.index))
+            Moved(check.index(stmt.index))
             if isinstance(stmt, stmts.Take)
-            else check.indices.of(stmt.index)
+            else check.index(stmt.index)
         )
         if not isinstance(state, KnownSlots):
             return (state, state)
@@ -230,9 +237,9 @@ class _Borrows(interp.MethodTable):
         """Remove the slot that matches the released index or the filled element."""
         state = frame.get(stmt.register)
         key = (
-            Moved(check.indices.of(stmt.index))
+            Moved(check.index(stmt.index))
             if isinstance(stmt, stmts.Put)
-            else check.indices.of(stmt.index)
+            else check.index(stmt.index)
         )
         if isinstance(state, UnreachableSlots):
             return (state,)
@@ -246,7 +253,7 @@ class _Borrows(interp.MethodTable):
         self, check: BorrowCheck, frame: ForwardFrame[Slots], stmt: stmts.AllocRegister
     ) -> tuple[Slots, ...]:
         """Record the length of a newly allocated complete register."""
-        return (KnownSlots(length=check.indices.of(stmt.size)),)
+        return (KnownSlots(length=check.index(stmt.size)),)
 
     @interp.impl(stmts.PackRegister)
     def pack(
@@ -262,7 +269,7 @@ class _Borrows(interp.MethodTable):
         """Keep the unavailable slots and record a known length for slice checks."""
         state = frame.get(stmt.register)
         if (length := known_length(state)) is not None:
-            check.indices.cache[stmt.result] = length
+            check.lengths[stmt.result] = length
         return state, Slots.top()
 
     @interp.impl(stmts.SplitRegister)
@@ -271,7 +278,7 @@ class _Borrows(interp.MethodTable):
     ) -> tuple[Slots, ...]:
         """Require a complete register and compute the two result lengths."""
         check.expect_empty(frame, stmt, stmt.args)
-        at = check.indices.of(stmt.index)
+        at = check.index(stmt.index)
         length = known_length(frame.get(stmt.register))
         rest = None if length is None else length - at
         return KnownSlots(length=at), KnownSlots(length=rest)
@@ -292,8 +299,8 @@ class _Borrows(interp.MethodTable):
     ) -> tuple[Slots, ...]:
         """Record a moved contiguous range and the extracted register's length."""
         state = frame.get(stmt.register)
-        size = check.indices.of(stmt.length)
-        key = Moved(Slice(check.indices.of(stmt.start), 1, size))
+        size = check.index(stmt.length)
+        key = Moved(Slice(check.index(stmt.start), 1, size))
         if isinstance(state, UnreachableSlots):
             return state, state
         if not isinstance(state, KnownSlots):
@@ -313,7 +320,7 @@ class _Borrows(interp.MethodTable):
         check.expect_empty(frame, stmt, (stmt.slice_register,))
         state = frame.get(stmt.register)
         size = known_length(frame.get(stmt.slice_register))
-        key = Moved(Slice(check.indices.of(stmt.start), 1, size))
+        key = Moved(Slice(check.index(stmt.start), 1, size))
         if isinstance(state, UnreachableSlots):
             return (state,)
         if (

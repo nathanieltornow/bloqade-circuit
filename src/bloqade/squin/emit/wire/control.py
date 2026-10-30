@@ -103,15 +103,6 @@ class ControlFlow(interp.MethodTable):
                 )
             roots = carry_wires(frame, body)
             incoming = tuple(frame.latest[root] for root in roots)
-            # The loop must own the body block before the body is emitted. Only then
-            # does `IndexAnalysis` give the loop index its range, which symbolic slices
-            # such as `qs[0:i]` need. `scf.For` reads its result count from the body
-            # terminator, so a temporary yield stands in for the final yield.
-            provisional = body.push(scf.Yield(*body.output.args[1:]))
-            made = scf.For(iterable, ir.Region(body.output), *classical, *incoming)
-            made.attributes.update(stmt.attributes)
-            frame.push(made)
-            provisional.delete()
             yielded = emit.frame_call_region(body, stmt, stmt.body, index, *arguments)
             if not isinstance(yielded, tuple) or len(yielded) != len(initial):
                 raise WireConversionError(
@@ -128,10 +119,10 @@ class ControlFlow(interp.MethodTable):
                 emit.classical_value(body, yielded[i]) for i in classical_indices
             )
             yield_wires(body, roots, outputs)
-        end = body.output.last_stmt
-        assert isinstance(end, scf.Yield)
-        for result, value in zip(made.results, end.values, strict=True):
-            result.type = value.type
+        # `scf.For` reads its result types from the final yield of the body.
+        made = scf.For(iterable, ir.Region(body.output), *classical, *incoming)
+        made.attributes.update(stmt.attributes)
+        frame.push(made)
         return resume(frame, made, roots, initial, classical_indices)
 
     @interp.impl(scf.IfElse)

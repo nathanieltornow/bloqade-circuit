@@ -107,11 +107,11 @@ def broadcast_loop(
     empty = tuple(
         frame.push(ilist.New((), elem_type=element)).results[0] for element in elements
     )
-    # This loop uses its index as a plain symbol, so it attaches after its body.
-    # The source loop in `control.py` attaches first, so that its index gets a range.
     with emit.new_frame(source, has_parent_access=True) as body:
         body.site, body.current_stmt = frame.site, source
         index = body.output.args.append_from(types.Int, "i")
+        # The loop index has no source value, so it is its own index symbol.
+        body.set(index, index)
         lists = tuple(
             body.output.args.append_from(ilist.IListType[element, types.Int])
             for element in elements

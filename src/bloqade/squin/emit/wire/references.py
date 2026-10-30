@@ -11,7 +11,7 @@ from bloqade.squin.wire import stmts
 from bloqade.analysis.indices import Affine
 from bloqade.squin.wire.errors import WireConversionError
 
-from .base import EmitWire, WireFrame, index_of
+from .base import EmitWire, WireFrame
 from .values import Qubit, Value, Location, select, select_slice, contains_location
 
 
@@ -113,7 +113,7 @@ class Indexing(interp.MethodTable):
         if isinstance(container, ir.SSAValue):
             return emit.eval_fallback(frame, stmt)
         if index.type.is_subseteq(types.Slice):
-            return (slice_item(container, index, stmt),)
+            return (slice_item(emit, container, stmt),)
         return (element_item(emit, frame, container, index, stmt),)
 
 
@@ -124,9 +124,9 @@ UNRESOLVED_ITEM = (
 """The error message for an index that names no known item of a container."""
 
 
-def slice_item(container: Value, index: ir.SSAValue, stmt: py.GetItem) -> Value:
-    """Return the meaning of `container[index]` for the emitted slice `index`."""
-    start, stop, step = slice_bounds(index, stmt)
+def slice_item(emit: EmitWire, container: Value, stmt: py.GetItem) -> Value:
+    """Return the meaning of `container[index]` for a source slice `index`."""
+    start, stop, step = slice_bounds(emit, stmt.index, stmt)
     if isinstance(container, Location):
         return select_slice(container, start, stop, step, stmt)
     if isinstance(container, tuple) and all(
@@ -146,7 +146,7 @@ def element_item(
     stmt: py.GetItem,
 ) -> Value:
     """Return the meaning of `container[index]` for the emitted integer `index`."""
-    position = index_of(index)
+    position = emit.index(stmt.index)
     if isinstance(container, Location):
         return select(container, position, stmt)
     if isinstance(container, tuple):
@@ -160,13 +160,13 @@ def element_item(
 
 
 def slice_bounds(
-    value: ir.SSAValue, at: ir.Statement
+    emit: EmitWire, value: ir.SSAValue, at: ir.Statement
 ) -> tuple[Affine | None, Affine | None, int]:
-    """Read supported slice bounds from an emitted slice operation."""
+    """Read the bounds of the source slice `value` as affine indices."""
     node = value.owner
     if isinstance(node, py_slice.Slice):
-        start = None if is_none(node.start) else index_of(node.start)
-        stop = None if is_none(node.stop) else index_of(node.stop)
+        start = None if is_none(node.start) else emit.index(node.start)
+        stop = None if is_none(node.stop) else emit.index(node.stop)
         step = 1 if is_none(node.step) else constant_int(node.step)
     elif isinstance(node, py.Constant) and isinstance(
         sliced := node.value.unwrap(), slice

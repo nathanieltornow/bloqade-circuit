@@ -73,13 +73,18 @@ The `span` of a view gives the flat root index where each item starts.
 `select` and `select_slice` in `values.py` derive an `Element` or a `View` from a `Register` or a `View`.
 The frame keeps locations stable while `latest` changes after each quantum operation.
 An alias copies its operand's frame entry.
-An index selects from that entry using the already emitted integer operand.
+An index selects from that entry using the affine index of the source integer operand.
 A source list holds its element locations in a tuple.
 
 Emission uses these frame entries for all source reference resolution.
 Each reference operation reads the meanings of its operands from that frame.
-The shared `analysis.indices` utility reads integer arithmetic from emitted values.
+`IndexAnalysis` in `bloqade.analysis.indices` reads integer arithmetic from definitions.
 It represents expressions such as `i + 1` and proves simple index separation.
+The emitter analyzes source integers, so the symbols of an index are source values.
+A loop symbol carries the constant range of its source loop.
+`emit_affine` maps each symbol to its emitted value through the frame entries.
+An integer that is not affine, such as `i * i`, is one opaque symbol.
+Two uses of one opaque symbol name the same element, and two different opaque symbols never provably differ.
 Runtime register lengths come from wire `Length` operations.
 Nested register parameters use one flat register with their rows in source order.
 
@@ -134,8 +139,7 @@ Operations with shortest-list semantics use the minimum length.
 
 The loop handler reads every available outer allocation from `latest`.
 It creates output parameters for classical loop state and those allocations.
-It attaches the output loop before interpreting its body so integer indices can use the loop's range.
-A temporary yield gives the loop its result count until the body supplies the final yield.
+It builds the output loop after its body, and `scf.For` reads its result types from the final yield.
 The body's frame starts with those parameters as its latest wire values.
 Kirin interprets the source body once.
 The handler then emits a yield with the final classical values and latest wires.

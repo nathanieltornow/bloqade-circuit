@@ -6,14 +6,14 @@ from collections.abc import Mapping
 
 from kirin import ir, types
 from kirin.emit import EmitABC, EmitFrame
-from kirin.dialects import py, scf, func
+from kirin.dialects import py, func
 from kirin.emit.abc import EmitTable
 from kirin.worklist import WorkList
 from kirin.dialects.py.len import Len
 
 from bloqade.types import holds_qubits
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Iter, Affine, IndexAnalysis
+from bloqade.analysis.indices import Sym, Iter, Affine, IndexAnalysis
 from bloqade.squin.wire.twins import TWINS
 from bloqade.squin.wire.types import WireType
 from bloqade.squin.wire.errors import WireConversionError
@@ -86,6 +86,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
     source: ir.Method
     contracts: Mapping[ir.Method, Contract]
     result: Contract | None = field(default=None, init=False)
+    indices: IndexAnalysis = field(default_factory=IndexAnalysis, init=False)
+    """The affine index of each source integer, whose symbols are source values."""
     """The contract of the emitted method, which the function handler sets at its end."""
 
     def initialize_frame(
@@ -99,6 +101,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
         self.callables = EmitTable(prefix="")
         self.callable_to_emit = WorkList()
         self.result = None
+        self.indices = IndexAnalysis()
 
     def emit_method(self) -> Contract:
         """Emit one source method using the supplied checked callee contracts.
@@ -134,15 +137,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
             return frame.push(py.Constant(value)).results[0]
         total = None
         for symbol, coefficient in expression.terms:
-            # An `Iter` symbol names the index of an emitted loop. The loop emitter
-            # attaches each loop before its body, so the body block already exists.
-            if isinstance(symbol, Iter) and isinstance(symbol.stmt, scf.For):
-                symbol = symbol.stmt.body.blocks[0].args[0]
-            if not isinstance(symbol, ir.SSAValue):
-                raise WireConversionError(
-                    "An emitted index requires output SSA symbols.", frame.current_stmt
-                )
-            term = symbol
+            term = self.emitted_symbol(frame, symbol)
             if coefficient != 1:
                 constant = frame.push(py.Constant(coefficient)).results[0]
                 term = self._int_op(frame, py.Mult, term, constant)
@@ -152,6 +147,31 @@ class EmitWire(EmitABC[WireFrame, Value]):
             constant = frame.push(py.Constant(expression.offset)).results[0]
             total = self._int_op(frame, py.Add, total, constant)
         return total
+
+    def index(self, value: ir.SSAValue) -> Affine:
+        """Return the affine index of the source integer `value`.
+
+        The symbols of the index are source values. `emit_affine` maps them to
+        emitted values through the frame.
+        """
+        return self.indices.of(value)
+
+    def emitted_symbol(self, frame: WireFrame, symbol: Sym) -> ir.SSAValue:
+        """Return the emitted integer of a source index symbol.
+
+        An `Iter` symbol names the index of a source loop, whose meaning is the
+        emitted loop index. Any other symbol is a source integer.
+        """
+        if isinstance(symbol, Iter):
+            source: ir.SSAValue = symbol.stmt.regions[0].blocks[0].args[0]
+        else:
+            source = symbol
+        value = frame.get(source)
+        if not isinstance(value, ir.SSAValue):
+            raise WireConversionError(
+                "An emitted index requires output SSA symbols.", frame.current_stmt
+            )
+        return value
 
     def _int_op(
         self,
@@ -259,8 +279,3 @@ class EmitWire(EmitABC[WireFrame, Value]):
         )
         frame.push(made)
         return tuple(made.results)
-
-
-def index_of(value: ir.SSAValue) -> Affine:
-    """Read integer arithmetic from emitted SSA definitions."""
-    return IndexAnalysis().of(value)

@@ -28,7 +28,7 @@ from bloqade.squin.wire.signature import (
     output_types,
 )
 
-from .base import EmitWire, WireFrame, index_of
+from .base import EmitWire, WireFrame
 from .values import View, Qubit, Value, Element, Register, contains_location
 
 LIBRARIES = ("bloqade.squin.stdlib", "bloqade.qubit.stdlib", "bloqade.native.stdlib")
@@ -76,8 +76,8 @@ class Functions(interp.MethodTable):
         assert isinstance(end, func.Return)
 
         ordinary = ordinary_values(emit, frame, stmt, end, layout, returned)
-        wire_parameters = frozenset(frame.output.args[1:])
-        lengths = tuple(static_length(value, wire_parameters) for value in ordinary)
+        source_parameters = frozenset(block.args[1:])
+        lengths = tuple(static_length(value, source_parameters) for value in ordinary)
         borrowed = [
             cast(Qubit | Register, parameter_values[i])
             for i in layout.borrowed_positions
@@ -258,7 +258,7 @@ def allocate_register(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Re
     frame.latest[root] = root
     frame.local_roots.append(root)
     inner = register_shape(stmt.result.type)[1:]
-    return Register(root, clamped(index_of(size)), inner)
+    return Register(root, clamped(emit.index(stmt.inputs[0])), inner)
 
 
 def run_library(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
@@ -267,7 +267,9 @@ def run_library(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
     The wrapper emits into the caller's block and continues the caller's wires.
     Its allocations live until the caller's region ends.
     """
-    with emit.new_frame(stmt.callee.code) as body:
+    # The body reads the caller's integers when it emits an index of a caller
+    # location, so the frame has parent access.
+    with emit.new_frame(stmt.callee.code, has_parent_access=True) as body:
         body.site = frame.site or stmt
         body.output = frame.output
         body.latest = frame.latest
@@ -305,7 +307,7 @@ def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
     count = layout.ordinary_count
     for location, result in zip(borrowed, outputs[count:], strict=True):
         emit.restore(frame, location, result)
-    ordinary = ordinary_meanings(emit, frame, contract, arguments, outputs[:count])
+    ordinary = ordinary_meanings(emit, frame, callee, contract, stmt, outputs[:count])
     if layout.packed:
         return ordinary
     return ordinary[0] if ordinary else frame.push(func.ConstantNone()).results[0]
@@ -349,20 +351,21 @@ def call_results(
 def ordinary_meanings(
     emit: EmitWire,
     frame: WireFrame,
+    callee: func.Function,
     contract: Contract,
-    arguments: tuple[Value, ...],
+    stmt: func.Invoke,
     results: tuple[ir.SSAValue, ...],
 ) -> tuple[Value, ...]:
     """Return the source meaning of each ordinary result of a call.
 
     A classical result means itself. A quantum result becomes a new allocation in
     the caller. A fresh register gets the static length from the contract, with the
-    caller's integer arguments in place of the callee's parameters.
+    caller's integer arguments in place of the callee's source parameters.
     """
-    parameters = contract.method.callable_region.blocks[0].args[1:]
+    parameters = callee.body.blocks[0].args[1:]
     mapping: dict[Sym, Affine] = {
-        parameter: index_of(emit.classical_value(frame, argument))
-        for parameter, argument in zip(parameters, arguments, strict=True)
+        parameter: emit.index(argument)
+        for parameter, argument in zip(parameters, stmt.inputs, strict=True)
         if parameter.type.is_subseteq(types.Int)
     }
     meanings: list[Value] = []
