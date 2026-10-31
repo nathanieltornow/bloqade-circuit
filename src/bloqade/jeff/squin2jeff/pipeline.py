@@ -3,9 +3,9 @@
 from dataclasses import dataclass
 
 from kirin import ir, interp
-from kirin.dialects.py.assertion import Assert
 from kirin.validation import ValidationSuite
 from kirin.ir.exception import ValidationErrorGroup
+from kirin.dialects.py.assertion import Assert
 
 from bloqade.squin.wire.group import kernel as wire_kernel, reference_kernel
 from bloqade.squin.wire.errors import WireConversionError
