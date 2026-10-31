@@ -3,7 +3,7 @@
 from dataclasses import field, dataclass
 
 from kirin import ir, types
-from kirin.passes import Fold
+from kirin.passes import Fold, TypeInfer
 from kirin.rewrite import Walk
 from kirin.dialects import func
 from kirin.validation import ValidationSuite
@@ -21,7 +21,6 @@ from bloqade.jeff.analysis.validation import (
 )
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.rewrite.wire.driver import CheckedFixpoint
-from bloqade.squin.passes.wire_typeinfer import infer_wire_types
 from bloqade.squin.analysis.validation.wire import WireValidation
 
 from .jeff2py import JeffToPy
@@ -94,7 +93,7 @@ class JeffToWire:
             copy.dialects = wire_kernel
             Fold(copy.dialects).unsafe_run(copy)
             CheckedFixpoint(Walk(PickIfElse())).rewrite(copy.code)
-            infer_wire_types(copy)
+            TypeInfer(copy.dialects)(copy)
             assert isinstance(copy.code, func.Function)
             returned = copy.callable_region.blocks[0].last_stmt
             assert isinstance(returned, func.Return)

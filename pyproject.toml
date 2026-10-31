@@ -14,7 +14,7 @@ dependencies = [
     "bloqade-decoders>=0.4.0,<0.7.0",
     "numpy>=1.22.0",
     "scipy>=1.13.1",
-    "kirin-toolchain~=0.22.11",
+    "kirin-toolchain>=0.22.11",
     "rich>=13.9.4",
     "pydantic>=1.3.0",
     "pandas>=2.2.3",
@@ -147,3 +147,13 @@ testpaths = "test/"
 filterwarnings = [
     "ignore:In cirq 1.6 the default value of `use_repetition_ids`:FutureWarning:cirq.circuits.circuit_operation",
 ]
+
+[tool.uv]
+# Every bloqade-decoders release requires kirin-toolchain below 0.23, and the pinned
+# Kirin build reports 0.23.0-dev. Drop this override together with the pin below.
+override-dependencies = ["kirin-toolchain>=0.22.11"]
+
+[tool.uv.sources]
+# Kirin PR #810 on top of Kirin main: it carries #760, which keeps constant facts of
+# loop bodies, and the slice type rule. Drop this pin once a Kirin release has both.
+kirin-toolchain = { git = "https://github.com/nathanieltornow/kirin", rev = "9b8d2663a4196a8263b36113574f284781c072b4" }

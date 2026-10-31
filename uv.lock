@@ -13,6 +13,9 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux'",
 ]
 
+[manifest]
+overrides = [{ name = "kirin-toolchain", git = "https://github.com/nathanieltornow/kirin?rev=9b8d2663a4196a8263b36113574f284781c072b4" }]
+
 [[package]]
 name = "annotated-types"
 version = "0.7.0"
@@ -211,7 +214,7 @@ requires-dist = [
     { name = "cirq-core", extras = ["contrib"], marker = "extra == 'cirq'", specifier = ">=1.4.1" },
     { name = "ffmpeg", marker = "extra == 'vis'", specifier = ">=1.4" },
     { name = "jeff-format", marker = "extra == 'jeff'", specifier = ">=0.1.0,<0.2" },
-    { name = "kirin-toolchain", specifier = "~=0.22.11" },
+    { name = "kirin-toolchain", git = "https://github.com/nathanieltornow/kirin?rev=9b8d2663a4196a8263b36113574f284781c072b4" },
     { name = "lark", marker = "extra == 'qasm2'", specifier = ">=1.2.2" },
     { name = "lark", marker = "extra == 'qasm3'", specifier = ">=1.2.2" },
     { name = "matplotlib", marker = "extra == 'vis'", specifier = ">=3.9.2" },
@@ -1256,17 +1259,13 @@ wheels = [
 
 [[package]]
 name = "kirin-toolchain"
-version = "0.22.21"
-source = { registry = "https://pypi.org/simple" }
+version = "0.23.0.dev0"
+source = { git = "https://github.com/nathanieltornow/kirin?rev=9b8d2663a4196a8263b36113574f284781c072b4#9b8d2663a4196a8263b36113574f284781c072b4" }
 dependencies = [
     { name = "beartype" },
     { name = "pymongo" },
     { name = "rich" },
     { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/8d/19/549c28a4a841fac2ae082882576f709bf9472eb835b672f0c6849732c566/kirin_toolchain-0.22.21.tar.gz", hash = "sha256:6dc786414f5bc2e23b789fc680a813c490b49e1752236711d5eef978fd311aa1", size = 1287780, upload-time = "2026-10-14T23:40:35.719Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8c/7d/ebdceb3778787d3c9fda6fbe5d5e2fc8e112ddf9dc60f3e87a478184fbda/kirin_toolchain-0.22.21-py3-none-any.whl", hash = "sha256:0d43302628fcf12b2b0eb94b22ab5ff013b24b00af1503deca061d7ee80e8ffb", size = 273988, upload-time = "2026-10-14T23:40:33.98Z" },
 ]
 
 [[package]]

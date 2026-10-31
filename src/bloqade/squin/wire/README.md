@@ -37,8 +37,6 @@ The frame's `site` names the user call, and every operation of the wrapper takes
 Validation, type inference and cleanup perform their own traversals.
 Wire validation interprets each callee once for each list of abstract arguments.
 The full pipeline has no established linear-time bound.
-The pinned Kirin version requires literal tuple-index hints during output type inference.
-`src/bloqade/squin/passes/wire_typeinfer.py` adds those hints.
 
 Unsupported source forms stop conversion at their first failed condition.
 The converter preserves the source and propagates the error without retrying through inlining.

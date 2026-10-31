@@ -3,11 +3,10 @@
 from dataclasses import dataclass
 
 from kirin import ir
-from kirin.passes import Fold
+from kirin.passes import Fold, TypeInfer
 from kirin.rewrite import Walk
 
 from bloqade.squin.rewrite.wire.driver import reachable
-from bloqade.squin.passes.wire_typeinfer import infer_wire_types
 from bloqade.squin.rewrite.wire.from_wire import FromWire, BoundListLengths
 from bloqade.squin.analysis.validation.wire import WireValidation
 
@@ -23,7 +22,7 @@ class WireToSquin:
         rewrite = FromWire()
         result = rewrite.convert(method)
         for copy in reversed(list(rewrite.kernels.values())):
-            infer_wire_types(copy)
+            TypeInfer(copy.dialects)(copy)
             Fold(copy.dialects).unsafe_run(copy)
             Walk(BoundListLengths()).rewrite(copy.code)
             copy.verify()

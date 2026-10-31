@@ -3,6 +3,7 @@
 from dataclasses import field, dataclass
 
 from kirin import ir
+from kirin.passes import TypeInfer
 from kirin.rewrite import Walk, Fixpoint, DeadCodeElimination
 
 from bloqade.squin.emit.wire import EmitWire
@@ -11,7 +12,6 @@ from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.signature import Contract
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.emit.wire.functions import is_library
-from bloqade.squin.passes.wire_typeinfer import infer_wire_types
 from bloqade.squin.analysis.validation.wire import WireValidation
 from bloqade.squin.analysis.validation.wire.stages import SourceValidation, check_stage
 
@@ -60,13 +60,12 @@ class SquinToWire:
     def emit_and_validate(self, source: ir.Method) -> Contract:
         """Emit the wire method of `source`, infer its types and validate it.
 
-        Dead-code removal runs before type inference, because unused slice
-        operations otherwise give wrong inferred types.
+        Dead-code removal runs first, so type inference reads only live operations.
         """
         contract = EmitWire(source.dialects, source, self.contracts).emit_method()
         method = contract.method
         Fixpoint(Walk(DeadCodeElimination())).rewrite(method.code)
-        infer_wire_types(method)
+        TypeInfer(method.dialects)(method)
         if violations := ConversionTarget.check(method):
             raise WireConversionError(
                 f"'{method.sym_name}' violates the wire conversion target at: "
