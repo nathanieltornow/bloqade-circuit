@@ -1,34 +1,34 @@
-"""Emit gate twins and runtime broadcasts with explicit register borrows."""
+"""Emit gate twins on qubits and register twins on whole registers or slices."""
 
 from typing import cast
 
 from kirin import ir, types
-from kirin.dialects import py, scf, ilist
-from kirin.dialects.py import assertion
-from kirin.dialects.ilist import stmts as ilist_stmts
+from kirin.dialects import ilist
 
-from bloqade.analysis.indices import Emitted, IndexExpr
-from bloqade.squin.wire.twins import TWINS
+from bloqade.squin.wire.twins import TWINS, REGISTER_TWINS
 from bloqade.squin.wire.errors import WireConversionError
-from bloqade.squin.wire.traits import Twin
+from bloqade.squin.wire.traits import Twin, RegisterTwin
 
 from .base import EmitWire, WireFrame
-from .values import View, Value, Location, Register, select, is_qubit
-from .control import resume, carry_wires, yield_wires
+from .values import View, Value, Location, Register, is_qubit
 
 
-def scalar_gate(
+def apply_twin(
     emit: EmitWire,
     frame: WireFrame,
     source: ir.Statement,
+    twin: type[ir.Statement],
+    wires: tuple[tuple[str, str], ...],
     locations: tuple[Location, ...],
-) -> tuple[ir.SSAValue, ...]:
-    """Emit one wire gate and restore its operands to their source locations."""
-    twin = TWINS[type(source)]
-    trait = twin.get_present_trait(Twin)
+) -> ir.Statement:
+    """Emit `twin` on the operands at `locations` and restore them after it.
+
+    `wires` pairs each qubit-list field of `source` with an operand field of
+    `twin`. The classical arguments and attributes of `twin` come from `source`.
+    """
     inputs = {
         wire_field: emit.acquire(frame, location)
-        for (_, wire_field), location in zip(trait.wires, locations, strict=True)
+        for (_, wire_field), location in zip(wires, locations, strict=True)
     }
     fields = getattr(twin, "__kirin_stmt_fields")
     classical = {
@@ -38,23 +38,86 @@ def scalar_gate(
     }
     attributes = {name: getattr(source, name) for name in fields.attributes}
     made = frame.push(twin(**inputs, **classical, **attributes))
-    # `make_twin` gives each wire field `x` the result field `x_out`.
+    # `make_twin` gives each operand field `x` the result field `x_out`.
     for wire_field, location in zip(inputs, locations, strict=True):
         emit.restore(frame, location, getattr(made, f"{wire_field}_out"))
+    return made
+
+
+def scalar_gate(
+    emit: EmitWire,
+    frame: WireFrame,
+    source: ir.Statement,
+    locations: tuple[Location, ...],
+) -> tuple[ir.SSAValue, ...]:
+    """Emit one wire gate on single qubits and return its classical results."""
+    twin = TWINS[type(source)]
+    trait = twin.get_present_trait(Twin)
+    made = apply_twin(emit, frame, source, twin, trait.wires, locations)
     return tuple(getattr(made, wire_result) for _, wire_result in trait.results)
+
+
+def register_gate(
+    emit: EmitWire,
+    frame: WireFrame,
+    source: ir.Statement,
+    parts: tuple[Register | View, ...],
+) -> tuple[ir.SSAValue, ...]:
+    """Emit the register twin of `source` and return its classical list results.
+
+    Operands of different known lengths fail, unless the statement stops at the
+    shortest register.
+    """
+    twin = REGISTER_TWINS[type(source)]
+    trait = twin.get_present_trait(RegisterTwin)
+    counts = [None if part.length is None else part.length.constant for part in parts]
+    known = {count for count in counts if count is not None}
+    if not trait.truncate and len(known) > 1:
+        raise WireConversionError(
+            f"'{source.name}' requires qubit lists of equal length.", source
+        )
+    if trait.truncate:
+        size = None if None in counts else min(known)
+    else:
+        size = next(iter(known), None)
+    made = apply_twin(emit, frame, source, twin, trait.wires, parts)
+    length = types.Any if size is None else types.Literal(size)
+    results: list[ir.SSAValue] = []
+    for _, result_field in trait.results:
+        value = getattr(made, result_field)
+        value.type = ilist.IListType[value.type.vars[0], length]
+        results.append(value)
+    return tuple(results)
 
 
 def emit_gate(
     emit: EmitWire, frame: WireFrame, source: ir.Statement
 ) -> tuple[Value, ...]:
-    """Expand known broadcast operands or emit one loop for runtime lengths."""
+    """Emit a register twin on whole registers and step-1 slices, or scalar twins.
+
+    Scalar twins need operands whose qubits are all known, such as a list of qubits.
+    """
     trait = TWINS[type(source)].get_present_trait(Twin)
     operands = tuple(
         frame.get(getattr(source, source_field)) for source_field, _ in trait.wires
     )
+    if all(
+        isinstance(value, Register)
+        or (isinstance(value, View) and value.span.step == 1)
+        for value in operands
+    ):
+        parts = cast(tuple[Register | View, ...], operands)
+        return register_gate(emit, frame, source, parts)
     maybe_items = tuple(emit.known_items(value, source) for value in operands)
     if any(items is None for items in maybe_items):
-        return broadcast_loop(emit, frame, source, operands)
+        if not all(isinstance(value, (Register, View, tuple)) for value in operands):
+            raise WireConversionError(
+                "A runtime broadcast requires resolved register operands.", source
+            )
+        raise WireConversionError(
+            "A runtime broadcast cannot index a heterogeneous quantum container.",
+            source,
+        )
     operand_items = tuple(items for items in maybe_items if items is not None)
     if not trait.truncate and len({len(items) for items in operand_items}) > 1:
         raise WireConversionError(
@@ -79,90 +142,3 @@ def emit_gate(
         ).results[0]
         for (source_field, _), values in zip(trait.results, outputs, strict=True)
     )
-
-
-def broadcast_loop(
-    emit: EmitWire, frame: WireFrame, source: ir.Statement, operands: tuple[Value, ...]
-) -> tuple[Value, ...]:
-    """Emit indexed gate applications and collect classical results in loop-carried lists."""
-    trait = TWINS[type(source)].get_present_trait(Twin)
-    if not all(
-        isinstance(value, (Register, View)) or isinstance(value, tuple)
-        for value in operands
-    ):
-        raise WireConversionError(
-            "A runtime broadcast requires resolved register operands.", source
-        )
-    lengths = tuple(emit.length_value(frame, value) for value in operands)
-    if any(isinstance(value, tuple) for value in operands):
-        raise WireConversionError(
-            "A runtime broadcast cannot index a heterogeneous quantum container.",
-            source,
-        )
-    registers = cast(tuple[Register | View, ...], operands)
-    size = broadcast_length(frame, source, lengths, trait.truncate)
-    elements = tuple(
-        getattr(source, source_field).type.vars[0] for source_field, _ in trait.results
-    )
-    empty = tuple(
-        frame.push(ilist.New((), elem_type=element)).results[0] for element in elements
-    )
-    with emit.new_frame(source, has_parent_access=True) as body:
-        body.site, body.current_stmt = frame.site, source
-        index = body.output.args.append_from(types.Int, "i")
-        lists = tuple(
-            body.output.args.append_from(ilist.IListType[element, types.Int])
-            for element in elements
-        )
-        roots = carry_wires(frame, body)
-        incoming = tuple(frame.latest[root] for root in roots)
-        qubits = tuple(
-            select(register, IndexExpr.of(Emitted(index)), source)
-            for register in registers
-        )
-        values = scalar_gate(emit, body, source, qubits)
-        collected: list[ir.SSAValue] = []
-        for previous, value in zip(lists, values, strict=True):
-            singleton = body.push(ilist.New((value,), elem_type=value.type)).results[0]
-            appended = body.push(py.Add(previous, singleton))
-            appended.results[0].type = previous.type
-            collected.append(appended.results[0])
-        yield_wires(body, roots, collected)
-    start = frame.push(py.Constant(0)).results[0]
-    step = frame.push(py.Constant(1)).results[0]
-    iterable = frame.push(ilist_stmts.Range(start, size, step)).results[0]
-    made = frame.push(scf.For(iterable, ir.Region(body.output), *empty, *incoming))
-    return resume(frame, made, roots, empty, range(len(empty)))
-
-
-def broadcast_length(
-    frame: WireFrame,
-    source: ir.Statement,
-    lengths: tuple[ir.SSAValue, ...],
-    truncate: bool,
-) -> ir.SSAValue:
-    """Emit the number of iterations of a runtime broadcast.
-
-    A truncating broadcast runs to the shortest operand. Any other broadcast emits
-    an assertion that every operand has the same length.
-    """
-    size = lengths[0]
-    for other in lengths[1:]:
-        if truncate:
-            condition = frame.push(py.cmp.Lt(size, other)).results[0]
-            # Each body of Kirin's `scf.IfElse` gets the condition as a block argument.
-            left, right = ir.Block(), ir.Block()
-            left.args.append_from(types.Bool)
-            right.args.append_from(types.Bool)
-            left.stmts.append(scf.Yield(size))
-            right.stmts.append(scf.Yield(other))
-            size = frame.push(
-                scf.IfElse(condition, ir.Region(left), ir.Region(right))
-            ).results[0]
-        else:
-            equal = frame.push(py.cmp.Eq(size, other)).results[0]
-            message = frame.push(
-                py.Constant(f"'{source.name}' requires equal qubit-list lengths.")
-            ).results[0]
-            frame.push(assertion.Assert(equal, message))
-    return size

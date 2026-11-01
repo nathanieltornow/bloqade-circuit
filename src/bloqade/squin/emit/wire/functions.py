@@ -8,12 +8,12 @@ from kirin.dialects import py, func
 
 from bloqade import qubit
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Sym, IndexExpr
+from bloqade.analysis.indices import IndexExpr
 from bloqade.squin.wire.group import kernel
 from bloqade.squin.wire.types import (
     WireType,
-    RegisterType,
     quantum_type,
+    parameter_type,
     register_shape,
 )
 from bloqade.squin.wire.errors import (
@@ -22,7 +22,6 @@ from bloqade.squin.wire.errors import (
 )
 from bloqade.squin.wire.signature import (
     Layout,
-    Contract,
     packed_type,
     output_types,
 )
@@ -30,8 +29,6 @@ from bloqade.squin.wire.signature import (
 from .base import EmitWire, WireFrame
 from .values import (
     Grid,
-    Rows,
-    View,
     Qubit,
     Value,
     Element,
@@ -62,16 +59,18 @@ class Functions(interp.MethodTable):
     def function(
         self, emit: EmitWire, frame: WireFrame, stmt: func.Function
     ) -> tuple[()]:
-        """Emit the wire form of the source function and record its contract."""
+        """Emit the wire form of the source function and record the wire method.
+
+        Every ordinary result must be classical. A function can allocate and free
+        qubits, but it returns qubits only through its borrowed parameters.
+        """
         if isinstance(stmt.signature.output, types.BottomType):
             raise WireConversionError(
                 "The function return has the impossible type Bottom.", stmt
             )
         layout = Layout.of(stmt.signature)
         block = stmt.body.blocks[0]
-        input_types = tuple(
-            quantum_type(kind) or kind for kind in stmt.signature.inputs
-        )
+        input_types = tuple(parameter_type(kind) for kind in stmt.signature.inputs)
         # The emitted body decides the output type, so the self argument gets its
         # final type after the body.
         self_arg = frame.output.args.append_from(types.Any, block.args[0].name)
@@ -84,18 +83,18 @@ class Functions(interp.MethodTable):
         assert isinstance(end, func.Return)
 
         ordinary = ordinary_values(emit, frame, stmt, end, layout, returned)
-        source_parameters = frozenset(block.args[1:])
-        lengths = {
-            i: length
-            for i, value in enumerate(ordinary)
-            if (length := static_length(value, source_parameters)) is not None
-        }
+        if any(contains_location(value) for value in ordinary):
+            raise UnsupportedCallContract(
+                "A function cannot return qubits. Allocate them in the caller and"
+                " pass them in.",
+                end,
+            )
         borrowed = [
             cast(Qubit | Register | Grid, parameter_values[i])
             for i in layout.borrowed_positions
         ]
         results = (
-            *ordinary_wires(emit, frame, end, ordinary, borrowed),
+            *(emit.classical_value(frame, value) for value in ordinary),
             *(emit.acquire(frame, location) for location in borrowed),
         )
         frame.free_local_allocations()
@@ -106,7 +105,7 @@ class Functions(interp.MethodTable):
         )
         self_arg.type = types.MethodType[list(input_types), signature.output]
         method = wire_method(emit.source, stmt, frame.output, signature)
-        emit.result = Contract(method, lengths)
+        emit.result = method
         return ()
 
     @interp.impl(func.Return)
@@ -179,55 +178,6 @@ def ordinary_values(
             "The returned tuple must match the declared result count.", end
         )
     return value
-
-
-def static_length(value: Value, parameters: frozenset[ir.SSAValue]) -> IndexExpr | None:
-    """Return the length of a returned register if the parameters determine it."""
-    if isinstance(value, Register) and value.length is not None:
-        if value.length.symbols() <= parameters:
-            return value.length
-    return None
-
-
-def ordinary_wires(
-    emit: EmitWire,
-    frame: WireFrame,
-    end: func.Return,
-    ordinary: tuple[Value, ...],
-    borrowed: list[Qubit | Register | Grid],
-) -> list[ir.SSAValue]:
-    """Return the wire value of each ordinary result of a function.
-
-    A quantum ordinary result must own one whole fresh allocation. It must differ
-    from the other results and from every borrowed parameter.
-    """
-    borrowed_roots = {location.root for location in borrowed}
-    wires: list[ir.SSAValue] = []
-    seen: set[ir.SSAValue] = set()
-    for value in ordinary:
-        if isinstance(value, (Element, View, Rows)):
-            raise UnsupportedCallContract(
-                "A quantum return must own one whole allocation.", end
-            )
-        if isinstance(value, (Qubit, Register, Grid)):
-            if value.root in borrowed_roots:
-                raise UnsupportedCallContract(
-                    "A function cannot return a borrowed quantum parameter as an ordinary output.",
-                    end,
-                )
-            if value.root in seen:
-                raise WireConversionError(
-                    "A function cannot return one qubit twice.", end
-                )
-            seen.add(value.root)
-            wires.append(emit.acquire(frame, value))
-        elif contains_location(value):
-            raise UnsupportedCallContract(
-                "A quantum return must own one whole allocation.", end
-            )
-        else:
-            wires.append(emit.classical_value(frame, value))
-    return wires
 
 
 def emit_return(frame: WireFrame, results: tuple[ir.SSAValue, ...]) -> None:
@@ -304,7 +254,7 @@ def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
     callee = stmt.callee.code
     assert isinstance(callee, func.Function)
     layout = Layout.of(callee.signature)
-    contract = emit.contracts[stmt.callee]
+    wired = emit.converted[stmt.callee]
     arguments = frame.get_values(stmt.inputs)
     borrowed = borrowed_operands(arguments, layout, stmt)
     check_shapes(callee, layout, borrowed, stmt)
@@ -317,13 +267,13 @@ def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
         )
         for i, argument in enumerate(arguments)
     )
-    made = frame.push(func.Invoke(inputs, callee=contract.method))
-    made.result.type = contract.method.return_type
+    made = frame.push(func.Invoke(inputs, callee=wired))
+    made.result.type = wired.return_type
     outputs = call_results(frame, made.result, layout)
     count = layout.ordinary_count
     for location, result in zip(borrowed, outputs[count:], strict=True):
         emit.restore(frame, location, result)
-    ordinary = ordinary_meanings(emit, frame, callee, contract, stmt, outputs[:count])
+    ordinary = outputs[:count]
     if layout.packed:
         return ordinary
     return ordinary[0] if ordinary else frame.push(func.ConstantNone()).results[0]
@@ -398,41 +348,6 @@ def call_results(
     if len(kinds) == 1:
         return (result,)
     return unpack(frame, result, kinds)
-
-
-def ordinary_meanings(
-    emit: EmitWire,
-    frame: WireFrame,
-    callee: func.Function,
-    contract: Contract,
-    stmt: func.Invoke,
-    results: tuple[ir.SSAValue, ...],
-) -> tuple[Value, ...]:
-    """Return the source meaning of each ordinary result of a call.
-
-    A quantum result becomes a new allocation in the caller. A fresh register gets its
-    contract length with the caller's integer arguments substituted.
-    """
-    parameters = callee.body.blocks[0].args[1:]
-    mapping: dict[Sym, IndexExpr] = {
-        parameter: emit.index(argument)
-        for parameter, argument in zip(parameters, stmt.inputs, strict=True)
-        if parameter.type.is_subseteq(types.Int)
-    }
-    meanings: list[Value] = []
-    for i, result in enumerate(results):
-        if result.type not in (WireType, RegisterType):
-            meanings.append(result)
-            continue
-        length = contract.register_lengths.get(i)
-        if length is not None:
-            length = clamped(length.substitute(mapping))
-        meanings.append(
-            Qubit(result) if result.type == WireType else Register(result, length)
-        )
-        frame.latest[result] = result
-        frame.local_roots.append(result)
-    return tuple(meanings)
 
 
 def clamped(length: IndexExpr) -> IndexExpr:

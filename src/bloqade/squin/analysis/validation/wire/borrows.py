@@ -21,6 +21,7 @@ from bloqade.analysis.indices import Sym, Slice, Indices, IndexExpr
 from bloqade.squin.wire.types import (
     RegisterType,
 )
+from bloqade.squin.wire.traits import Threads
 from bloqade.squin.analysis.validation.wire.calls import CachedCalls
 
 BORROW_KEY = "squin.wire.borrows"
@@ -181,9 +182,17 @@ class BorrowCheck(CachedCalls[Slots]):
     def eval_fallback(
         self, frame: ForwardFrame[Slots], node: ir.Statement
     ) -> tuple[Slots, ...]:
-        """Check that each register operand holds no unavailable slot."""
+        """Check that each register operand holds no unavailable slot.
+
+        A result that continues a register operand, such as the output of a register
+        twin, keeps the state of that operand, so it keeps a known length.
+        """
         self.expect_empty(frame, node, node.args)
-        return self.results(node)
+        states = dict(zip(node.results, self.results(node), strict=True))
+        if (threads := node.get_trait(Threads)) is not None:
+            for operand, result in threads.threads(node):
+                states[result] = frame.get(operand)
+        return tuple(states[result] for result in node.results)
 
 
 @stmts.dialect.register(key=BORROW_KEY)

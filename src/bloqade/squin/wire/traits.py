@@ -4,6 +4,7 @@
 rewrite rule reads it to follow one qubit from statement to statement.
 
 `Twin` marks a statement that the twin generator builds from a squin statement.
+`RegisterTwin` marks the form of such a statement that acts on whole registers.
 The kind traits `Unitary`, `Noise`, `Measurement` and `Preparation` tell rewrite
 rules what the statement does to its qubits.
 """
@@ -47,6 +48,24 @@ class Twin(ir.StmtTrait):
     """
 
     source: type[ir.Statement]
+    wires: tuple[tuple[str, str], ...]
+    results: tuple[tuple[str, str], ...] = ()
+    truncate: bool = False
+
+
+@dataclass(frozen=True)
+class RegisterTwin(ir.StmtTrait):
+    """Link a wire statement on whole registers to the squin statement that it copies.
+
+    For each position `i`, the statement applies `scalar` to item `i` of every
+    register operand. `wires` maps each qubit-list field of `source` to a register
+    field, and `results` maps each list result of `source` to a list result. If
+    `truncate` is True, the statement stops at the shortest register. Otherwise,
+    the program must give every register the same length.
+    """
+
+    source: type[ir.Statement]
+    scalar: type[ir.Statement]
     wires: tuple[tuple[str, str], ...]
     results: tuple[tuple[str, str], ...] = ()
     truncate: bool = False

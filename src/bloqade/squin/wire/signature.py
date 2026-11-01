@@ -7,12 +7,10 @@ parameter, so `answer = f(q, n)` becomes `answer, q_next = f_wire(q, n)`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 
-from kirin import ir, types
+from kirin import types
 from kirin.dialects import func
-
-from bloqade.analysis.indices import IndexExpr
 
 from .types import quantum_type
 
@@ -80,21 +78,3 @@ class Layout:
                 f"The wire output type {output} must have {count} results."
             )
         return kinds
-
-
-@dataclass(frozen=True)
-class Contract:
-    """Hold what a caller needs from a converted function.
-
-    The inferred signature of `method` gives the type of every wire result.
-    """
-
-    method: ir.Method
-    """The converted wire function."""
-    register_lengths: Mapping[int, IndexExpr]
-    """The static length of each fresh register result, by ordinary result position.
-
-    A length is an index expression over the integer parameters of the source
-    function, and the caller substitutes its arguments. A register without an entry
-    has an unknown length.
-    """

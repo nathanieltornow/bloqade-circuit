@@ -4,15 +4,14 @@ import sys
 from typing import Literal
 
 import pytest
-from test_position import assert_only_positions_fail
-from kirin.dialects import func, ilist
+from kirin.dialects import ilist
 from test_roundtrip import CASES, calls, simulate
 from test_rejections import two_registers
 
 from bloqade import squin
 from bloqade.jeff import WireToJeff
 from bloqade.types import Qubit
-from bloqade.squin.wire import WireConversionError, stmts
+from bloqade.squin.wire import WireConversionError
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
@@ -51,7 +50,7 @@ def test_calls_and_direct_jeff_emission_need_no_reference_analysis(
 ):
     converter = SquinToWire()
     wired = converter.emit(calls)
-    assert len(converter.contracts) > 1
+    assert len(converter.converted) > 1
     assert simulate(WireToSquin().emit(wired)) == [[1, 0, 1, 1, 1], 4]
     emitted = WireToJeff().emit(wired)
     emitted.verify()
@@ -107,31 +106,6 @@ def test_unresolved_allocations_fail_without_changing_the_source(
         SquinToWire().emit(kernel)
     assert kernel.code.print_str() == before
     assert simulate(kernel, *args) == expected
-
-
-@squin.kernel
-def fresh_register():
-    return squin.qalloc(1)
-
-
-@squin.kernel
-def two_fresh_calls():
-    a = fresh_register()
-    b = fresh_register()
-    squin.cx(a[0], b[0])
-    return squin.broadcast.measure([a[0], b[0]])
-
-
-def test_each_call_has_distinct_fresh_allocations():
-    wired = SquinToWire().emit(two_fresh_calls)
-    calls = [node for node in wired.code.walk() if isinstance(node, func.Invoke)]
-    assert len(calls) == 2
-    assert calls[0].callee is calls[1].callee
-    assert simulate(WireToSquin().emit(wired)) == [0, 0]
-    releases = [node for node in wired.code.walk() if isinstance(node, stmts.Release)]
-    first, second = releases[:2]
-    first.wire, second.wire = second.wire, first.wire
-    assert_only_positions_fail(wired, "register slot")
 
 
 @squin.kernel

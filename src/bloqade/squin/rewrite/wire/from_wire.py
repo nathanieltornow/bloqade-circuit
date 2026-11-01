@@ -30,7 +30,7 @@ from bloqade.types import QubitType
 from bloqade.squin.wire import stmts
 from bloqade.squin.wire.group import kernel as wire_kernel, reference_kernel
 from bloqade.squin.wire.types import RegisterType, is_linear
-from bloqade.squin.wire.traits import Twin
+from bloqade.squin.wire.traits import Twin, RegisterTwin
 from bloqade.squin.wire.ownership import KEY as OWNED, owns_inputs
 from bloqade.squin.wire.signature import packed_type, output_types
 from bloqade.squin.rewrite.wire.driver import CheckedFixpoint
@@ -75,6 +75,8 @@ class FromWireStatements(RewriteRule):
         """Rewrite `node` if it belongs to the wire dialect."""
         if (twin := node.get_trait(Twin)) is not None:
             self.twin(node, twin)
+        elif (register_twin := node.get_trait(RegisterTwin)) is not None:
+            self.register_twin(node, register_twin)
         elif isinstance(node, stmts.Alloc):
             node.result.replace_by(_put(qubit_stmts.New(), node).result)
         elif isinstance(node, stmts.AllocRegister):
@@ -158,6 +160,26 @@ class FromWireStatements(RewriteRule):
             item = _put(py.GetItem(getattr(made, source), zero.result), node)
             item.result.type = getattr(node, result).type
             getattr(node, result).replace_by(item.result)
+        for wire in wires.values():
+            getattr(node, f"{wire}_out").replace_by(getattr(node, wire))
+
+    def register_twin(self, node: ir.Statement, twin: RegisterTwin) -> None:
+        """Insert the squin statement of the register twin `node` before it.
+
+        Each register becomes the list of qubits that it holds, and each list result
+        stays a list.
+        """
+        fields = getattr(twin.source, "__kirin_stmt_fields")
+        wires = dict(twin.wires)
+        kwargs: dict[str, Any] = {
+            name: getattr(node, wires[name] if name in wires else name)
+            for name in fields.std_args
+        }
+        for name in fields.attributes:
+            kwargs[name] = getattr(node, name)
+        made = _put(twin.source(**kwargs), node)
+        for source, result in twin.results:
+            getattr(node, result).replace_by(getattr(made, source))
         for wire in wires.values():
             getattr(node, f"{wire}_out").replace_by(getattr(node, wire))
 

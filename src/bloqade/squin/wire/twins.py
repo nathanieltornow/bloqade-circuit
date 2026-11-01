@@ -3,8 +3,10 @@
 A squin gate, noise channel, measurement or reset takes lists of qubits. Its twin
 takes one wire for each list and returns one new wire for each. So the twin of
 `squin.gate.CX(controls, targets)` is `CX(control, target)` with the results
-`control_out` and `target_out`. The converter applies one twin to each group of
-qubits, so a broadcast becomes several twins.
+`control_out` and `target_out`. Each squin statement also gets a register twin,
+such as `BroadcastCX(controls, targets)`, that takes one register for each list.
+The converter uses the register twin for a broadcast over whole registers or
+contiguous slices, and one scalar twin for each group of qubits otherwise.
 
 The generator reads the fields that kirin's `@statement` records on each squin
 class. `TWIN_TABLE` declares each supported source and its quantum field mappings.
@@ -14,10 +16,12 @@ gets no twin.
 """
 
 from dataclasses import dataclass
+from collections.abc import Callable
 
 from kirin import ir, types
 from kirin.decl import info, statement
 from kirin.dialects import ilist
+from kirin.decl.info import ArgumentField, StatementFields
 
 from bloqade.qubit import stmts as qubit_stmts
 from bloqade.types import QubitType, holds_qubits
@@ -25,8 +29,16 @@ from bloqade.squin.gate import stmts as gate_stmts
 from bloqade.squin.noise import stmts as noise_stmts
 from bloqade.native.dialects.gate import stmts as native_stmts
 
-from .types import WireType
-from .traits import Twin, Noise, Threads, Unitary, Measurement, Preparation
+from .types import WireType, RegisterType
+from .traits import (
+    Twin,
+    Noise,
+    Threads,
+    Unitary,
+    Measurement,
+    Preparation,
+    RegisterTwin,
+)
 from ._dialect import dialect
 
 
@@ -123,12 +135,12 @@ from the squin gates. `CorrelatedQubitLoss` takes nested lists and has no twin.
 """
 
 
-def make_twin(definition: TwinDefinition) -> type[ir.Statement]:
-    """Build the declared twin and reject unsupported qubit fields.
+def _schema(
+    definition: TwinDefinition,
+) -> tuple[StatementFields, dict[str, ArgumentField]]:
+    """Return the kirin fields and the arguments of the source of `definition`.
 
-    Each qubit-list argument becomes one wire argument and one wire result.
-    Each list result becomes a scalar result. Classical arguments and attributes
-    keep their source order.
+    The function rejects a definition whose mappings break the source schema.
     """
     source = definition.source
     fields = getattr(source, "__kirin_stmt_fields")
@@ -163,22 +175,41 @@ def make_twin(definition: TwinDefinition) -> type[ir.Statement]:
         raise ValueError(
             f"The twin of {source.__name__} requires distinct field names."
         )
+    return fields, arguments
+
+
+def _build(
+    definition: TwinDefinition,
+    wires: dict[str, str],
+    class_name: str,
+    operation_name: str,
+    linear: types.TypeAttribute,
+    result_type: Callable[[types.TypeAttribute], types.TypeAttribute],
+    trait: ir.StmtTrait,
+) -> type[ir.Statement]:
+    """Build a twin class whose qubit operands have the type `linear`.
+
+    `wires` maps each qubit-list field of the source to an operand field. Each such
+    field becomes one `linear` argument and one `linear` result.
+    `result_type` maps the element type of each source list result to the type of
+    the twin result. Classical arguments and attributes keep their source order.
+    """
+    fields, arguments = _schema(definition)
     annotations: dict[str, object] = {}
-    namespace: dict[str, object] = {
-        "__module__": __name__,
-        "name": definition.operation_name or source.name,
-    }
+    namespace: dict[str, object] = {"__module__": __name__, "name": operation_name}
     for name, field in arguments.items():
         target = wires.get(name, name)
-        assert target is not None
         annotations[target] = ir.SSAValue
-        namespace[target] = info.argument(WireType if name in wires else field.type)
+        namespace[target] = info.argument(linear if name in wires else field.type)
     for wire in wires.values():
         annotations[f"{wire}_out"] = ir.ResultValue
-        namespace[f"{wire}_out"] = info.result(WireType)
-    for name, target in results.items():
+        namespace[f"{wire}_out"] = info.result(linear)
+    for name, target in definition.results:
+        kind = fields.results[name].type
+        assert isinstance(kind, types.Generic)
+        element = kind.vars[0]
         annotations[target] = ir.ResultValue
-        namespace[target] = info.result(fields.results[name].type.vars[0])
+        namespace[target] = info.result(result_type(element))
     for name, field in fields.attributes.items():
         annotations[name] = field.annotation
         namespace[name] = info.attribute(default=field.default)
@@ -187,20 +218,63 @@ def make_twin(definition: TwinDefinition) -> type[ir.Statement]:
         {
             definition.kind,
             Threads(tuple((wire, f"{wire}_out") for wire in wires.values())),
-            Twin(source, definition.wires, definition.results, definition.truncate),
+            trait,
         }
     )
-    twin = type(definition.class_name or source.__name__, (ir.Statement,), namespace)
+    twin = type(class_name, (ir.Statement,), namespace)
     return statement(dialect=dialect)(twin)
+
+
+def make_twin(definition: TwinDefinition) -> type[ir.Statement]:
+    """Build the twin of `definition` that acts on one wire per qubit list."""
+    source = definition.source
+    trait = Twin(source, definition.wires, definition.results, definition.truncate)
+    return _build(
+        definition,
+        dict(definition.wires),
+        definition.class_name or source.__name__,
+        definition.operation_name or source.name,
+        WireType,
+        lambda element: element,
+        trait,
+    )
+
+
+def make_register_twin(
+    definition: TwinDefinition, scalar: type[ir.Statement]
+) -> type[ir.Statement]:
+    """Build the twin of `definition` that acts on one register per qubit list.
+
+    `scalar` is the twin that the statement applies to each register position. Each
+    register operand keeps the name of its source field, such as `controls`.
+    """
+    source = definition.source
+    wires = tuple((name, name) for name, _ in definition.wires)
+    trait = RegisterTwin(source, scalar, wires, definition.results, definition.truncate)
+    return _build(
+        definition,
+        dict(wires),
+        f"Broadcast{scalar.__name__}",
+        f"broadcast_{scalar.name}",
+        RegisterType,
+        lambda element: ilist.IListType[element, types.Any],
+        trait,
+    )
 
 
 TWINS: dict[type[ir.Statement], type[ir.Statement]] = {}
 """Map each supported source statement to its declared twin."""
 
+REGISTER_TWINS: dict[type[ir.Statement], type[ir.Statement]] = {}
+"""Map each supported source statement to its twin on whole registers."""
+
 for _definition in TWIN_TABLE:
     _twin = make_twin(_definition)
+    _register_twin = make_register_twin(_definition, _twin)
     TWINS[_definition.source] = _twin
+    REGISTER_TWINS[_definition.source] = _register_twin
     globals()[_twin.__name__] = _twin
+    globals()[_register_twin.__name__] = _register_twin
 
 
 def twin_of(stmt: ir.Statement) -> Twin | None:

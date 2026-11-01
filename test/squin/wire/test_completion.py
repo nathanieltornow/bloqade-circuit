@@ -27,7 +27,7 @@ def test_conversion_builds_wire_operations_and_validation_rejects_invalid_borrow
     reason = "already borrowed"
     before = identical_operands.code.print_str()
     method = identical_operands.similar()
-    method = EmitWire(method.dialects, method, {}).emit_method().method
+    method = EmitWire(method.dialects, method, {}).emit_method()
     assert not ConversionTarget.check(method)
     method.verify()
     method.verify_type()

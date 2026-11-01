@@ -96,10 +96,10 @@ def test_two_callers_share_the_wire_method_of_one_callee():
     callees = {
         node.callee
         for caller in (left, right)
-        for node in converter.contracts[caller].method.code.walk()
+        for node in converter.converted[caller].code.walk()
         if isinstance(node, func.Invoke)
     }
-    assert callees == {converter.contracts[leaf].method}
+    assert callees == {converter.converted[leaf]}
     assert simulate(trip(diamond)) == 0
 
 

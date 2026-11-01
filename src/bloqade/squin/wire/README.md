@@ -24,7 +24,7 @@ reconstructed = WireToSquin().emit(wired)
 | Check output | `ConversionTarget`, wire validation passes | Require complete wire conversion and valid ownership. |
 
 `SquinToWire.emit()` reads the source method and constructs a separate output method.
-It converts user callees first and supplies their checked contracts to the caller's emitter.
+It converts user callees first and supplies their validated wire methods to the caller's emitter.
 Each callee must pass the same conversion target and validation.
 
 Before emission, a `ValidationSuite` runs `StructureValidation` for source structure and types.
@@ -106,7 +106,7 @@ The operation tables live in `squin.emit.wire`:
 | `functions.py` | Emit function boundaries, library wrappers and calls. |
 | `references.py` | Resolve qubit references in allocations, aliases, lists, tuples, additions, lengths and indexing. |
 | `control.py` | Convert loop and branch regions through Kirin's region interpreter. |
-| `gates.py` | Emit wire gates and runtime broadcast loops. |
+| `gates.py` | Emit scalar twins on qubits and register twins on whole registers or slices. |
 | `values.py` | Define the location forms and select elements, slices and rows. |
 
 ## Gates and allocation lifetimes
@@ -120,6 +120,11 @@ A twin is the wire form of one source operation on one group of qubits.
 `TWIN_TABLE` declares source fields, wire fields, classical results and broadcast length rules.
 `make_twin` checks these declarations against Kirin's statement schema.
 `WireToSquin` reconstructs the source operation with singleton qubit lists.
+
+Each source operation also has a register twin, such as `BroadcastCX(controls, targets)`.
+A register twin takes one register for each qubit list and applies the scalar twin at each position.
+Its classical results stay lists, so `BroadcastMeasure` returns one list of measurement results.
+`WireToSquin` reconstructs the source broadcast on the same registers.
 
 A scalar gate handler gets each operand location from the frame.
 For a standalone qubit, it consumes the latest wire and records the output wire.
@@ -137,14 +142,13 @@ FreeRegister(r2)
 
 Allocation handlers record their roots in the current frame.
 At region exit, `free_local_allocations` frees each local allocation that the region still holds.
-Returning a fresh allocation consumes that value before cleanup.
 
-A known-length broadcast emits one scalar gate per operand group.
-An unknown-length broadcast emits a loop with the same scalar gate handler.
-Measurement loops carry their classical result lists alongside the wire registers.
-Equal-length broadcasts check their operand lengths with an assertion before entering the loop.
-Jeff has no assertion statement, so `WireToJeff` rejects such a broadcast and names the missing assertion.
-Operations with shortest-list semantics use the minimum length.
+A broadcast over whole registers or step-1 slices emits one register twin, for any length.
+A slice operand becomes a `TakeSlice` before the twin and a `PutSlice` after it.
+A broadcast over a list of separate qubits, such as `[a, qs[2]]`, emits one scalar twin per operand group.
+Operations with shortest-list semantics stop at the shortest register.
+For every other operation, equal operand lengths are a precondition of the source program.
+The converter rejects operands whose known lengths differ.
 
 ## Loops and branches
 
@@ -183,8 +187,10 @@ Each structured region must contain one block with its expected terminator.
 Every quantum parameter borrows its input allocation.
 The function returns the latest value of each borrowed parameter in declaration order.
 Ordinary results precede this borrowed-parameter suffix.
-A fresh ordinary quantum result must own one whole allocation.
-It must differ from every other result and borrowed parameter.
+A function cannot return qubits, so every ordinary result is classical.
+A function can allocate qubits and free them before it returns.
+A caller allocates the qubits that a callee needs and passes them in.
+A register parameter keeps the number of qubits that its source type gives, such as `Register[3]`.
 
 For a source call `answer = f(q, n)`, the wire convention is:
 
@@ -195,11 +201,6 @@ answer, q1 = call f_wire(q0, n)
 `Layout` reads this convention from the source signature.
 It gives the borrowed parameter positions, the ordinary result count and the tuple packing of the source return.
 The caller reads the type of each wire result from the callee's inferred signature.
-`Contract` holds the callee's wire method and one static length for each ordinary result.
-The length is None for a classical result and for a register of unknown length.
-A length is an index expression over the callee's integer parameters.
-The caller replaces those parameters with its own arguments, so `qalloc(n)` in the callee gives a known length at a call with a constant `n`.
-With a symbolic `n`, a broadcast over the result reads the runtime length through `Length`.
 
 The caller consumes its latest inputs and restores them from the borrowed-parameter suffix.
 Calls on register elements use `Borrow` and `Release` around the call.
@@ -238,23 +239,18 @@ func main() -> int:
     Return(total)
 ```
 
-Each fresh quantum result creates a new allocation identity in the caller.
-Two calls to the same allocating function create distinct identities.
-
 Quantum call operands must name separate scalar qubits or whole registers.
 Calls with register slices or quantum containers fail.
-A returned borrowed alias also fails.
 A register argument must provably have the shape that its parameter type declares.
 A qubit parameter takes one qubit, and a register parameter takes a whole register.
-`UnsupportedCallContract` identifies unsupported argument layouts, argument shapes and result ownership.
-A function that returns one qubit twice fails with a plain `WireConversionError`.
+`UnsupportedCallContract` identifies unsupported argument layouts, argument shapes and returned qubits.
 An operation that uses one qubit or register twice fails with a plain `WireConversionError`.
 Callee validation failures propagate directly to the caller.
 Each conversion error retains its operation, source location and failed condition.
 
 The conversion driver rejects recursive calls.
 A failed conversion leaves the source method and its callees unchanged.
-Repeated public conversions clear the contract cache.
+Repeated public conversions clear the cache of converted methods.
 
 ## Validation contracts
 
@@ -280,6 +276,7 @@ Its `Origin` lattice stores exact allocation identities and tuple fields in Kiri
 An unknown origin records insufficient information to prove continuity.
 The analysis follows operation continuations and checks loop yields, branch results and borrowed return suffixes.
 It checks each callee and gives every call's fresh outputs distinct identities.
+Only functions imported from Jeff return fresh qubits, because source functions cannot return qubits.
 `CachedCalls` reuses the result of a call with the same callee and abstract arguments.
 Each analysis records its errors at callee nodes, so a reused result loses no error.
 
@@ -310,7 +307,11 @@ Squin gate statements use turns, so the emitter multiplies them by `2*pi`.
 The emitter maps squin's control-first operand order to Jeff's target-first operand order.
 It restores the declared wire result order after emission.
 
-Wire registers preserve runtime lengths but erase static length annotations.
+A Jeff register value carries its static length in its type, such as `qureg(3)`, whenever the emitter knows that length.
+An operation that continues a register keeps the type of its input, and a Jeff loop keeps it inside its body.
+A register twin of static length becomes one scalar operation per position.
+A register twin of runtime length becomes a Jeff loop that fills arrays of runtime length.
+The Jeff importer rejects those arrays, so such a program has no way back from Jeff to squin.
 The Jeff emitter rejects noise channels, qubit-loss tests and gates without a registered Jeff form.
 It rejects dynamic list construction, tuple-valued region state and runtime tuple indices.
 It also rejects arithmetic that requires integer-to-float conversion in Jeff.

@@ -70,10 +70,23 @@ def repeated_register_return():
     return qs, qs
 
 
-@pytest.mark.parametrize("kernel", [repeated_return, repeated_register_return])
-def test_duplicate_quantum_returns_fail_before_materialization(kernel):
+@squin.kernel
+def returned_fresh():
+    return squin.qubit.new()
+
+
+@squin.kernel
+def returned_parameter(q: Qubit) -> Qubit:
+    return q
+
+
+@pytest.mark.parametrize(
+    "kernel",
+    [returned_fresh, returned_parameter, repeated_return, repeated_register_return],
+)
+def test_a_function_cannot_return_qubits(kernel):
     before = kernel.code.print_str()
-    with pytest.raises(WireConversionError, match="cannot return one qubit twice"):
+    with pytest.raises(UnsupportedCallContract, match="cannot return qubits"):
         SquinToWire().emit(kernel)
     assert kernel.code.print_str() == before
 

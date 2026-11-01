@@ -4,8 +4,11 @@ A `Wire` stands for one qubit at one point in the program. A statement consumes
 its input wires and returns new wires, so each wire has exactly one use.
 
 A `Register` stands for a list of qubits. `Borrow` takes one qubit out of a
-register as a wire, and `Release` puts the wire back.
+register as a wire, and `Release` puts the wire back. A register type can carry a
+static number of qubits, such as `Register[3]`.
 """
+
+import math
 
 from kirin import types
 from kirin.dialects import ilist
@@ -23,6 +26,25 @@ class Register:
 
 WireType = types.PyClass(Wire)
 RegisterType = types.PyClass(Register)
+
+
+def register_type(length: int | None) -> types.TypeAttribute:
+    """Return the type of a register of `length` qubits.
+
+    The result is `RegisterType` if the length is None.
+    """
+    if length is None:
+        return RegisterType
+    return types.Generic(Register, types.Literal(length))
+
+
+def register_length(kind: types.TypeAttribute) -> int | None:
+    """Return the static number of qubits of a register type, or None."""
+    if isinstance(kind, types.Generic) and kind.is_subseteq(RegisterType) and kind.vars:
+        length = kind.vars[0]
+        if isinstance(length, types.Literal) and isinstance(length.data, int):
+            return length.data
+    return None
 
 
 def is_linear(kind: types.TypeAttribute) -> bool:
@@ -99,3 +121,18 @@ def register_shape(kind: types.TypeAttribute) -> tuple[int | None, ...]:
         shape.append(typed_length(kind))
         kind = kind.vars[0]
     return tuple(shape)
+
+
+def parameter_type(kind: types.TypeAttribute) -> types.TypeAttribute:
+    """Return the wire type of a function parameter of the source type `kind`.
+
+    A register keeps its number of qubits if the source type gives every
+    dimension. For example, `IList[IList[Qubit, 2], 3]` becomes `Register[6]`.
+    """
+    linear = quantum_type(kind)
+    if linear is None:
+        return kind
+    shape = register_shape(kind)
+    if linear == RegisterType and shape and all(size is not None for size in shape):
+        return register_type(math.prod(size for size in shape if size is not None))
+    return linear

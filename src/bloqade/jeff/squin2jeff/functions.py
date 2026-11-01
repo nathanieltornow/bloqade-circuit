@@ -4,6 +4,8 @@ from kirin import ir, types, interp
 from kirin.dialects import func
 
 from bloqade.jeff.dialects import stmts
+from bloqade.squin.wire.types import RegisterType, is_linear
+from bloqade.squin.wire.ownership import owns_inputs
 from bloqade.jeff.dialects.stmts.call import declared_outputs
 
 from .emitter import KEY, Frame, WireEmitter
@@ -42,6 +44,14 @@ class _Func(interp.MethodTable):
                 declared_outputs(callee.return_type),
             )
         )
+        if not owns_inputs(stmt.callee):
+            # A borrowing callee returns each register argument as the same
+            # register, so the result keeps the static length of the argument.
+            borrowed = [a for a in stmt.inputs if is_linear(a.type)]
+            suffix = call.results[len(call.results) - len(borrowed) :]
+            for argument, result in zip(borrowed, suffix, strict=True):
+                if argument.type.is_subseteq(RegisterType):
+                    result.type = frame.scalar(argument).type
         if stmt.result.type.is_subseteq(types.NoneType):
             return (None,)
         if stmt.result.type.is_subseteq(types.Tuple):

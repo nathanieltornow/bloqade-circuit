@@ -293,6 +293,21 @@ def flipped_register(n: int):
 
 
 @squin.kernel
+def flips_three(
+    qs: ilist.IList[Qubit, Literal[3]],
+) -> ilist.IList[MeasurementResult, Literal[3]]:
+    squin.broadcast.x(qs)
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def three_through_a_parameter() -> ilist.IList[MeasurementResult, Literal[3]]:
+    # The callee reads the register length from its parameter type.
+    qs = squin.qalloc(3)
+    return flips_three(qs)
+
+
+@squin.kernel
 def sized_by_caller():
     # The callee allocates the register, and only the caller knows its size.
     return squin.broadcast.measure(flipped_register(3))
@@ -347,6 +362,7 @@ DETERMINISTIC = [
     (inverted_int, (2,), -3),
     (divided, (8.0, 2.0), [4.0, 0.375, 3.0]),
     (sized_by_caller, (), [1, 1, 1]),
+    (three_through_a_parameter, (), [1, 1, 1]),
     (logic, (2, 1, 0.0), [0, 0, 0, 1, 1]),
     (logic, (0, 3, 0.5), [1, 1, 0, 0, 0]),
     (nested, (1, True), [1, 1, 1, 0]),
@@ -371,9 +387,10 @@ DETERMINISTIC = [
 DIRECT_REFUSALS = {
     sliced_call: "whole registers or individual qubits",
     sliding: "whole registers or individual qubits",
-    flipped_fresh: "borrowed quantum parameter",
-    counted: "borrowed quantum parameter",
-    list_to_a_call: "borrowed quantum parameter",
+    flipped_fresh: "cannot return qubits",
+    counted: "cannot return qubits",
+    list_to_a_call: "cannot return qubits",
+    sized_by_caller: "cannot return qubits",
 }
 DETERMINISTIC_AFTER_THE_TRIP = [
     case for case in DETERMINISTIC if case[0] not in DIRECT_REFUSALS
@@ -736,7 +753,7 @@ CASES = [
     pytest.param(
         returns_a_part,
         (),
-        "must own one whole allocation",
+        "cannot return qubits",
         id="a call that returns qs[1:3]",
     ),
     pytest.param(concatenated, (), None, id="a + b of registers"),

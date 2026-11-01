@@ -12,9 +12,13 @@ from kirin.emit.abc import EmitTable
 from kirin.worklist import WorkList
 
 from bloqade.types import MeasurementResultType
-from bloqade.jeff.types import WireType, QuregType, IntArrayType, FloatArrayType, is_bit
+from bloqade.jeff.types import WireType, IntArrayType, FloatArrayType, qureg, is_bit
 from bloqade.jeff.dialects import stmts, kernel as jeff_kernel
-from bloqade.squin.wire.types import WireType as SquinWireType, RegisterType
+from bloqade.squin.wire.types import (
+    WireType as SquinWireType,
+    RegisterType,
+    register_length,
+)
 from bloqade.jeff.dialects.stmts.call import declared_outputs
 
 KEY = "emit.wire2jeff"
@@ -44,7 +48,7 @@ def jeff_kind(kind: types.TypeAttribute) -> types.TypeAttribute:
         # Jeff measures to one bit, so the conversion assumes that no qubit is lost.
         return types.Bool
     if kind.is_subseteq(RegisterType):
-        return QuregType
+        return qureg(register_length(kind))
     if kind.is_subseteq(ilist.IListType[types.Float, types.Any]):
         return FloatArrayType
     if kind.is_subseteq(ilist.IListType):

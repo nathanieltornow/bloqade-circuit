@@ -6,13 +6,13 @@ from typing import Any
 import cirq
 import numpy as np
 import pytest
-from kirin.dialects import scf, func, ilist
+from kirin.dialects import func, ilist
 from test_roundtrip import simulate
 
 from bloqade import squin, native
 from bloqade.types import Qubit
 from bloqade.pyqrack import DynamicMemorySimulator
-from bloqade.squin.wire.traits import Twin
+from bloqade.squin.wire.traits import Twin, RegisterTwin
 from bloqade.native.dialects.gate import stmts as native_stmts
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.passes.squin_to_wire import SquinToWire
@@ -125,7 +125,7 @@ def test_runtime_broadcasts_emit_completely_and_preserve_results(kernel, bit, n)
     converter = SquinToWire()
     wired = converter.emit(kernel)
     assert ConversionTarget.check(wired) == []
-    assert any(isinstance(node, scf.For) for node in wired.callable_region.walk())
+    assert any(node.get_trait(RegisterTwin) for node in wired.callable_region.walk())
     WireValidation().check(wired)
     back = WireToSquin().emit(wired)
     back.verify_type()
@@ -142,9 +142,11 @@ def test_an_unknown_length_broadcast_keeps_a_borrowing_call():
 
 
 @pytest.mark.parametrize("sizes", [(0, 2), (3, 1), (1, 3)])
-def test_paired_broadcasts_check_lengths_before_the_loop(sizes):
+def test_paired_broadcasts_of_unequal_lengths_fail_like_the_source(sizes):
     back = WireToSquin().emit(SquinToWire().emit(mismatched))
-    with pytest.raises(AssertionError, match="equal qubit-list lengths"):
+    with pytest.raises(RuntimeError, match="controls but"):
+        simulate(mismatched, *sizes)
+    with pytest.raises(RuntimeError, match="controls but"):
         simulate(back, *sizes)
 
 
@@ -154,7 +156,7 @@ def test_native_broadcasts_preserve_their_gates_and_results(n):
     sources = {
         trait.source
         for node in wired.callable_region.walk()
-        if (trait := node.get_trait(Twin)) is not None
+        if (trait := node.get_trait(Twin) or node.get_trait(RegisterTwin)) is not None
     }
     assert {native_stmts.CZ, native_stmts.R, native_stmts.Rz} <= sources
     back = WireToSquin().emit(wired)

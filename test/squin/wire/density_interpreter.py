@@ -8,9 +8,11 @@ Noise channels act directly on the density matrix and need no random samples.
 from dataclasses import field, dataclass
 
 import numpy as np
-from kirin import interp
+from kirin import ir, interp
+from kirin.dialects import ilist
 
 from bloqade.squin.wire import stmts, twins
+from bloqade.squin.wire.traits import Twin, RegisterTwin
 
 IDENTITY = np.eye(2, dtype=complex)
 X = np.array([[0, 1], [1, 0]], dtype=complex)
@@ -121,6 +123,22 @@ class WireSemantics(interp.MethodTable):
         register = frame.get(stmt.register)
         return register, len(register)
 
+    @interp.impl(stmts.TakeSlice)
+    def take_slice(self, sim, frame, stmt):
+        register, start, size = frame.get_values(stmt.args)
+        part = register[start : start + size]
+        assert len(part) == size, "the slice runs past the end of the register"
+        assert not any(isinstance(q, Hole) for q in part), "the slice holds a hole"
+        holes = tuple(Hole(qubit) for qubit in part)
+        return register[:start] + holes + register[start + size :], part
+
+    @interp.impl(stmts.PutSlice)
+    def put_slice(self, sim, frame, stmt):
+        register, start, part = frame.get_values(stmt.args)
+        holes = register[start : start + len(part)]
+        assert holes == tuple(Hole(q) for q in part), "the slice did not come from here"
+        return (register[:start] + part + register[start + len(part) :],)
+
     @interp.impl(twins.X)
     @interp.impl(twins.Y)
     @interp.impl(twins.Z)
@@ -215,3 +233,41 @@ class WireSemantics(interp.MethodTable):
             (qubit,),
         )
         return (qubit,)
+
+    def broadcast(self, sim, frame, stmt):
+        """Apply the scalar twin of a register twin to each register position."""
+        trait = stmt.get_present_trait(RegisterTwin)
+        scalar = trait.scalar
+        registers = {field: frame.get(getattr(stmt, field)) for _, field in trait.wires}
+        lengths = {len(register) for register in registers.values()}
+        assert trait.truncate or len(lengths) == 1, "the registers differ in length"
+        count = min(lengths)
+        fields = getattr(scalar, "__kirin_stmt_fields")
+        register_of = {
+            wire: source for source, wire in scalar.get_present_trait(Twin).wires
+        }
+        names = list(fields.std_args)
+        probe = scalar(
+            **{name: ir.TestValue(fields.std_args[name].type) for name in names},
+            **{name: getattr(stmt, name) for name in fields.attributes},
+        )
+        collected = [[] for _ in trait.results]
+        for i in range(count):
+            values = [
+                (
+                    registers[register_of[name]][i]
+                    if name in register_of
+                    else frame.get(getattr(stmt, name))
+                )
+                for name in names
+            ]
+            inner = sim.initialize_frame(probe)
+            inner.set_values(probe.args, values)
+            outputs = sim.lookup_registry(inner, probe)(sim, inner, probe)
+            for results, value in zip(collected, outputs[len(registers) :]):
+                results.append(value)
+        return (*registers.values(), *(ilist.IList(values) for values in collected))
+
+    for _register_twin in twins.REGISTER_TWINS.values():
+        broadcast = interp.impl(_register_twin)(broadcast)
+    del _register_twin

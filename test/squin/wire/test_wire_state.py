@@ -157,7 +157,7 @@ def uncertain_loop(n: int, i: int):
 
 def test_emission_converts_every_allocation_before_borrow_validation():
     method = uncertain_loop.similar()
-    method = EmitWire(method.dialects, method, {}).emit_method().method
+    method = EmitWire(method.dialects, method, {}).emit_method()
     allocations = [
         node for node in method.code.walk() if isinstance(node, stmts.AllocRegister)
     ]
@@ -236,7 +236,7 @@ def test_conversion_resolves_references_without_a_recorded_identity_table(
     method = kernel.similar()
     with monkeypatch.context() as context:
         context.setattr(PositionAnalysis, "run", forbid_table)
-        method = EmitWire(method.dialects, method, {}).emit_method().method
+        method = EmitWire(method.dialects, method, {}).emit_method()
     WireValidation().check(method)
 
 

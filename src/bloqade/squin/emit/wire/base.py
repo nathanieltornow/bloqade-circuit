@@ -18,7 +18,6 @@ from bloqade.squin.wire.group import reference_kernel
 from bloqade.squin.wire.twins import TWINS
 from bloqade.squin.wire.types import WireType
 from bloqade.squin.wire.errors import WireConversionError
-from bloqade.squin.wire.signature import Contract
 
 from .values import (
     Grid,
@@ -88,9 +87,10 @@ class EmitWire(EmitABC[WireFrame, Value]):
     keys = ("emit.squin_wire",)
     void = None
     source: ir.Method
-    contracts: Mapping[ir.Method, Contract]
-    result: Contract | None = field(default=None, init=False)
-    """The contract of the emitted method, which the function handler sets at its end."""
+    converted: Mapping[ir.Method, ir.Method]
+    """The wire method of each user callee, which the driver converts first."""
+    result: ir.Method | None = field(default=None, init=False)
+    """The emitted wire method, which the function handler sets at its end."""
     indices: Indices = field(init=False)
     """The index expression of each source integer, whose symbols are source values."""
 
@@ -107,8 +107,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
         self.result = None
         self.indices = Indices(reference_kernel)
 
-    def emit_method(self) -> Contract:
-        """Emit one source method using the supplied checked callee contracts.
+    def emit_method(self) -> ir.Method:
+        """Emit one source method using the wire methods of its callees.
 
         Kirin's `run` evaluates `source.code`, which dispatches to the function
         handler in `functions.py`. That handler sets `result`.
@@ -198,7 +198,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
         """Return the wire value of a location for an operation that consumes it.
 
         A whole allocation leaves `latest` until `restore`. An element emits a `Borrow`,
-        and `restore` emits the matching `Release`.
+        and a slice with step 1 emits a `TakeSlice`. `restore` emits the matching
+        `Release` or `PutSlice`.
         """
         value = frame.latest.get(location.root)
         if value is None:
@@ -211,6 +212,12 @@ class EmitWire(EmitABC[WireFrame, Value]):
                 node = frame.push(stmts.Borrow(value, self.emit_index(frame, index)))
                 frame.latest[root] = node.results[0]
                 return node.results[1]
+            case View(root, span) if span.step == 1:
+                start = self.emit_index(frame, span.start)
+                size = self.length_value(frame, location)
+                node = frame.push(stmts.TakeSlice(value, start, size))
+                frame.latest[root] = node.register_out
+                return node.slice_register
             case View() | Rows():
                 raise WireConversionError(
                     "A whole-register operation requires a whole allocation.",
@@ -222,10 +229,16 @@ class EmitWire(EmitABC[WireFrame, Value]):
 
     def restore(self, frame: WireFrame, location: Location, value: ir.SSAValue) -> None:
         """Record the next value of a location after the operation that consumed it."""
-        if isinstance(location, Element):
-            register = frame.latest[location.root]
-            index = self.emit_index(frame, location.index)
-            value = frame.push(stmts.Release(register, index, value)).results[0]
+        register = frame.latest.get(location.root)
+        match location:
+            case Element(index=index):
+                assert register is not None
+                at = self.emit_index(frame, index)
+                value = frame.push(stmts.Release(register, at, value)).register_out
+            case View(span=span):
+                assert register is not None
+                at = self.emit_index(frame, span.start)
+                value = frame.push(stmts.PutSlice(register, at, value)).register_out
         frame.latest[location.root] = value
 
     def length_value(self, frame: WireFrame, value: Value) -> ir.SSAValue:

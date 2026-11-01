@@ -8,7 +8,7 @@ from test_roundtrip import nested, simulate
 
 from bloqade import squin
 from bloqade.types import Qubit
-from bloqade.squin.wire import WireConversionError
+from bloqade.squin.wire import WireConversionError, stmts, twins
 from bloqade.squin.emit.wire import EmitWire
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.passes.squin_to_wire import SquinToWire
@@ -32,7 +32,7 @@ def test_emission_visits_each_source_statement_once_and_preserves_source(monkeyp
     emitter = EmitWire(source.dialects, source, {})
     for _ in range(2):
         visits.clear()
-        wired = emitter.emit_method().method
+        wired = emitter.emit_method()
         assert all(visits[node] == 1 for node in nodes)
         assert source.code.print_str() == before
         assert all(set(value.uses) == previous for value, previous in uses.items())
@@ -49,18 +49,6 @@ def allocated_length(n: int):
     return len(qs)
 
 
-@squin.kernel
-def fresh_product(n: int):
-    return squin.qalloc(n * n)
-
-
-@squin.kernel
-def uses_fresh_product(n: int):
-    qs = fresh_product(n)
-    squin.broadcast.x(qs)
-    return squin.broadcast.measure(qs)
-
-
 @pytest.mark.parametrize("size", [-2, 0, 3])
 def test_runtime_length_uses_the_allocated_register(size):
     wired = SquinToWire().emit(allocated_length)
@@ -69,17 +57,6 @@ def test_runtime_length_uses_the_allocated_register(size):
         simulate(reconstructed, size)
         == simulate(allocated_length, size)
         == max(0, size)
-    )
-
-
-@pytest.mark.parametrize("size", [0, 1, 2])
-def test_fresh_result_lengths_keep_callee_local_values_inside_the_callee(size):
-    wired = SquinToWire().emit(uses_fresh_product)
-    reconstructed = WireToSquin().emit(wired)
-    assert (
-        simulate(reconstructed, size)
-        == simulate(uses_fresh_product, size)
-        == [1] * (size * size)
     )
 
 
@@ -125,14 +102,12 @@ def calls_measured():
 def test_a_call_result_has_the_inferred_type_of_its_callee():
     converter = SquinToWire()
     converter.emit(calls_measured)
-    callee = converter.contracts[measured].method
+    callee = converter.converted[measured]
     emitted = EmitWire(
-        calls_measured.dialects, calls_measured, converter.contracts
+        calls_measured.dialects, calls_measured, converter.converted
     ).emit_method()
     call = next(
-        node
-        for node in emitted.method.callable_region.walk()
-        if isinstance(node, func.Invoke)
+        node for node in emitted.callable_region.walk() if isinstance(node, func.Invoke)
     )
     fields = [use.stmt.results[0].type for use in call.result.uses]
     assert all(isinstance(use.stmt, py.GetItem) for use in call.result.uses)
@@ -141,21 +116,21 @@ def test_a_call_result_has_the_inferred_type_of_its_callee():
 
 
 @squin.kernel
-def runtime_flip(n: int):
-    qs = squin.qalloc(n)
-    squin.broadcast.x(qs)
+def paired_slices():
+    qs = squin.qalloc(4)
+    squin.broadcast.cx(qs[0:2], qs[2:4])
 
 
 def test_library_operations_take_the_location_of_the_user_call():
     call = next(
         node
-        for node in runtime_flip.code.walk()
-        if isinstance(node, func.Invoke) and node.callee.sym_name == "x"
+        for node in paired_slices.code.walk()
+        if isinstance(node, func.Invoke) and node.callee.sym_name == "cx"
     )
-    wired = SquinToWire().emit(runtime_flip)
-    loop = next(node for node in wired.code.walk() if isinstance(node, scf.For))
-    sources = [node.source for node in loop.walk()]
-    assert call.source is not None and len(sources) > 1
+    wired = SquinToWire().emit(paired_slices)
+    emitted = (stmts.TakeSlice, stmts.PutSlice, twins.BroadcastCX)
+    sources = [node.source for node in wired.code.walk() if isinstance(node, emitted)]
+    assert call.source is not None and len(sources) == 5
     assert {None if s is None else s.lineno for s in sources} == {call.source.lineno}
 
 

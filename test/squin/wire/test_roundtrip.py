@@ -235,11 +235,8 @@ def kick(q: Qubit, k: int) -> int:
 
 
 @squin.kernel
-def fresh_pair() -> tuple[Qubit, Qubit]:
-    a = squin.qubit.new()
-    b = squin.qubit.new()
+def prepare_pair(a: Qubit, b: Qubit):
     squin.x(b)
-    return a, b
 
 
 @squin.kernel
@@ -251,9 +248,9 @@ def flip_all(qs: ilist.IList[Qubit, Any]):
 @squin.kernel
 def calls() -> tuple[ilist.IList[MeasurementResult, Any], int]:
     qs = squin.qalloc(3)
-    pair = fresh_pair()
-    a = pair[0]
-    b = pair[1]
+    a = squin.qubit.new()
+    b = squin.qubit.new()
+    prepare_pair(a, b)
     total = kick(qs[1], 3)
     flip_all(qs)
     squin.cx(b, a)
@@ -267,7 +264,7 @@ def test_a_call_with_qubit_arguments_stays_a_borrowing_call():
         for node in wired.callable_region.walk()
         if isinstance(node, func.Invoke)
     ]
-    assert sorted(c.sym_name for c in callees) == ["flip_all", "fresh_pair", "kick"]
+    assert sorted(c.sym_name for c in callees) == ["flip_all", "kick", "prepare_pair"]
     kick_signature = next(c for c in callees if c.sym_name == "kick").code.signature
     assert kick_signature.inputs == (WireType, types.Int)
     assert kick_signature.output == types.Generic(tuple, types.Int, WireType)
@@ -292,7 +289,7 @@ def mapped() -> ilist.IList[MeasurementResult, Any]:
 @pytest.mark.parametrize(
     "kernel, reason",
     [
-        (through_calls, "borrowed quantum parameter"),
+        (through_calls, "cannot return qubits"),
         (loop_over_qubits, "classical operation cannot consume a quantum reference"),
         (picked_in_a_branch, "branch"),
         (carried_by_a_loop, "loop"),
