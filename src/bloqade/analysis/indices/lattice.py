@@ -52,18 +52,30 @@ class Index(BoundedLattice["Index"]):
         return UnreachableIndex()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class UnknownIndex(Index):
     """Name the fact of a value without an index expression."""
 
+    def __repr__(self) -> str:
+        """Return `unknown`, which Kirin prints next to the value."""
+        return "unknown"
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, repr=False)
 class UnreachableIndex(Index):
     """Name the fact of a value that no execution reaches."""
 
+    def __repr__(self) -> str:
+        """Return `unreachable`, which Kirin prints next to the value."""
+        return "unreachable"
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, repr=False)
 class KnownIndex(Index):
     """Hold the index expression of a value."""
 
     expr: IndexExpr
+
+    def __repr__(self) -> str:
+        """Return the index expression, such as `2*%n - 1`."""
+        return repr(self.expr)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import field, dataclass
 
-from kirin import ir
+from kirin import ir, types
 from kirin.analysis import Forward
 from kirin.dialects import func
 from kirin.analysis.forward import ForwardFrame
@@ -18,8 +18,14 @@ KEY = "bloqade.indices"
 """Name the registry key of the method tables of `IndexAnalysis`."""
 
 
-def own_index(value: ir.SSAValue) -> KnownIndex:
-    """Return the constant index of `value`, or `value` as a symbol of its own."""
+def own_index(value: ir.SSAValue) -> Index:
+    """Return the constant index of `value`, or `value` as a symbol of its own.
+
+    A value whose type rules out an integer, such as a list or a qubit, gets no
+    index. A value of type `Any` can hold an integer, so it gets a symbol.
+    """
+    if not (value.type.is_subseteq(types.Int) or types.Int.is_subseteq(value.type)):
+        return UnknownIndex()
     constant = constant_int(value)
     return KnownIndex(IndexExpr.of(value) if constant is None else IndexExpr(constant))
 
@@ -35,6 +41,14 @@ class IndexAnalysis(Forward[Index]):
 
     keys = (KEY,)
     lattice = Index
+
+    def run(self, method: ir.Method, *args: Index, **kwargs: Index):
+        """Analyze `method`, with each parameter as a symbol of its own by default."""
+        if not args and not kwargs:
+            args = tuple(
+                own_index(arg) for arg in method.callable_region.blocks[0].args[1:]
+            )
+        return super().run(method, *args, **kwargs)
 
     def method_self(self, method: ir.Method) -> Index:
         """Return no index for the function object."""

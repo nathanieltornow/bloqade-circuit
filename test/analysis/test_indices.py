@@ -3,10 +3,14 @@
 from kirin import ir
 from kirin.dialects import py
 
+from bloqade import squin
 from bloqade.analysis.indices import (
     Iter,
     Slice,
     IndexExpr,
+    KnownIndex,
+    UnknownIndex,
+    IndexAnalysis,
     python_slice,
 )
 
@@ -72,3 +76,18 @@ def test_a_slice_to_the_end_of_a_slice_keeps_the_outer_length():
         Slice(IndexExpr(1), 2, None)
     ) == Slice(IndexExpr(3), 2, IndexExpr(2))
     assert outer.then(Slice(IndexExpr(1), 2, None)) is None
+
+
+@squin.kernel
+def odd_slot(n: int):
+    qs = squin.qalloc(4)
+    k = 2 * n - 1
+    squin.x(qs[k])
+
+
+def test_the_analysis_runs_on_a_kernel_with_symbolic_parameters():
+    frame, _ = IndexAnalysis(odd_slot.dialects).run(odd_slot)
+    n = odd_slot.callable_region.blocks[0].args[1]
+    facts = {value.name: fact for value, fact in frame.entries.items() if value.name}
+    assert facts["k"] == KnownIndex(IndexExpr.of(n).scale(2) - 1)
+    assert facts["qs"] == UnknownIndex()
