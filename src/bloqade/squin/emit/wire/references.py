@@ -8,7 +8,7 @@ from bloqade import qubit
 from bloqade.types import holds_qubits
 from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Affine
+from bloqade.analysis.indices import IndexExpr
 from bloqade.squin.wire.errors import WireConversionError
 
 from .base import EmitWire, WireFrame
@@ -165,8 +165,8 @@ def element_item(
 
 def slice_bounds(
     emit: EmitWire, value: ir.SSAValue, at: ir.Statement
-) -> tuple[Affine | None, Affine | None, int]:
-    """Read the bounds of the source slice `value` as affine indices."""
+) -> tuple[IndexExpr | None, IndexExpr | None, int]:
+    """Read the bounds of the source slice `value` as index expressions."""
     node = value.owner
     if isinstance(node, py_slice.Slice):
         start = None if is_none(node.start) else emit.index(node.start)
@@ -175,8 +175,8 @@ def slice_bounds(
     elif isinstance(node, py.Constant) and isinstance(
         sliced := node.value.unwrap(), slice
     ):
-        start = None if sliced.start is None else Affine(sliced.start)
-        stop = None if sliced.stop is None else Affine(sliced.stop)
+        start = None if sliced.start is None else IndexExpr(sliced.start)
+        stop = None if sliced.stop is None else IndexExpr(sliced.stop)
         step = 1 if sliced.step is None else sliced.step
     else:
         raise WireConversionError("The slice bounds have no supported source form.", at)

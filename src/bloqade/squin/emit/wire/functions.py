@@ -8,7 +8,7 @@ from kirin.dialects import py, func
 
 from bloqade import qubit
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Sym, Affine
+from bloqade.analysis.indices import Sym, IndexExpr
 from bloqade.squin.wire.group import kernel
 from bloqade.squin.wire.types import (
     WireType,
@@ -152,7 +152,7 @@ def add_parameter(
         return Qubit(argument)
     shape = register_shape(source.type)
     outer = shape[0] if shape else None
-    length = None if outer is None else Affine(outer)
+    length = None if outer is None else IndexExpr(outer)
     if len(shape) > 1:
         return Grid(argument, length, shape[1:])
     return Register(argument, length)
@@ -181,7 +181,7 @@ def ordinary_values(
     return value
 
 
-def static_length(value: Value, parameters: frozenset[ir.SSAValue]) -> Affine | None:
+def static_length(value: Value, parameters: frozenset[ir.SSAValue]) -> IndexExpr | None:
     """Return the length of a returned register if the parameters determine it."""
     if isinstance(value, Register) and value.length is not None:
         if value.length.symbols() <= parameters:
@@ -414,7 +414,7 @@ def ordinary_meanings(
     contract length with the caller's integer arguments substituted.
     """
     parameters = callee.body.blocks[0].args[1:]
-    mapping: dict[Sym, Affine] = {
+    mapping: dict[Sym, IndexExpr] = {
         parameter: emit.index(argument)
         for parameter, argument in zip(parameters, stmt.inputs, strict=True)
         if parameter.type.is_subseteq(types.Int)
@@ -435,10 +435,10 @@ def ordinary_meanings(
     return tuple(meanings)
 
 
-def clamped(length: Affine) -> Affine:
+def clamped(length: IndexExpr) -> IndexExpr:
     """Return a negative constant length as zero, like the length of `range(n)`."""
     if (count := length.constant) is not None:
-        return Affine(max(0, count))
+        return IndexExpr(max(0, count))
     return length
 
 

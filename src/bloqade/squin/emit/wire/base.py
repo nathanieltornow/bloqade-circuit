@@ -13,7 +13,7 @@ from kirin.dialects.py.len import Len
 
 from bloqade.types import holds_qubits
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Sym, Iter, Affine, Emitted, Indices
+from bloqade.analysis.indices import Sym, Iter, Emitted, Indices, IndexExpr
 from bloqade.squin.wire.group import reference_kernel
 from bloqade.squin.wire.twins import TWINS
 from bloqade.squin.wire.types import WireType
@@ -92,7 +92,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
     result: Contract | None = field(default=None, init=False)
     """The contract of the emitted method, which the function handler sets at its end."""
     indices: Indices = field(init=False)
-    """The affine index of each source integer, whose symbols are source values."""
+    """The index expression of each source integer, whose symbols are source values."""
 
     def initialize_frame(
         self, node: ir.Statement, *, has_parent_access: bool = False
@@ -138,8 +138,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
             frame.current_stmt,
         )
 
-    def emit_affine(self, frame: WireFrame, expression: Affine) -> ir.SSAValue:
-        """Emit the integer operations that compute an affine index."""
+    def emit_index(self, frame: WireFrame, expression: IndexExpr) -> ir.SSAValue:
+        """Emit the integer operations that compute an index expression."""
         if (value := expression.constant) is not None:
             return frame.push(py.Constant(value)).results[0]
         total = None
@@ -155,10 +155,10 @@ class EmitWire(EmitABC[WireFrame, Value]):
             total = self._int_op(frame, py.Add, total, constant)
         return total
 
-    def index(self, value: ir.SSAValue) -> Affine:
-        """Return the affine index of the source integer `value`.
+    def index(self, value: ir.SSAValue) -> IndexExpr:
+        """Return the index expression of the source integer `value`.
 
-        The symbols of the index are source values. `emit_affine` maps them to
+        The symbols of the index are source values. `emit_index` maps them to
         emitted values through the frame.
         """
         return self.indices.of(value)
@@ -208,7 +208,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
             )
         match location:
             case Element(root, index):
-                node = frame.push(stmts.Borrow(value, self.emit_affine(frame, index)))
+                node = frame.push(stmts.Borrow(value, self.emit_index(frame, index)))
                 frame.latest[root] = node.results[0]
                 return node.results[1]
             case View() | Rows():
@@ -224,7 +224,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
         """Record the next value of a location after the operation that consumed it."""
         if isinstance(location, Element):
             register = frame.latest[location.root]
-            index = self.emit_affine(frame, location.index)
+            index = self.emit_index(frame, location.index)
             value = frame.push(stmts.Release(register, index, value)).results[0]
         frame.latest[location.root] = value
 
@@ -236,10 +236,10 @@ class EmitWire(EmitABC[WireFrame, Value]):
         be negative.
         """
         if isinstance(value, tuple):
-            return self.emit_affine(frame, Affine(len(value)))
+            return self.emit_index(frame, IndexExpr(len(value)))
         match value:
             case View(length=length) | Rows(length=length) if length is not None:
-                return self.emit_affine(frame, length)
+                return self.emit_index(frame, length)
             case View() | Rows() | Element() | Qubit():
                 raise WireConversionError(
                     "The register view requires a known length.", frame.current_stmt
@@ -247,7 +247,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
             case Register(length=length) | Grid(length=length) if (
                 length is not None and length.constant is not None
             ):
-                return self.emit_affine(frame, length)
+                return self.emit_index(frame, length)
             case Register(root):
                 return self.register_length(frame, root)
             case Grid(root, _, row_shape):
@@ -271,7 +271,9 @@ class EmitWire(EmitABC[WireFrame, Value]):
             return value
         if isinstance(value, (Register, View, Grid, Rows)) and value.length is not None:
             if (count := value.length.constant) is not None:
-                return tuple(select(value, Affine(i), at) for i in range(max(0, count)))
+                return tuple(
+                    select(value, IndexExpr(i), at) for i in range(max(0, count))
+                )
         return None
 
     def eval_fallback(self, frame: WireFrame, node: ir.Statement) -> tuple[Value, ...]:

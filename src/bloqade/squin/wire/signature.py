@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from kirin import ir, types
 from kirin.dialects import func
 
-from bloqade.analysis.indices import Affine
+from bloqade.analysis.indices import IndexExpr
 
 from .types import quantum_type
 
@@ -91,10 +91,10 @@ class Contract:
 
     method: ir.Method
     """The converted wire function."""
-    register_lengths: Mapping[int, Affine]
+    register_lengths: Mapping[int, IndexExpr]
     """The static length of each fresh register result, by ordinary result position.
 
-    A length is affine in the integer parameters of the source function, and the
-    caller substitutes its arguments. A register without an entry has an unknown
-    length.
+    A length is an index expression over the integer parameters of the source
+    function, and the caller substitutes its arguments. A register without an entry
+    has an unknown length.
     """

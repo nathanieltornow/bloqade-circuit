@@ -1,7 +1,8 @@
-"""Represent the affine indices that name an item of a register.
+"""Represent the index expressions that name an item of a register.
 
-An affine index such as `2*i + 1` has constant coefficients over integer symbols. Two
-affine indices are equal when their difference is zero.
+An index expression such as `2*i + 1` is a constant plus integer symbols times
+constant coefficients. Two index expressions are equal when their difference is zero.
+An integer without this form, such as `i * i`, becomes one symbol of its own.
 """
 
 from __future__ import annotations
@@ -65,11 +66,11 @@ def _values(sym: Sym) -> range | None:
 
 
 @dataclass(frozen=True, repr=False)
-class Affine:
+class IndexExpr:
     """The index `offset + sum(a * s for s, a in terms)`.
 
     `terms` holds each symbol at most once with a nonzero coefficient, so equal indices
-    have equal fields. `Affine.make` drops zero coefficients.
+    have equal fields. `IndexExpr.make` drops zero coefficients.
     """
 
     offset: int = 0
@@ -91,45 +92,45 @@ class Affine:
         return text
 
     @staticmethod
-    def make(offset: int, coeffs: Mapping[Sym, int]) -> Affine:
+    def make(offset: int, coeffs: Mapping[Sym, int]) -> IndexExpr:
         """Return the index with the constant term `offset` and the coefficients `coeffs`."""
-        return Affine(offset, frozenset((s, a) for s, a in coeffs.items() if a))
+        return IndexExpr(offset, frozenset((s, a) for s, a in coeffs.items() if a))
 
     @staticmethod
-    def of(sym: Sym) -> Affine:
+    def of(sym: Sym) -> IndexExpr:
         """Return the index that is the symbol `sym` alone."""
-        return Affine(0, frozenset({(sym, 1)}))
+        return IndexExpr(0, frozenset({(sym, 1)}))
 
     @property
     def constant(self) -> int | None:
         """Return the value of an index without symbols, or None if it has one."""
         return None if self.terms else self.offset
 
-    def __add__(self, other: Affine | int) -> Affine:
+    def __add__(self, other: IndexExpr | int) -> IndexExpr:
         """Return the sum of two indices."""
         other = lift(other)
         coeffs = dict(self.terms)
         for s, a in other.terms:
             coeffs[s] = coeffs.get(s, 0) + a
-        return Affine.make(self.offset + other.offset, coeffs)
+        return IndexExpr.make(self.offset + other.offset, coeffs)
 
-    def __sub__(self, other: Affine | int) -> Affine:
+    def __sub__(self, other: IndexExpr | int) -> IndexExpr:
         """Return the difference of two indices."""
         return self + lift(other).scale(-1)
 
-    def scale(self, k: int) -> Affine:
+    def scale(self, k: int) -> IndexExpr:
         """Return the index multiplied by the constant `k`."""
-        return Affine.make(self.offset * k, {s: a * k for s, a in self.terms})
+        return IndexExpr.make(self.offset * k, {s: a * k for s, a in self.terms})
 
-    def substitute(self, mapping: Mapping[Sym, Affine]) -> Affine:
+    def substitute(self, mapping: Mapping[Sym, IndexExpr]) -> IndexExpr:
         """Replace each symbol that `mapping` holds with its index.
 
         A call uses this to replace a parameter of the callee with the index of the
         argument that the caller passes.
         """
-        out = Affine(self.offset)
+        out = IndexExpr(self.offset)
         for s, a in self.terms:
-            out = out + mapping.get(s, Affine.of(s)).scale(a)
+            out = out + mapping.get(s, IndexExpr.of(s)).scale(a)
         return out
 
     def symbols(self) -> frozenset[Sym]:
@@ -151,9 +152,9 @@ class Affine:
         return lo, hi
 
 
-def lift(value: Affine | int) -> Affine:
+def lift(value: IndexExpr | int) -> IndexExpr:
     """Return `value` as an index. An integer becomes a constant index."""
-    return value if isinstance(value, Affine) else Affine(value)
+    return value if isinstance(value, IndexExpr) else IndexExpr(value)
 
 
 @dataclass(frozen=True, repr=False)
@@ -163,9 +164,9 @@ class Slice:
     If the slice runs to the end of a register of unknown length, `length` is None.
     """
 
-    start: Affine
+    start: IndexExpr
     step: int
-    length: Affine | None
+    length: IndexExpr | None
 
     def __repr__(self) -> str:
         """Return the slice as `start:step:length`, such as `1:1:2`.
@@ -176,20 +177,21 @@ class Slice:
         length = "?" if self.length is None else repr(self.length)
         return f"{self.start!r}:{self.step}:{length}"
 
-    def item(self, j: Affine) -> Affine:
+    def item(self, j: IndexExpr) -> IndexExpr:
         """Return the register index of item `j` of the slice."""
         return self.start + j.scale(self.step)
 
     def then(self, inner: Slice) -> Slice | None:
         """Return the slice `inner` of this slice as a slice of the register.
 
-        The result is None if the length of `inner` is not affine or can be negative.
+        The result is None if the length of `inner` has no index expression or can be
+        negative.
         """
         length = inner.length
         if length is None and self.length is not None:
             span = self.length - inner.start
             if (n := span.constant) is not None:
-                length = Affine(max(0, -(-n // inner.step)))
+                length = IndexExpr(max(0, -(-n // inner.step)))
             elif inner.step != 1 or (limits := span.bounds()) is None or limits[0] < 0:
                 return None
             else:
@@ -198,7 +200,7 @@ class Slice:
 
 
 def python_slice(
-    start: Affine | None, stop: Affine | None, step: int, size: int | None
+    start: IndexExpr | None, stop: IndexExpr | None, step: int, size: int | None
 ) -> Slice | None:
     """Return the slice that `x[start:stop:step]` reads from a list of `size` items.
 
@@ -211,12 +213,12 @@ def python_slice(
     if size is not None and all(b is None or b.constant is not None for b in bounds):
         first, last = (None if b is None else b.constant for b in bounds)
         items = range(size)[slice(first, last, step)]
-        return Slice(Affine(items.start), items.step, Affine(len(items)))
+        return Slice(IndexExpr(items.start), items.step, IndexExpr(len(items)))
     if step < 0:
         return None
-    start = start or Affine(0)
+    start = start or IndexExpr(0)
 
-    def in_range(bound: Affine) -> bool:
+    def in_range(bound: IndexExpr) -> bool:
         limits = bound.bounds()
         return (
             limits is not None
@@ -233,12 +235,12 @@ def python_slice(
     if stop is None:
         if size is None:
             return Slice(start, step, None)
-        stop = Affine(size)
+        stop = IndexExpr(size)
     span = stop - start
     if (n := span.constant) is not None:
-        return Slice(start, step, Affine(max(0, -(-n // step))))
-    # A symbolic length must stay affine, and `ceil(span / step)` is affine only
-    # for a step of 1.
+        return Slice(start, step, IndexExpr(max(0, -(-n // step))))
+    # A symbolic length must stay an index expression, and `ceil(span / step)` is
+    # one only for a step of 1.
     limits = span.bounds()
     if step == 1 and limits is not None and limits[0] >= 0:
         return Slice(start, 1, span)

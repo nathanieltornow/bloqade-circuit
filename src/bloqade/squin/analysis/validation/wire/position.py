@@ -10,7 +10,7 @@ from kirin.analysis.forward import ForwardFrame
 
 from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Affine, Indices
+from bloqade.analysis.indices import Indices, IndexExpr
 from bloqade.squin.wire.types import is_linear
 from bloqade.squin.wire.traits import Threads
 from bloqade.squin.wire.ownership import KEY as OWNED
@@ -30,7 +30,7 @@ class PositionAnalysis(CachedCalls[Origin]):
     active_functions: list[ir.Statement] = field(default_factory=list, init=False)
     """The functions that the analysis interprets now, innermost last."""
     indices: Indices = field(init=False)
-    """The affine index of each wire value, computed once per function."""
+    """The index expression of each wire value, computed once per function."""
 
     def initialize(self) -> Self:
         """Reset function context and integer facts before each validation run."""
@@ -139,7 +139,7 @@ class WirePositions(interp.MethodTable):
         size = (
             constant_int(stmt.size) if isinstance(stmt, stmts.AllocRegister) else None
         )
-        length = None if size is None else Affine(size)
+        length = None if size is None else IndexExpr(size)
         return tuple(fresh_origin(value, length) for value in stmt.results)
 
     @interp.impl(stmts.Borrow)

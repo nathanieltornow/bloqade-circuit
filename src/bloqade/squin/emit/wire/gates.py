@@ -7,7 +7,7 @@ from kirin.dialects import py, scf, ilist
 from kirin.dialects.py import assertion
 from kirin.dialects.ilist import stmts as ilist_stmts
 
-from bloqade.analysis.indices import Affine, Emitted
+from bloqade.analysis.indices import Emitted, IndexExpr
 from bloqade.squin.wire.twins import TWINS
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.traits import Twin
@@ -117,7 +117,7 @@ def broadcast_loop(
         roots = carry_wires(frame, body)
         incoming = tuple(frame.latest[root] for root in roots)
         qubits = tuple(
-            select(register, Affine.of(Emitted(index)), source)
+            select(register, IndexExpr.of(Emitted(index)), source)
             for register in registers
         )
         values = scalar_gate(emit, body, source, qubits)

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from kirin import ir
 
-from bloqade.analysis.indices import Slice, Affine, python_slice
+from bloqade.analysis.indices import Slice, IndexExpr, python_slice
 from bloqade.squin.wire.errors import WireConversionError
 
 
@@ -28,7 +28,7 @@ class Element:
     """Name the qubit of a register at a flat root index."""
 
     root: ir.SSAValue
-    index: Affine
+    index: IndexExpr
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,7 @@ class Register:
     """Name one whole flat register allocation."""
 
     root: ir.SSAValue
-    length: Affine | None = None
+    length: IndexExpr | None = None
     """The number of qubits, or None if it is unknown."""
 
 
@@ -49,7 +49,7 @@ class View:
     """The flat root index of each qubit of the slice."""
 
     @property
-    def length(self) -> Affine | None:
+    def length(self) -> IndexExpr | None:
         """Return the number of qubits, or None if it is unknown."""
         return self.span.length
 
@@ -59,7 +59,7 @@ class Grid:
     """Name one whole nested register allocation."""
 
     root: ir.SSAValue
-    length: Affine | None
+    length: IndexExpr | None
     """The number of rows, or None if it is unknown."""
     row_shape: tuple[int | None, ...]
     """The dimensions of one row, outermost first."""
@@ -76,7 +76,7 @@ class Rows:
     """The dimensions of one item row, outermost first."""
 
     @property
-    def length(self) -> Affine | None:
+    def length(self) -> IndexExpr | None:
         """Return the number of item rows."""
         return self.span.length
 
@@ -114,7 +114,7 @@ def items_of(location: Location, at: ir.Statement) -> Part:
     return location
 
 
-def select(location: Location, index: Affine, at: ir.Statement) -> Location:
+def select(location: Location, index: IndexExpr, at: ir.Statement) -> Location:
     """Return the location of item `index` of a register or a register part."""
     part = items_of(location, at)
     index = checked_index(part.length, index, at)
@@ -129,7 +129,9 @@ def select(location: Location, index: Affine, at: ir.Statement) -> Location:
             return row(root, span.item(index), row_shape, at)
 
 
-def checked_index(length: Affine | None, index: Affine, at: ir.Statement) -> Affine:
+def checked_index(
+    length: IndexExpr | None, index: IndexExpr, at: ir.Statement
+) -> IndexExpr:
     """Count a negative constant index from the end and check the index bounds.
 
     The check rejects an index that lies outside the length in any execution.
@@ -143,7 +145,7 @@ def checked_index(length: Affine | None, index: Affine, at: ir.Statement) -> Aff
                 at,
             )
         position += count
-        index = Affine(position)
+        index = IndexExpr(position)
     if count is not None and position is not None and not 0 <= position < count:
         raise WireConversionError(
             "The register index has no place in this allocation.", at
@@ -175,19 +177,19 @@ def row_width(shape: tuple[int | None, ...], at: ir.Statement | None) -> int:
 
 
 def row(
-    root: ir.SSAValue, start: Affine, shape: tuple[int | None, ...], at: ir.Statement
+    root: ir.SSAValue, start: IndexExpr, shape: tuple[int | None, ...], at: ir.Statement
 ) -> View | Rows:
     """Return the location of the row of dimensions `shape` that starts at `start`."""
     outer, *inner = known_shape(shape, at)
     if not inner:
-        return View(root, Slice(start, 1, Affine(outer)))
-    return Rows(root, Slice(start, math.prod(inner), Affine(outer)), tuple(inner))
+        return View(root, Slice(start, 1, IndexExpr(outer)))
+    return Rows(root, Slice(start, math.prod(inner), IndexExpr(outer)), tuple(inner))
 
 
 def select_slice(
     location: Location,
-    start: Affine | None,
-    stop: Affine | None,
+    start: IndexExpr | None,
+    stop: IndexExpr | None,
     step: int,
     at: ir.Statement,
 ) -> Value:
@@ -212,7 +214,7 @@ def select_slice(
                 step,
             )
         ]
-        return tuple(select(part, Affine(i), at) for i in selected)
+        return tuple(select(part, IndexExpr(i), at) for i in selected)
     span = python_slice(start, stop, step, count)
     if span is not None and isinstance(part, View):
         span = part.span.then(span)

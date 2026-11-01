@@ -17,7 +17,7 @@ from kirin.validation import ValidationPass
 from kirin.analysis.forward import ForwardFrame
 
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Sym, Slice, Affine, Indices
+from bloqade.analysis.indices import Sym, Slice, Indices, IndexExpr
 from bloqade.squin.wire.types import (
     RegisterType,
 )
@@ -31,7 +31,7 @@ BORROW_KEY = "squin.wire.borrows"
 class Moved:
     """Name register elements whose qubits `Take` or `TakeSlice` moved out for good."""
 
-    selection: Affine | Slice
+    selection: IndexExpr | Slice
     """The moved element index or the moved contiguous range."""
 
 
@@ -106,12 +106,12 @@ class UnreachableSlots(Slots):
 class KnownSlots(Slots):
     """List the unavailable slots of a register."""
 
-    unavailable: frozenset[Affine | Moved] = frozenset()
-    """The affine index of each borrowed slot and a `Moved` entry for each moved part.
+    unavailable: frozenset[IndexExpr | Moved] = frozenset()
+    """The index expression of each borrowed slot and a `Moved` entry for each move.
 
     Equal expressions, such as `i` and `i + 0`, have the same key.
     """
-    length: Affine | None = None
+    length: IndexExpr | None = None
     """The number of elements of the register, or None if it is unknown."""
 
 
@@ -119,7 +119,7 @@ EMPTY = KnownSlots()
 """The state of a complete register."""
 
 
-def known_length(state: Slots) -> Affine | None:
+def known_length(state: Slots) -> IndexExpr | None:
     """Return the register length that `state` records, or None."""
     return state.length if isinstance(state, KnownSlots) else None
 
@@ -131,8 +131,8 @@ class BorrowCheck(CachedCalls[Slots]):
     keys = (BORROW_KEY, "absint")
     lattice = Slots
     indices: Indices = field(init=False)
-    """The affine index of each wire value, computed once per function."""
-    lengths: dict[Sym, Affine] = field(default_factory=dict, init=False)
+    """The index expression of each wire value, computed once per function."""
+    lengths: dict[Sym, IndexExpr] = field(default_factory=dict, init=False)
     """The known register length that each `Length` result reads."""
 
     def initialize(self) -> "BorrowCheck":
@@ -141,8 +141,8 @@ class BorrowCheck(CachedCalls[Slots]):
         self.lengths = {}
         return super().initialize()
 
-    def index(self, value: ir.SSAValue) -> Affine:
-        """Return the affine index of `value`, with known register lengths filled in."""
+    def index(self, value: ir.SSAValue) -> IndexExpr:
+        """Return the index expression of `value` with the known register lengths."""
         return self.indices.of(value).substitute(self.lengths)
 
     def method_self(self, method: ir.Method) -> Slots:
@@ -248,7 +248,7 @@ class _Borrows(interp.MethodTable):
         self, check: BorrowCheck, frame: ForwardFrame[Slots], stmt: stmts.PackRegister
     ) -> tuple[Slots, ...]:
         """Record the number of consumed qubits in the new register."""
-        return (KnownSlots(length=Affine(len(stmt.wires))),)
+        return (KnownSlots(length=IndexExpr(len(stmt.wires))),)
 
     @interp.impl(stmts.Length)
     def length(
@@ -339,7 +339,7 @@ class _Borrows(interp.MethodTable):
         return ()
 
 
-def overlaps(a: Affine | Moved, b: Affine | Moved) -> bool:
+def overlaps(a: IndexExpr | Moved, b: IndexExpr | Moved) -> bool:
     """Check whether two unavailable slots provably share a register element.
 
     Slots whose overlap depends on runtime values pass. A source program must keep
@@ -348,8 +348,8 @@ def overlaps(a: Affine | Moved, b: Affine | Moved) -> bool:
     left, right = (
         slot.selection if isinstance(slot, Moved) else slot for slot in (a, b)
     )
-    left = left if isinstance(left, Slice) else Slice(left, 1, Affine(1))
-    right = right if isinstance(right, Slice) else Slice(right, 1, Affine(1))
+    left = left if isinstance(left, Slice) else Slice(left, 1, IndexExpr(1))
+    right = right if isinstance(right, Slice) else Slice(right, 1, IndexExpr(1))
     if left.length is None or right.length is None:
         return False
     # The ranges `[s1, s1 + n1)` and `[s2, s2 + n2)` meet if each one starts before

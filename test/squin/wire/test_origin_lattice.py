@@ -4,7 +4,7 @@ from itertools import product
 
 from kirin.dialects import py
 
-from bloqade.analysis.indices import Affine
+from bloqade.analysis.indices import IndexExpr
 from bloqade.squin.analysis.validation.wire.origins import (
     Origin,
     QubitHandle,
@@ -59,8 +59,8 @@ def test_call_results_keep_borrowed_roots_and_distinguish_fresh_roots():
 
 
 def test_register_origins_resolve_negative_indices_and_reject_invalid_elements():
-    register = HandleOrigin(RegisterHandle("register", Affine(3)))
-    assert element_of(register, Affine(-1)) == element_of(register, Affine(2))
-    assert element_of(register, Affine(3)) == Origin.top()
-    assert element_of(register, Affine(-4)) == Origin.top()
-    assert element_of(HandleOrigin(QubitHandle("wire")), Affine(0)) == Origin.top()
+    register = HandleOrigin(RegisterHandle("register", IndexExpr(3)))
+    assert element_of(register, IndexExpr(-1)) == element_of(register, IndexExpr(2))
+    assert element_of(register, IndexExpr(3)) == Origin.top()
+    assert element_of(register, IndexExpr(-4)) == Origin.top()
+    assert element_of(HandleOrigin(QubitHandle("wire")), IndexExpr(0)) == Origin.top()

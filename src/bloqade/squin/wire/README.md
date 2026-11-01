@@ -72,7 +72,7 @@ The root is the emitted allocation result, a call result or a function parameter
 A nested register has one flat root register that holds its rows in order.
 The frame keeps locations stable while `latest` changes after each quantum operation.
 An alias copies its operand's frame entry.
-An index selects from that entry using the affine index of the source integer operand.
+An index selects from that entry using the index expression of the source integer operand.
 A source list holds its element locations in a tuple.
 
 Emission uses these frame entries for all source reference resolution.
@@ -82,8 +82,8 @@ Each reference operation reads the meanings of its operands from that frame.
 It represents expressions such as `i + 1`.
 The emitter analyzes source integers, so the symbols of an index are source values.
 A loop symbol carries the constant range of its source loop.
-`emit_affine` maps each symbol to its emitted value through the frame entries.
-An integer that is not affine, such as `i * i`, is one opaque symbol.
+`emit_index` maps each symbol to its emitted value through the frame entries.
+An integer without that form, such as `i * i`, becomes one opaque symbol.
 Two uses of one opaque symbol name the same element.
 
 A wire register index lies between 0 and the register length minus 1, as in Jeff.
@@ -197,7 +197,7 @@ It gives the borrowed parameter positions, the ordinary result count and the tup
 The caller reads the type of each wire result from the callee's inferred signature.
 `Contract` holds the callee's wire method and one static length for each ordinary result.
 The length is None for a classical result and for a register of unknown length.
-A length is an affine expression in the callee's integer parameters.
+A length is an index expression over the callee's integer parameters.
 The caller replaces those parameters with its own arguments, so `qalloc(n)` in the callee gives a known length at a call with a constant `n`.
 With a symbolic `n`, a broadcast over the result reads the runtime length through `Length`.
 

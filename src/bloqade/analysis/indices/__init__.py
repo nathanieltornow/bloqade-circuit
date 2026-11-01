@@ -1,12 +1,12 @@
-"""Compute and compare the affine indices that name an item of a register."""
+"""Compute and compare the index expressions that name an item of a register."""
 
 from . import impls as impls
-from .affine import (
+from .expr import (
     Sym as Sym,
     Iter as Iter,
     Slice as Slice,
-    Affine as Affine,
     Emitted as Emitted,
+    IndexExpr as IndexExpr,
     lift as lift,
     loop_values as loop_values,
     python_slice as python_slice,

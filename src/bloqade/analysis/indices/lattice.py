@@ -6,20 +6,20 @@ from dataclasses import dataclass
 
 from kirin.lattice import BoundedLattice
 
-from .affine import Affine
+from .expr import IndexExpr
 
 
 @dataclass(frozen=True)
 class Index(BoundedLattice["Index"]):
-    """Hold the affine index fact of one value.
+    """Hold the index expression fact of one value.
 
     `UnknownIndex` is the top, `UnreachableIndex` is the bottom, and `KnownIndex`
-    holds an affine index.
+    holds an index expression.
     """
 
     @classmethod
     def top(cls) -> Index:
-        """Return the fact of a value without an affine index."""
+        """Return the fact of a value without an index expression."""
         return UnknownIndex()
 
     @classmethod
@@ -54,7 +54,7 @@ class Index(BoundedLattice["Index"]):
 
 @dataclass(frozen=True)
 class UnknownIndex(Index):
-    """Name the fact of a value without an affine index."""
+    """Name the fact of a value without an index expression."""
 
 
 @dataclass(frozen=True)
@@ -64,6 +64,6 @@ class UnreachableIndex(Index):
 
 @dataclass(frozen=True)
 class KnownIndex(Index):
-    """Hold the affine index of a value."""
+    """Hold the index expression of a value."""
 
-    affine: Affine
+    expr: IndexExpr

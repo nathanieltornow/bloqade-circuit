@@ -124,14 +124,14 @@ def test_owned_loop_can_exchange_its_state_positions(n, expected):
 def test_register_validation_states_obey_lattice_bounds():
     import itertools
 
-    from bloqade.analysis.indices import Affine
+    from bloqade.analysis.indices import IndexExpr
     from bloqade.squin.analysis.validation.wire.borrows import Moved, Slots, KnownSlots
 
     states = [Slots.bottom(), Slots.top(), KnownSlots()]
-    for length in (None, Affine(2), Affine(3)):
+    for length in (None, IndexExpr(2), IndexExpr(3)):
         states.extend(
             KnownSlots(frozenset(held), length)
-            for held in ((), (Affine(0),), (Moved(Affine(1)),))
+            for held in ((), (IndexExpr(0),), (Moved(IndexExpr(1)),))
         )
     for left, right in itertools.product(states, repeat=2):
         assert Slots.bottom().is_subseteq(left)

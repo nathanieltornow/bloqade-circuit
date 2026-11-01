@@ -13,7 +13,7 @@ from collections.abc import Hashable
 from kirin import ir
 from kirin.lattice import BoundedLattice
 
-from bloqade.analysis.indices import Affine
+from bloqade.analysis.indices import IndexExpr
 from bloqade.squin.wire.types import WireType
 
 
@@ -31,7 +31,7 @@ class RegisterHandle:
 
     root: Hashable
     """The identity of the allocation."""
-    length: Affine | None = None
+    length: IndexExpr | None = None
     """The number of elements of the register, or None if it is unknown."""
 
 
@@ -41,7 +41,7 @@ class ElementHandle:
 
     root: Hashable
     """The identity of the register allocation."""
-    index: Affine
+    index: IndexExpr
     """The index of the element in the register."""
 
 
@@ -49,14 +49,14 @@ Handle: TypeAlias = QubitHandle | RegisterHandle | ElementHandle
 """Identify an allocation or one element of a register allocation."""
 
 
-def fresh_origin(value: ir.SSAValue, length: Affine | None = None) -> Origin:
+def fresh_origin(value: ir.SSAValue, length: IndexExpr | None = None) -> Origin:
     """Return the origin of the new allocation that `value` names."""
     if value.type == WireType:
         return HandleOrigin(QubitHandle(value))
     return HandleOrigin(RegisterHandle(value, length))
 
 
-def element_of(origin: Origin, index: Affine) -> Origin:
+def element_of(origin: Origin, index: IndexExpr) -> Origin:
     """Return the origin of element `index` of a whole register origin.
 
     The result is unknown for any other origin and for an index outside a known

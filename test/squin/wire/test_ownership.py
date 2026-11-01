@@ -106,13 +106,13 @@ def test_unrelated_symbols_can_borrow_together():
     WireValidation().check(borrows())
 
 
-def test_equal_affine_expressions_cannot_borrow_twice():
+def test_equal_index_expressions_cannot_borrow_twice():
     with pytest.raises(ValidationErrorGroup, match="already borrowed"):
         WireValidation().check(borrows(offset=0))
 
 
 @pytest.mark.parametrize("offset", [-2, -1, 1, 2])
-def test_nonzero_affine_offsets_prove_distinct_borrows(offset):
+def test_borrows_at_nonzero_offsets_pass(offset):
     WireValidation().check(borrows(offset=offset))
 
 

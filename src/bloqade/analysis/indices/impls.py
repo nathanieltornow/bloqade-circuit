@@ -4,15 +4,15 @@ from kirin import ir, interp
 from kirin.dialects import py, scf, func
 from kirin.analysis.forward import ForwardFrame
 
-from .affine import Iter, Affine, loop_values
+from .expr import Iter, IndexExpr, loop_values
 from .lattice import Index, KnownIndex, UnknownIndex
 from .analysis import KEY, IndexAnalysis, own_index
 
 
-def affine_of(frame: ForwardFrame[Index], value: ir.SSAValue) -> Affine | None:
-    """Return the affine index that `frame` holds for `value`, or None."""
+def expr_of(frame: ForwardFrame[Index], value: ir.SSAValue) -> IndexExpr | None:
+    """Return the index expression that `frame` holds for `value`, or None."""
     fact = frame.get(value)
-    return fact.affine if isinstance(fact, KnownIndex) else None
+    return fact.expr if isinstance(fact, KnownIndex) else None
 
 
 @py.assign.dialect.register(key=KEY)
@@ -36,7 +36,7 @@ class Arithmetic(interp.MethodTable):
         self, analysis: IndexAnalysis, frame: ForwardFrame[Index], stmt: py.Add
     ) -> tuple[Index, ...]:
         """Return the sum of the operand indices."""
-        left, right = affine_of(frame, stmt.lhs), affine_of(frame, stmt.rhs)
+        left, right = expr_of(frame, stmt.lhs), expr_of(frame, stmt.rhs)
         if left is None or right is None:
             return (own_index(stmt.result),)
         return (KnownIndex(left + right),)
@@ -46,7 +46,7 @@ class Arithmetic(interp.MethodTable):
         self, analysis: IndexAnalysis, frame: ForwardFrame[Index], stmt: py.Sub
     ) -> tuple[Index, ...]:
         """Return the difference of the operand indices."""
-        left, right = affine_of(frame, stmt.lhs), affine_of(frame, stmt.rhs)
+        left, right = expr_of(frame, stmt.lhs), expr_of(frame, stmt.rhs)
         if left is None or right is None:
             return (own_index(stmt.result),)
         return (KnownIndex(left - right),)
@@ -56,7 +56,7 @@ class Arithmetic(interp.MethodTable):
         self, analysis: IndexAnalysis, frame: ForwardFrame[Index], stmt: py.Mult
     ) -> tuple[Index, ...]:
         """Scale an index by a constant, or give any other product its own symbol."""
-        left, right = affine_of(frame, stmt.lhs), affine_of(frame, stmt.rhs)
+        left, right = expr_of(frame, stmt.lhs), expr_of(frame, stmt.rhs)
         if left is not None and right is not None:
             if (k := left.constant) is not None:
                 return (KnownIndex(right.scale(k)),)
@@ -74,7 +74,7 @@ class Negation(interp.MethodTable):
         self, analysis: IndexAnalysis, frame: ForwardFrame[Index], stmt: py.unary.USub
     ) -> tuple[Index, ...]:
         """Return the negated index, or a symbol of its own."""
-        operand = affine_of(frame, stmt.value)
+        operand = expr_of(frame, stmt.value)
         if operand is None:
             return (own_index(stmt.result),)
         return (KnownIndex(operand.scale(-1)),)
@@ -89,7 +89,7 @@ class Regions(interp.MethodTable):
         self, analysis: IndexAnalysis, frame: ForwardFrame[Index], stmt: scf.For
     ) -> tuple[Index, ...]:
         """Give the loop variable its `Iter` symbol, and each carried value its own."""
-        index = KnownIndex(Affine.of(Iter(stmt, loop_values(stmt.iterable))))
+        index = KnownIndex(IndexExpr.of(Iter(stmt, loop_values(stmt.iterable))))
         carried = (own_index(arg) for arg in stmt.body.blocks[0].args[1:])
         analyze_body(analysis, frame, stmt, stmt.body, index, *carried)
         return tuple(own_index(result) for result in stmt.results)
