@@ -6,7 +6,6 @@ from typing import Any
 import pytest
 from kirin import ir, types
 from kirin.dialects import func, ilist
-from kirin.ir.exception import ValidationErrorGroup
 
 from bloqade import squin
 from bloqade.types import Qubit, MeasurementResult
@@ -224,9 +223,8 @@ def maybe_the_same_qubit(j: int) -> ilist.IList[MeasurementResult, Any]:
     return squin.broadcast.measure(qs)
 
 
-def test_a_gate_on_two_places_that_may_alias_is_refused():
-    with pytest.raises(ValidationErrorGroup, match="provably differ"):
-        SquinToWire().emit(maybe_the_same_qubit)
+def test_a_gate_on_a_runtime_index_converts():
+    assert simulate(trip(maybe_the_same_qubit), 2) == [1, 0, 1]
 
 
 @squin.kernel

@@ -6,7 +6,6 @@ affine indices are equal when their difference is zero.
 
 from __future__ import annotations
 
-import math
 from typing import Mapping
 from dataclasses import dataclass
 
@@ -155,26 +154,6 @@ class Affine:
 def lift(value: Affine | int) -> Affine:
     """Return `value` as an index. An integer becomes a constant index."""
     return value if isinstance(value, Affine) else Affine(value)
-
-
-def same(a: Affine, b: Affine) -> bool | None:
-    """Check whether the indices `a` and `b` name the same item.
-
-    The result is True if they are equal for every value of the symbols, False if they
-    are equal for none, and None otherwise. A shared `Iter` symbol stands for one
-    iteration, so `same(i, i + 1)` is False.
-    """
-    d = a - b
-    if d.constant is not None:
-        return d.constant == 0
-    # The GCD test: if the GCD of the coefficients does not divide the constant,
-    # `d` is never 0. For example, `2*i` and `2*i + 1` never meet.
-    if d.offset % math.gcd(*(c for _, c in d.terms)):
-        return False
-    limits = d.bounds()
-    if limits is not None and (limits[0] > 0 or limits[1] < 0):
-        return False
-    return None
 
 
 @dataclass(frozen=True, repr=False)

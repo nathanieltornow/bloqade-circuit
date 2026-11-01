@@ -541,7 +541,7 @@ def tuple_at_runtime(n: int, k: int) -> int:
 @pytest.mark.parametrize(
     "kernel, reason",
     [
-        (twice, "available wire at this operation"),
+        (twice, "cannot use one qubit or register twice"),
         (concatenated, "requires scalar numeric operands"),
         (mistyped, "Bottom"),
         (mixed, "cannot convert a runtime integer to a float"),
@@ -572,12 +572,12 @@ def test_refusals(kernel, reason):
 @pytest.mark.parametrize(
     "kernel, reason",
     [
-        (passes_twice, "separate quantum locations"),
+        (passes_twice, "cannot use one qubit or register twice"),
         (nested, "requires function, loop or branch regions"),
         (passes_tuple, "separate arguments for tuple fields"),
         (over_list, "classical operation cannot consume a quantum reference"),
         (strided_to_a_call, "whole registers or individual qubits"),
-        (register_and_its_slot, "separate quantum locations"),
+        (register_and_its_slot, "cannot use one qubit or register twice"),
     ],
 )
 def test_direct_emission_rejects_unsupported_reference_forms(kernel, reason):

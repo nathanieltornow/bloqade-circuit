@@ -1,7 +1,6 @@
 """Check complete conversion before independent wire ownership validation."""
 
 import pytest
-from test_rejections import opaque_partner
 from kirin.ir.exception import ValidationErrorGroup
 
 from bloqade import squin
@@ -24,15 +23,10 @@ def identical_operands():
     squin.cx(qs[0], qs[0])
 
 
-@pytest.mark.parametrize(
-    "kernel, reason",
-    [(uncertain_operands, "provably differ"), (identical_operands, "already borrowed")],
-)
-def test_conversion_builds_wire_operations_and_validation_rejects_invalid_borrows(
-    kernel, reason
-):
-    before = kernel.code.print_str()
-    method = kernel.similar()
+def test_conversion_builds_wire_operations_and_validation_rejects_invalid_borrows():
+    reason = "already borrowed"
+    before = identical_operands.code.print_str()
+    method = identical_operands.similar()
     method = EmitWire(method.dialects, method, {}).emit_method().method
     assert not ConversionTarget.check(method)
     method.verify()
@@ -41,25 +35,12 @@ def test_conversion_builds_wire_operations_and_validation_rejects_invalid_borrow
     with pytest.raises(ValidationErrorGroup, match=reason):
         WireValidation().check(method)
     with pytest.raises(ValidationErrorGroup, match=reason):
-        SquinToWire().emit(kernel)
-    assert kernel.code.print_str() == before
+        SquinToWire().emit(identical_operands)
+    assert identical_operands.code.print_str() == before
 
 
-@squin.kernel
-def constant_call_operand():
-    qs = squin.qalloc(2)
-    squin.x(qs[0])
-    opaque_partner(qs, 1)
-    return squin.broadcast.measure(qs)
-
-
-def test_a_callee_failure_propagates_even_when_the_caller_supplies_a_constant():
-    converter = SquinToWire()
-    before = constant_call_operand.code.print_str()
-    with pytest.raises(ValidationErrorGroup, match="provably differ"):
-        converter.emit(constant_call_operand)
-    assert not converter.contracts
-    assert constant_call_operand.code.print_str() == before
+def test_operands_that_can_differ_at_runtime_convert():
+    WireValidation().check(SquinToWire().emit(uncertain_operands))
 
 
 @squin.kernel
@@ -109,22 +90,15 @@ def test_definite_callee_ownership_failure_stops_emission(monkeypatch):
 
 
 def test_callee_failure_keeps_the_original_condition_and_location():
-    from test_rejections import maybe_the_same_qubit
-
-    from bloqade.squin.wire.errors import UnresolvedBorrowSeparation
-
     with pytest.raises(ValidationErrorGroup) as caught:
-        SquinToWire().emit(maybe_the_same_qubit)
+        SquinToWire().emit(call_identical_operands)
     assert caught.value.__cause__ is None
     assert caught.value.errors
-    assert all(
-        isinstance(error, UnresolvedBorrowSeparation) for error in caught.value.errors
-    )
     for error in caught.value.errors:
         assert error.node.source is not None
         assert error.source is not None
         assert error.source.lineno > 0
-        assert "provably differ" in str(error)
+    assert any("already borrowed" in str(error) for error in caught.value.errors)
 
 
 def test_borrow_failure_points_to_the_source_call_and_preserves_source_metadata():

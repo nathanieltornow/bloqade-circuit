@@ -17,11 +17,10 @@ from kirin.validation import ValidationPass
 from kirin.analysis.forward import ForwardFrame
 
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Sym, Slice, Affine, Indices, same
+from bloqade.analysis.indices import Sym, Slice, Affine, Indices
 from bloqade.squin.wire.types import (
     RegisterType,
 )
-from bloqade.squin.wire.errors import UnresolvedBorrowSeparation
 from bloqade.squin.analysis.validation.wire.calls import CachedCalls
 
 BORROW_KEY = "squin.wire.borrows"
@@ -208,16 +207,8 @@ class _Borrows(interp.MethodTable):
         )
         if not isinstance(state, KnownSlots):
             return (state, state)
-        if key in state.unavailable:
+        if any(overlaps(key, previous) for previous in state.unavailable):
             check.error(stmt, "'borrow' takes a slot that is already borrowed")
-        elif any(not disjoint(key, previous) for previous in state.unavailable):
-            check.add_validation_error(
-                stmt,
-                UnresolvedBorrowSeparation(
-                    stmt,
-                    "'borrow' requires indices that provably differ from every outstanding borrow",
-                ),
-            )
         return (
             KnownSlots(state.unavailable | {key}, state.length),
             Slots.top(),
@@ -302,7 +293,7 @@ class _Borrows(interp.MethodTable):
             return state, state
         if not isinstance(state, KnownSlots):
             return Slots.top(), KnownSlots(length=size)
-        if any(not disjoint(key, slot) for slot in state.unavailable):
+        if any(overlaps(key, slot) for slot in state.unavailable):
             check.error(
                 stmt, "A slice extraction overlaps an outstanding register hole."
             )
@@ -348,19 +339,26 @@ class _Borrows(interp.MethodTable):
         return ()
 
 
-def disjoint(a: Affine | Moved, b: Affine | Moved) -> bool:
-    """Prove that two unavailable slots share no register element."""
-    first = a.selection if isinstance(a, Moved) else a
-    second = b.selection if isinstance(b, Moved) else b
-    if isinstance(first, Affine) and isinstance(second, Affine):
-        return same(first, second) is False
-    left = first if isinstance(first, Slice) else Slice(first, 1, Affine(1))
-    right = second if isinstance(second, Slice) else Slice(second, 1, Affine(1))
+def overlaps(a: Affine | Moved, b: Affine | Moved) -> bool:
+    """Check whether two unavailable slots provably share a register element.
+
+    Slots whose overlap depends on runtime values pass. A source program must keep
+    such slots apart, as it must keep a runtime index inside its register.
+    """
+    left, right = (
+        slot.selection if isinstance(slot, Moved) else slot for slot in (a, b)
+    )
+    left = left if isinstance(left, Slice) else Slice(left, 1, Affine(1))
+    right = right if isinstance(right, Slice) else Slice(right, 1, Affine(1))
     if left.length is None or right.length is None:
         return False
-    gap_a = (left.start + left.length - right.start).constant
-    gap_b = (right.start + right.length - left.start).constant
-    return (gap_a is not None and gap_a <= 0) or (gap_b is not None and gap_b <= 0)
+    # The ranges `[s1, s1 + n1)` and `[s2, s2 + n2)` meet if each one starts before
+    # the other one ends.
+    gaps = (
+        (left.start + left.length - right.start).constant,
+        (right.start + right.length - left.start).constant,
+    )
+    return all(gap is not None and gap > 0 for gap in gaps)
 
 
 @scf.dialect.register(key=BORROW_KEY)

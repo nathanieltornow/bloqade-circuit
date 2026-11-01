@@ -76,7 +76,7 @@ def test_reverse_conversion_checks_ownership_before_rewriting():
 
 
 def borrows(*, offset=None, sequential=False):
-    """Borrow two symbolic positions and optionally prove their separation."""
+    """Borrow the register positions `i` and `j`, or `i` and `i + offset`."""
     block = ir.Block(argtypes=(types.Any, RegisterType, types.Int, types.Int))
     _, register, i, j = block.args
     if offset is not None:
@@ -102,9 +102,8 @@ def borrows(*, offset=None, sequential=False):
     return method(block, (RegisterType, types.Int, types.Int))
 
 
-def test_unrelated_symbols_cannot_prove_distinct_borrows():
-    with pytest.raises(ValidationErrorGroup, match="provably differ"):
-        WireValidation().check(borrows())
+def test_unrelated_symbols_can_borrow_together():
+    WireValidation().check(borrows())
 
 
 def test_equal_affine_expressions_cannot_borrow_twice():

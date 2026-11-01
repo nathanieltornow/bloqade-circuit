@@ -7,7 +7,6 @@ from bloqade.analysis.indices import (
     Iter,
     Slice,
     Affine,
-    same,
     python_slice,
 )
 
@@ -24,15 +23,6 @@ def test_arithmetic_normalizes():
     assert (i + 1) - i == Affine(1)
     assert i.scale(2) - i - i == Affine(0)
     assert (i + n).substitute({N: Affine(4)}) == i + 4
-
-
-def test_same_proves_equal_and_disjoint_indices():
-    assert same(i, i) is True
-    assert same(i, i + 1) is False
-    assert same(i.scale(2), i.scale(2) + 1) is False
-    assert same(i, Affine(5)) is False
-    assert same(i, Affine(1)) is None
-    assert same(n, Affine(0)) is None
 
 
 def test_constant_slices_match_python():

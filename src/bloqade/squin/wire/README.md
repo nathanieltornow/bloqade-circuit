@@ -79,18 +79,21 @@ Emission uses these frame entries for all source reference resolution.
 Each reference operation reads the meanings of its operands from that frame.
 `IndexAnalysis` in `bloqade.analysis.indices` is a Kirin forward analysis of integer arithmetic.
 `Indices` runs it once on each function, on the first lookup of a value of that function.
-It represents expressions such as `i + 1` and proves simple index separation.
+It represents expressions such as `i + 1`.
 The emitter analyzes source integers, so the symbols of an index are source values.
 A loop symbol carries the constant range of its source loop.
 `emit_affine` maps each symbol to its emitted value through the frame entries.
 An integer that is not affine, such as `i * i`, is one opaque symbol.
-Two uses of one opaque symbol name the same element, and two different opaque symbols never provably differ.
+Two uses of one opaque symbol name the same element.
 
 A wire register index lies between 0 and the register length minus 1, as in Jeff.
 The converter counts a negative constant index from the end and checks constant bounds.
 A runtime index must be a valid wire index, which is a precondition of the source program.
 The converter emits a runtime index unchanged and checks neither its sign nor its upper bound.
 So `qs[k]` with a runtime `k` of -1 is invalid input, although Python would read it as the last element.
+Two operands of one operation must name different qubits, which is also a precondition.
+The pipeline rejects only operands that provably name the same qubit, such as `cx(qs[0], qs[0])`.
+So `cx(qs[j], qs[k])` converts, and a runtime `j` equal to `k` is invalid input.
 Jeff has no assertion statement, so the converter cannot emit a runtime check that Jeff keeps.
 Runtime register lengths come from wire `Length` operations.
 Nested register parameters use one flat register with their rows in source order.
@@ -239,13 +242,13 @@ Each fresh quantum result creates a new allocation identity in the caller.
 Two calls to the same allocating function create distinct identities.
 
 Quantum call operands must name separate scalar qubits or whole registers.
-Calls with register slices, quantum containers or overlapping quantum arguments fail.
+Calls with register slices or quantum containers fail.
 A returned borrowed alias also fails.
 A register argument must provably have the shape that its parameter type declares.
 A qubit parameter takes one qubit, and a register parameter takes a whole register.
 `UnsupportedCallContract` identifies unsupported argument layouts, argument shapes and result ownership.
 A function that returns one qubit twice fails with a plain `WireConversionError`.
-`UnresolvedArgumentSeparation` identifies quantum operands whose separation lacks proof.
+An operation that uses one qubit or register twice fails with a plain `WireConversionError`.
 Callee validation failures propagate directly to the caller.
 Each conversion error retains its operation, source location and failed condition.
 
@@ -269,6 +272,7 @@ A loop body must take every wire as a block argument, because the body runs more
 A register must hold no borrowed element when a statement frees, yields, returns or passes it.
 `Take` and `TakeSlice` move elements out, and `DiscardRegister` accepts moved elements but no borrowed ones.
 Borrow validation tracks outstanding register indices in its `Slots` lattice.
+It rejects a borrow or a move only if it provably meets an outstanding slot.
 Its `Moved` entries name elements that `Take` or `TakeSlice` moved out of a register.
 
 Position validation uses Kirin's `Forward` analysis with operation method tables.
@@ -358,7 +362,7 @@ Measurement tests enumerate outcomes and check their exact probabilities, includ
 Malformed-program tests exchange qubits and break ownership contracts to check validator rejection.
 Tests also disable reference analysis during conversion, validation, reconstruction and direct Jeff emission.
 
-Complete conversion can reject a valid source program when it cannot prove operand separation or resolve its reference expressions.
+Complete conversion can reject a valid source program when it cannot resolve its reference expressions.
 Public quantum parameters require distinct input qubits.
 Recursion and arbitrary control-flow graphs exceed the current conversion contract.
 Closures, list maps and direct iteration over qubit registers also exceed that contract.

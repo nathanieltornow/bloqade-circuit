@@ -1,7 +1,6 @@
 """Report source locations and conditions that prevent conversion."""
 
 from kirin import ir
-from kirin.ir.exception import PotentialValidationError
 
 
 class WireConversionError(Exception):
@@ -19,11 +18,3 @@ class WireConversionError(Exception):
 
 class UnsupportedCallContract(WireConversionError):
     """Report an unsupported layout of call arguments or results."""
-
-
-class UnresolvedArgumentSeparation(WireConversionError):
-    """Report call operands whose quantum locations lack proven separation."""
-
-
-class UnresolvedBorrowSeparation(PotentialValidationError):
-    """Report register indices whose separation can depend on caller-provided values."""

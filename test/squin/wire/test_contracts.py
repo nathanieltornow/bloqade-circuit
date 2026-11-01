@@ -5,7 +5,8 @@ from typing import Literal
 import pytest
 from kirin import ir
 from kirin.dialects import py, ilist
-from test_roundtrip import calls, simulate, maybe_the_same_qubit
+from test_roundtrip import calls, simulate
+from test_completion import identical_operands
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 from kirin.ir.exception import ValidationErrorGroup
 
@@ -33,10 +34,10 @@ def test_rewrite_exhaustion_is_an_error():
 
 def test_one_converter_recovers_after_failure_and_produces_deterministic_output():
     converter = SquinToWire()
-    before = maybe_the_same_qubit.code.print_str()
-    with pytest.raises(ValidationErrorGroup, match="provably differ"):
-        converter.emit(maybe_the_same_qubit)
-    assert maybe_the_same_qubit.code.print_str() == before
+    before = identical_operands.code.print_str()
+    with pytest.raises(ValidationErrorGroup, match="already borrowed"):
+        converter.emit(identical_operands)
+    assert identical_operands.code.print_str() == before
     first = converter.emit(calls)
     second = converter.emit(calls)
     assert first.code.print_str() == second.code.print_str()

@@ -8,7 +8,7 @@ from kirin.dialects import py, func
 
 from bloqade import qubit
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Sym, Affine, same
+from bloqade.analysis.indices import Sym, Affine
 from bloqade.squin.wire.group import kernel
 from bloqade.squin.wire.types import (
     WireType,
@@ -19,7 +19,6 @@ from bloqade.squin.wire.types import (
 from bloqade.squin.wire.errors import (
     WireConversionError,
     UnsupportedCallContract,
-    UnresolvedArgumentSeparation,
 )
 from bloqade.squin.wire.signature import (
     Layout,
@@ -333,23 +332,15 @@ def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
 def borrowed_operands(
     arguments: tuple[Value, ...], layout: Layout, stmt: func.Invoke
 ) -> list[Qubit | Register | Grid | Element]:
-    """Return the borrowed call operands after checking that they are separate qubits.
+    """Return the borrowed call operands, which must be qubits or whole registers.
 
-    Each operand must be one qubit or one whole register.
+    The borrow check rejects 2 operands that provably name the same qubit.
     """
     operands = [arguments[i] for i in layout.borrowed_positions]
-    for i, operand in enumerate(operands):
-        if not isinstance(operand, (Qubit, Register, Grid, Element)):
-            raise UnsupportedCallContract(
-                "A call requires whole registers or individual qubits.", stmt
-            )
-        for other in operands[i + 1 :]:
-            if not isinstance(other, (Qubit, Register, Grid, Element)) or not separated(
-                operand, other
-            ):
-                raise UnresolvedArgumentSeparation(
-                    "Call arguments require separate quantum locations.", stmt
-                )
+    if not all(isinstance(x, (Qubit, Register, Grid, Element)) for x in operands):
+        raise UnsupportedCallContract(
+            "A call requires whole registers or individual qubits.", stmt
+        )
     return cast(list[Qubit | Register | Grid | Element], operands)
 
 
@@ -462,16 +453,3 @@ def unpack(
         item.results[0].type = kind
         fields.append(item.results[0])
     return tuple(fields)
-
-
-def separated(
-    left: Qubit | Register | Grid | Element, right: Qubit | Register | Grid | Element
-) -> bool:
-    """Check whether two call operands name provably separate quantum locations."""
-    if left.root is not right.root:
-        return True
-    return (
-        isinstance(left, Element)
-        and isinstance(right, Element)
-        and same(left.index, right.index) is False
-    )

@@ -19,10 +19,11 @@ def opaque_partner(qs: ilist.IList[Qubit, Any], j: int):
 
 
 @squin.kernel
-def maybe_the_same_qubit(j: int) -> ilist.IList[MeasurementResult, Any]:
+def calls_with_one_qubit_twice() -> ilist.IList[MeasurementResult, Any]:
     qs = squin.qalloc(3)
     squin.x(qs[0])
-    opaque_partner(qs, j)
+    squin.cx(qs[1], qs[1])
+    opaque_partner(qs, 2)
     return squin.broadcast.measure(qs)
 
 
@@ -40,7 +41,7 @@ def two_registers(flag: bool) -> ilist.IList[MeasurementResult, Any]:
 @pytest.mark.parametrize(
     "kernel, error, reason",
     [
-        (maybe_the_same_qubit, ValidationErrorGroup, "provably differ"),
+        (calls_with_one_qubit_twice, ValidationErrorGroup, "already borrowed"),
         (two_registers, WireConversionError, "has no place"),
     ],
 )

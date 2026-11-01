@@ -203,7 +203,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
         value = frame.latest.get(location.root)
         if value is None:
             raise WireConversionError(
-                "Emission requires an available wire at this operation.",
+                "An operation cannot use one qubit or register twice.",
                 frame.current_stmt,
             )
         match location:

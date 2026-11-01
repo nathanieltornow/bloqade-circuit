@@ -8,7 +8,6 @@ from .affine import (
     Affine as Affine,
     Emitted as Emitted,
     lift as lift,
-    same as same,
     loop_values as loop_values,
     python_slice as python_slice,
 )
