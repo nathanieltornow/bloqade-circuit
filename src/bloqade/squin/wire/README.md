@@ -27,8 +27,9 @@ reconstructed = WireToSquin().emit(wired)
 It converts user callees first and supplies their checked contracts to the caller's emitter.
 Each callee must pass the same conversion target and validation.
 
-`check_stage` runs `StructureValidation` for source structure and types before emission.
-`SourceValidation` then checks region forms and static calls, and it collects the callees.
+Before emission, a `ValidationSuite` runs `StructureValidation` for source structure and types.
+`SourceValidation` then checks region forms and static calls.
+The driver reads the callees from the `func.Invoke` operations of the source method.
 Emission visits each source statement once per method conversion.
 Kirin's region interpreter controls statement order and fills the frame after each operation.
 Standard library wrappers execute through nested emission frames with shared output and wire state.

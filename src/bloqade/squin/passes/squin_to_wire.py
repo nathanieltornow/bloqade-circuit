@@ -4,7 +4,9 @@ from dataclasses import field, dataclass
 
 from kirin import ir
 from kirin.passes import TypeInfer
+from kirin.dialects import func
 from kirin.rewrite import Walk, Fixpoint, DeadCodeElimination
+from kirin.validation import ValidationSuite
 
 from bloqade.squin.emit.wire import EmitWire
 from bloqade.squin.wire.group import reference_kernel
@@ -12,8 +14,11 @@ from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.signature import Contract
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.emit.wire.functions import is_library
-from bloqade.squin.analysis.validation.wire import WireValidation
-from bloqade.squin.analysis.validation.wire.stages import SourceValidation, check_stage
+from bloqade.squin.analysis.validation.wire import (
+    WireValidation,
+    StructureValidation,
+)
+from bloqade.squin.analysis.validation.wire.stages import SourceValidation
 
 
 @dataclass
@@ -43,12 +48,17 @@ class SquinToWire:
             )
         self.active.add(source)
         try:
-            source_check = check_stage(source, SourceValidation)
+            ValidationSuite(
+                [StructureValidation, SourceValidation], fail_fast=True
+            ).validate(source).raise_if_invalid()
+            callees = {
+                node.callee
+                for node in source.code.walk()
+                if isinstance(node, func.Invoke)
+            }
             # Sorting by name gives a deterministic conversion order. A library
             # wrapper gets no conversion, because `run_library` emits its body.
-            for callee in sorted(
-                source_check.callees, key=lambda item: item.sym_name or ""
-            ):
+            for callee in sorted(callees, key=lambda item: item.sym_name or ""):
                 if not is_library(callee):
                     self.convert(callee)
             contract = self.emit_and_validate(source)

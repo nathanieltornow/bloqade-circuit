@@ -16,7 +16,8 @@ from bloqade.squin.analysis.validation.wire.linearity import LinearityValidation
 class StructureValidation(ValidationPass[None]):
     """Run kirin's own structure and type checks on a method.
 
-    The suite runs this check on wire methods, and `check_stage` runs it on source.
+    `WireValidation` runs this check on wire methods, and `SquinToWire` runs it on
+    source methods.
     """
 
     def name(self) -> str:

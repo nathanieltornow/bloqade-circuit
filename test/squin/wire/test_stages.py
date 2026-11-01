@@ -14,10 +14,7 @@ from bloqade.squin.wire.types import WireType, RegisterType
 from bloqade.squin.wire.signature import output_types
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.analysis.validation.wire import WireValidation
-from bloqade.squin.analysis.validation.wire.stages import (
-    SourceValidation,
-    check_stage,
-)
+from bloqade.squin.analysis.validation.wire.stages import SourceValidation
 
 
 @squin.kernel
@@ -29,8 +26,6 @@ def borrowed_loop(q: Qubit, qs: ilist.IList[Qubit, Any], n: int):
 
 
 def test_emitted_loop_arguments_and_borrowed_result_order():
-    source = borrowed_loop.similar()
-    check_stage(source, SourceValidation)
     wired = SquinToWire().emit(borrowed_loop)
     assert isinstance(wired.code, func.Function)
     assert output_types(wired.code.signature.output) == (

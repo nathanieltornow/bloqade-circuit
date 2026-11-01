@@ -1,22 +1,16 @@
 """Check source representation through Kirin's validation and interpreter infrastructure."""
 
-from typing import TypeVar, cast
-from dataclasses import field, replace, dataclass
+from dataclasses import replace, dataclass
 
 from kirin import ir, interp
 from kirin.lattice import EmptyLattice
 from kirin.analysis import Forward
 from kirin.dialects import scf, func
-from kirin.validation import ValidationPass, ValidationSuite
-from typing_extensions import Self
+from kirin.validation import ValidationPass
 from kirin.interp.value import RegionResult
 from kirin.analysis.forward import ForwardFrame
 
-from .validation import StructureValidation
-
 KEY = "squin.source.validation"
-
-AnalysisT = TypeVar("AnalysisT")
 
 
 @dataclass
@@ -25,13 +19,6 @@ class SourceAnalysis(Forward[EmptyLattice]):
 
     keys = (KEY,)
     lattice = EmptyLattice
-    callees: set[ir.Method] = field(default_factory=set, init=False)
-
-    def initialize(self) -> Self:
-        """Reset collected callees before checking a source method."""
-        super().initialize()
-        self.callees.clear()
-        return self
 
     def method_self(self, method: ir.Method) -> EmptyLattice:
         """Return the empty abstract value for the function object."""
@@ -45,8 +32,6 @@ class SourceAnalysis(Forward[EmptyLattice]):
 
     def check_node(self, node: ir.Statement) -> None:
         """Require static calls and supported structured region owners."""
-        if isinstance(node, func.Invoke):
-            self.callees.add(node.callee)
         if isinstance(node, func.Call):
             self.error(node, "Wire emission requires a static call target.")
         if node.regions and not isinstance(node, (func.Function, scf.For, scf.IfElse)):
@@ -162,15 +147,3 @@ class SourceValidation(ValidationPass[SourceAnalysis]):
         check = SourceAnalysis(method.dialects)
         check.run(method)
         return check, check.get_validation_errors()
-
-
-def check_stage(method: ir.Method, stage: type[ValidationPass[AnalysisT]]) -> AnalysisT:
-    """Check structure, types and the declared stage contract before emission.
-
-    The result is the analysis that the stage ran, such as a `SourceAnalysis`.
-    """
-    result = ValidationSuite([StructureValidation, stage], fail_fast=True).validate(
-        method
-    )
-    result.raise_if_invalid()
-    return cast(AnalysisT, result.frames[stage().name()])
