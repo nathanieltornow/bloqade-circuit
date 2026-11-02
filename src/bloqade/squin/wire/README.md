@@ -191,6 +191,7 @@ A function cannot return qubits, so every ordinary result is classical.
 A function can allocate qubits and free them before it returns.
 A caller allocates the qubits that a callee needs and passes them in.
 A register parameter keeps the number of qubits that its source type gives, such as `Register[3]`.
+Kirin type inference gives every other register its static length when it can, as the Jeff section describes.
 
 For a source call `answer = f(q, n)`, the wire convention is:
 
@@ -285,7 +286,7 @@ Tuple construction, extraction, calls and region boundaries must preserve quantu
 Function parameters and region state carry separate wire or register values.
 Function results can use a flat tuple of ordinary outputs followed by borrowed parameters.
 
-## Direct Jeff emission
+## Jeff emission through rewrite rules
 
 ```python
 from bloqade.jeff import SquinToJeff, WireToJeff
@@ -297,22 +298,28 @@ jeff_from_source = SquinToJeff().emit(source)
 
 `SquinToJeff` runs `SquinToWire`, then `WireToJeff`.
 `WireToJeff` requires complete wire conversion and validates every reachable wire method.
-Its Kirin emission method tables map explicit wire values to Jeff values.
-The emitter preserves the borrowed-parameter suffix and explicit loop state.
+It copies each wire method and rewrites the copy with 4 stateless Kirin rewrite rules.
+`Functions`, `ControlFlow`, `Quantum` and `Classical` each replace one statement with its Jeff form.
+The walk visits a statement before its regions and each block in order.
+So every operand already holds its Jeff value and type when a rule reads it.
+A wire tuple becomes a `py.tuple.New` of Jeff values, and calls, returns and constant reads take its fields.
+Dead-code elimination then removes ranges, slices and tuples, which have no Jeff value.
 `IsolateRegions` adds explicit region inputs for captured values with Kirin rewrite rules.
-Jeff structure and linearity validation check each emitted function.
+Jeff structure and linearity validation check each Jeff function.
 
 Jeff gate angles use radians.
-Squin gate statements use turns, so the emitter multiplies them by `2*pi`.
-The emitter maps squin's control-first operand order to Jeff's target-first operand order.
-It restores the declared wire result order after emission.
+Squin gate statements use turns, so the rewrite multiplies them by `2*pi`.
+The rewrite maps squin's control-first operand order to Jeff's target-first operand order.
+It restores the declared wire result order after the Jeff gate.
 
-A Jeff register value carries its static length in its type, such as `qureg(3)`, whenever the emitter knows that length.
-An operation that continues a register keeps the type of its input, and a Jeff loop keeps it inside its body.
+A wire register type carries its static length when it is known, such as `Register[3]`.
+Kirin type inference computes these lengths with the rules in `squin/wire/typeinfer.py`.
+A statement that continues a register keeps the type of its input, and loops and branches join the types of their state.
+A Jeff register type keeps that length, such as `qureg(3)`.
 A register twin of static length becomes one scalar operation per position.
 A register twin of runtime length becomes a Jeff loop that fills arrays of runtime length.
 The Jeff importer rejects those arrays, so such a program has no way back from Jeff to squin.
-The Jeff emitter rejects noise channels, qubit-loss tests and gates without a registered Jeff form.
+The Jeff rewrite rejects noise channels, qubit-loss tests and gates without a registered Jeff form.
 It rejects dynamic list construction, tuple-valued region state and runtime tuple indices.
 It also rejects arithmetic that requires integer-to-float conversion in Jeff.
 

@@ -540,11 +540,11 @@ def tuple_at_runtime(n: int, k: int) -> int:
     [
         (twice, "cannot use one qubit or register twice"),
         (concatenated, "requires scalar numeric operands"),
+        (tuple_in_loop, "requires separate scalar or array results"),
         (mistyped, "Bottom"),
         (mixed, "cannot convert a runtime integer to a float"),
         (uneven, "requires qubit lists of equal length"),
         (unsized_not, "Invalid type for measurements"),
-        (tuple_in_loop, "has no jeff value"),
         (tuple_from_branch, "requires separate scalar or array results"),
         (returns_qubits, "cannot return qubits"),
         (checks_for_loss, "Jeff has no form for 'is_lost'"),

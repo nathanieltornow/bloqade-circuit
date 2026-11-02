@@ -17,12 +17,13 @@ from bloqade.jeff.types import (
     IntArrayType,
     FloatArrayType,
     is_subtype,
+    qureg_length,
 )
 from bloqade.squin.gate import stmts as gates
 from bloqade.squin.wire import stmts as wire
 from bloqade.jeff.dialects import stmts
 from bloqade.squin.wire.twins import TWINS
-from bloqade.squin.wire.types import WireType, RegisterType
+from bloqade.squin.wire.types import WireType, register_type
 from bloqade.squin.wire.signature import packed_type
 from bloqade.jeff.analysis.validation.to_squin.gates import (
     SINGLE,
@@ -38,7 +39,7 @@ def wire_type(kind: types.TypeAttribute) -> types.TypeAttribute:
     if is_subtype(kind, JeffWireType):
         return WireType
     if is_subtype(kind, QuregType):
-        return RegisterType
+        return register_type(qureg_length(kind))
     if is_subtype(kind, IntArrayType):
         return ilist.IListType[types.Int, types.Any]
     if is_subtype(kind, FloatArrayType):

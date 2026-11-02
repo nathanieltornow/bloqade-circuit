@@ -1,91 +1,112 @@
-"""This module holds the rules that emit jeff loops and switches for kirin control flow."""
+"""Replace kirin loops and branches with Jeff loops and switches."""
 
-from kirin import ir, types, interp
+from kirin import ir, types
 from kirin.dialects import scf
+from kirin.rewrite.abc import RewriteRule, RewriteResult
 from kirin.dialects.ilist import stmts as ilist_stmts
 
 from bloqade.jeff.forms import loop_range
 from bloqade.jeff.dialects import stmts
 
-from .emitter import KEY, Frame, Value, WireEmitter
+from .kinds import JeffEmissionError, put, fitted, replace, jeff_kind
 
 
-def _outs(
-    emit: WireEmitter,
-    inner: Frame,
-    stmt: ir.Statement,
-    yielded: object,
-) -> list[ir.SSAValue]:
-    """Fit each yielded value to the corresponding wire or classical result type."""
-    if not isinstance(yielded, tuple):
-        raise interp.InterpreterError(f"a region of {stmt.name} does not yield")
-    outs: list[ir.SSAValue] = []
-    if len(yielded) != len(stmt.results):
-        raise interp.InterpreterError(
-            "The region yield must match its declared result count."
+class ControlFlow(RewriteRule):
+    """Replace each `scf.For`, `scf.IfElse` and `scf.Yield` with its Jeff form.
+
+    The walk visits a loop before its body. So each loop body yield finds its Jeff
+    loop and fits its values to the state types of that loop.
+    """
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Rewrite `node` if it is a loop, a branch or the yield of a Jeff region."""
+        if isinstance(node, scf.For):
+            loop(node)
+        elif isinstance(node, scf.IfElse):
+            switch(node)
+        elif isinstance(node, scf.Yield) and isinstance(node.parent_stmt, stmts.For):
+            loop_state = tuple(result.type for result in node.parent_stmt.results)
+            yielded(node, loop_state)
+        else:
+            return RewriteResult()
+        return RewriteResult(has_done_something=True)
+
+
+def separate(node: ir.Statement, values: tuple[ir.SSAValue, ...]) -> None:
+    """Reject a tuple among `values`, because Jeff has no tuples."""
+    if any(value.type.is_subseteq(types.Tuple) for value in values):
+        raise JeffEmissionError(
+            node, f"a region of {node.name} requires separate scalar or array results"
         )
-    for k in range(len(stmt.results)):
-        if not isinstance(yielded[k], ir.SSAValue):
-            raise interp.InterpreterError(
-                f"a region of {stmt.name} requires separate scalar or array results"
+
+
+def loop(node: scf.For) -> None:
+    """Replace `node` with a Jeff loop that carries the same state.
+
+    A Jeff loop runs from `start` to `stop` by `step`, so the iterable must be a
+    range. The loop body moves over unchanged, and its block arguments take the
+    Jeff types of the loop state.
+    """
+    separate(node, tuple(node.results))
+    bounds: tuple[ir.SSAValue, ir.SSAValue, ir.SSAValue]
+    match loop_range(node.iterable):
+        case ilist_stmts.Range(start=start, stop=stop, step=step):
+            bounds = (start, stop, step)
+        case range(start=start, stop=stop, step=step):
+            bounds = (
+                put(stmts.ConstInt(value=start), node).result,
+                put(stmts.ConstInt(value=stop), node).result,
+                put(stmts.ConstInt(value=step), node).result,
             )
-        outs.append(emit.fitted(inner, yielded[k], stmt.results[k].type))
-    return outs
+        case _:
+            raise JeffEmissionError(node, f"{node.iterable} is not a range")
+    region = node.body
+    region.detach()
+    block = region.blocks[0]
+    block.args[0].type = types.Int
+    for argument, value in zip(block.args[1:], node.initializers, strict=True):
+        argument.type = value.type
+    made = put(stmts.For(*bounds, tuple(node.initializers), region), node)
+    replace(node, *made.results)
 
 
-@scf.dialect.register(key=KEY)
-class _Scf(interp.MethodTable):
-    """A method table that emits jeff loops and switches for kirin control flow."""
+def switch(node: scf.IfElse) -> None:
+    """Replace `node` with a Jeff switch on its condition.
 
-    @interp.impl(scf.Yield)
-    def yield_(
-        self, emit: WireEmitter, frame: Frame, stmt: scf.Yield
-    ) -> interp.YieldValue[Value]:
-        """End a region with the values that it yields."""
-        return interp.YieldValue(frame.values(stmt.values))
+    The else body becomes case 0 and the then body the default case. Each body of
+    `scf.IfElse` takes the condition as a block argument, and the rewrite replaces
+    that argument with the condition itself. A Jeff switch needs a Jeff yield in
+    each body when it is built, so this rewrite also replaces each body yield.
+    """
+    separate(node, tuple(node.results))
+    kinds = tuple(jeff_kind(result.type) for result in node.results)
+    regions: list[ir.Region] = []
+    for body in (node.else_body, node.then_body):
+        block = body.blocks[0]
+        for argument in tuple(block.args):
+            argument.replace_by(node.cond)
+            argument.delete()
+        end = block.last_stmt
+        assert isinstance(end, scf.Yield)
+        yielded(end, kinds)
+        body.detach()
+        regions.append(body)
+    made = put(stmts.Switch(node.cond, (), regions[:1], regions[1]), node)
+    for result, kind in zip(made.results, kinds, strict=True):
+        result.type = kind
+    replace(node, *made.results)
 
-    @interp.impl(scf.For)
-    def for_(
-        self, emit: WireEmitter, frame: Frame, stmt: scf.For
-    ) -> interp.StatementResult[Value]:
-        """Emit a Jeff loop that carries every explicit wire and classical value."""
-        with emit.new_frame(stmt) as inner:
-            index = inner.body.args.append_from(types.Int, "index")
-            carried = [
-                inner.body.args.append_from(frame.scalar(value).type)
-                for value in stmt.initializers
-            ]
-            args = [index, *carried]
-            yielded = emit.frame_call_region(inner, stmt, stmt.body, *args)
-            body = emit.leave(inner, _outs(emit, inner, stmt, yielded))
-        bounds: tuple[ir.SSAValue, ir.SSAValue, ir.SSAValue]
-        match loop_range(stmt.iterable):
-            case ilist_stmts.Range(start=start, stop=stop, step=step):
-                bounds = (frame.scalar(start), frame.scalar(stop), frame.scalar(step))
-            case range(start=start, stop=stop, step=step):
-                bounds = (
-                    frame.push(stmts.ConstInt(value=start)).result,
-                    frame.push(stmts.ConstInt(value=stop)).result,
-                    frame.push(stmts.ConstInt(value=step)).result,
-                )
-            case _:
-                raise interp.InterpreterError(f"{stmt.iterable} is not a range")
-        state = tuple(frame.scalar(value) for value in stmt.initializers)
-        loop = frame.push(stmts.For(*bounds, state, body))
-        return tuple(loop.results)
 
-    @interp.impl(scf.IfElse)
-    def if_else(
-        self, emit: WireEmitter, frame: Frame, stmt: scf.IfElse
-    ) -> interp.StatementResult[Value]:
-        """Emit a jeff switch on the condition with the else branch as case zero."""
-        regions: list[ir.Region] = []
-        for body in (stmt.else_body, stmt.then_body):
-            with emit.new_frame(stmt) as inner:
-                (arg,) = body.blocks[0].args
-                cond = inner.scalar(stmt.cond) if arg.uses else None
-                yielded = emit.frame_call_region(inner, stmt, body, cond)
-                outs = _outs(emit, inner, stmt, yielded)
-                regions.append(emit.leave(inner, outs))
-        switch = stmts.Switch(frame.scalar(stmt.cond), (), regions[:1], regions[1])
-        return tuple(frame.push(switch).results)
+def yielded(node: scf.Yield, kinds: tuple[types.TypeAttribute, ...]) -> None:
+    """Replace the region yield `node` with a Jeff yield of values of the types `kinds`."""
+    if len(node.values) != len(kinds):
+        raise JeffEmissionError(
+            node, "The region yield must match its declared result count."
+        )
+    separate(node, tuple(node.values))
+    values = tuple(
+        fitted(value, kind, node)
+        for value, kind in zip(node.values, kinds, strict=True)
+    )
+    put(stmts.Yield(*values), node)
+    node.delete()

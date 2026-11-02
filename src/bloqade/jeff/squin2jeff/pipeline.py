@@ -1,51 +1,79 @@
-"""Convert squin through verified wire values before emitting Jeff."""
+"""Convert squin through verified wire values before rewriting them to Jeff."""
 
 from dataclasses import dataclass
 
-from kirin import ir, interp
+from kirin import ir
+from kirin.rewrite import Walk, Chain, Fixpoint, DeadCodeElimination
 from kirin.validation import ValidationSuite
 from kirin.ir.exception import ValidationErrorGroup
 
+from bloqade.jeff.dialects import kernel as jeff_kernel
 from bloqade.squin.wire.group import kernel as wire_kernel, reference_kernel
 from bloqade.squin.wire.errors import WireConversionError
+from bloqade.squin.wire.ownership import KEY as OWNED
 from bloqade.jeff.analysis.validation import LinearityValidation, StructureValidation
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.rewrite.wire.driver import reachable
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.analysis.validation.wire import WireValidation
 
-from .emitter import WireEmitter
+from .kinds import JeffEmissionError
 from .isolate import IsolateRegions
+from .py2jeff import Classical
+from .quantum import Quantum
+from .scf2jeff import ControlFlow
+from .functions import Functions
 
 
 @dataclass
 class WireToJeff:
-    """Emit Jeff from complete wire squin and verify every emitted function."""
+    """Rewrite complete wire squin to Jeff and verify every Jeff function.
+
+    Each rule replaces one statement with its Jeff form and keeps no state. The walk
+    visits a statement before its regions and each block in order. So every operand
+    already holds its Jeff value and type when a rule reads it.
+    """
 
     def emit(self, method: ir.Method) -> ir.Method:
-        """Translate explicit wire values without reconstructing reference identities."""
+        """Return the Jeff copy of `method`, and leave `method` and its callees as they are."""
         if method.dialects is not wire_kernel:
             raise ValueError("WireToJeff expects squin.wire kernel dialects.")
-        for callee in reachable(method):
+        methods = reachable(method)
+        for callee in methods:
             if illegal := ConversionTarget.check(callee):
                 raise WireConversionError(
                     f"Jeff requires complete wire conversion: {', '.join(sorted(set(illegal)))}."
                 )
             WireValidation().check(callee)
-        emitter = WireEmitter(method.dialects)
-        try:
-            emitter.run(method.code)
-        except interp.InterpreterError as error:
-            raise ValidationErrorGroup(
-                f"Jeff emission failed for '{method.sym_name}'.",
-                [ir.ValidationError(method.code, str(error))],
-            ) from error
-        for function in emitter.functions.values():
-            IsolateRegions(function.dialects)(function)
+        copies = {
+            source: source.similar(jeff_kernel.union(wire_kernel)) for source in methods
+        }
+        rules = Chain(Functions(copies), ControlFlow(), Quantum(), Classical())
+        # `reachable` lists each callee before its callers.
+        for copy in copies.values():
+            copy.code.attributes.pop(OWNED, None)
+            try:
+                Walk(rules, region_first=True).rewrite(copy.code)
+                Fixpoint(Walk(DeadCodeElimination())).rewrite(copy.code)
+                leftover(copy)
+            except JeffEmissionError as error:
+                raise ValidationErrorGroup(
+                    f"Jeff emission failed for '{method.sym_name}'.",
+                    [ir.ValidationError(method.code, str(error))],
+                ) from error
+            copy.dialects = jeff_kernel
+            IsolateRegions(copy.dialects)(copy)
             ValidationSuite([StructureValidation, LinearityValidation]).validate(
-                function
+                copy
             ).raise_if_invalid()
-        return emitter.functions[method.code]
+        return copies[method]
+
+
+def leftover(method: ir.Method) -> None:
+    """Reject the first statement of `method` that the rules left without a Jeff form."""
+    for node in method.callable_region.walk():
+        if node.dialect not in jeff_kernel.data:
+            raise JeffEmissionError(node, f"Jeff has no form for '{node.name}'.")
 
 
 @dataclass
