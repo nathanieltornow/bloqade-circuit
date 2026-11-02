@@ -5,16 +5,12 @@ for `AllocRegister(3)`. A statement that continues a register keeps the type of 
 input, and Kirin joins the types of loop and branch state.
 """
 
-from typing import Any
-
-from kirin import ir, types, interp
+from kirin import types, interp
 from kirin.analysis.forward import ForwardFrame
 from kirin.analysis.typeinfer import TypeInference
 
 from . import stmts
-from .twins import REGISTER_TWINS
 from .types import WireType, register_type, register_length
-from .traits import Threads
 from ._dialect import dialect
 
 Frame = ForwardFrame[types.TypeAttribute]
@@ -26,13 +22,6 @@ def known_sum(
     """Return the register type whose length is the sum of 2 known lengths."""
     a, b = register_length(left), register_length(right)
     return register_type(None if a is None or b is None else a + b)
-
-
-def every_register_twin(rule: Any) -> Any:
-    """Register the method `rule` for every register twin."""
-    for twin in REGISTER_TWINS.values():
-        rule = interp.impl(twin)(rule)
-    return rule
 
 
 @dialect.register(key="typeinfer")
@@ -93,10 +82,13 @@ class TypeInfer(interp.MethodTable):
         """Type the joined register with the sum of both known lengths."""
         return (known_sum(frame.get(stmt.first), frame.get(stmt.second)),)
 
-    @every_register_twin
-    def register_twin(self, infer: TypeInference, frame: Frame, stmt: ir.Statement):
+    @interp.impl(stmts.RegisterGate)
+    @interp.impl(stmts.RegisterNoise)
+    @interp.impl(stmts.RegisterMeasure)
+    @interp.impl(stmts.RegisterReset)
+    def register_operation(
+        self, infer: TypeInference, frame: Frame, stmt: stmts.RegisterOperation
+    ):
         """Keep each register operand type and each classical result type."""
-        outputs = {result: result.type for result in stmt.results}
-        for operand, result in stmt.get_present_trait(Threads).threads(stmt):
-            outputs[result] = frame.get(operand)
-        return tuple(outputs.values())
+        registers = tuple(frame.get(register) for register in stmt.linear)
+        return registers + tuple(result.type for result in stmt.classical)

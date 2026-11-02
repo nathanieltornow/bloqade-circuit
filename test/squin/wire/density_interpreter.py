@@ -11,8 +11,8 @@ import numpy as np
 from kirin import ir, interp
 from kirin.dialects import ilist
 
-from bloqade.squin.wire import stmts, twins
-from bloqade.squin.wire.traits import Twin, RegisterTwin
+from bloqade.squin.wire import GateKind, WireType, NoiseKind, stmts
+from bloqade.squin.wire.stmts import truncates
 
 IDENTITY = np.eye(2, dtype=complex)
 X = np.array([[0, 1], [1, 0]], dtype=complex)
@@ -139,59 +139,17 @@ class WireSemantics(interp.MethodTable):
         assert holes == tuple(Hole(q) for q in part), "the slice did not come from here"
         return (register[:start] + part + register[start + len(part) :],)
 
-    @interp.impl(twins.X)
-    @interp.impl(twins.Y)
-    @interp.impl(twins.Z)
-    @interp.impl(twins.H)
-    @interp.impl(twins.S)
-    @interp.impl(twins.T)
-    @interp.impl(twins.SqrtX)
-    @interp.impl(twins.SqrtY)
-    def single(self, sim, frame, stmt):
-        matrices = {
-            twins.X: X,
-            twins.Y: Y,
-            twins.Z: Z,
-            twins.H: H,
-            twins.S: np.diag([1, 1j]),
-            twins.T: np.diag([1, np.exp(1j * np.pi / 4)]),
-            twins.SqrtX: (IDENTITY - 1j * X) / np.sqrt(2),
-            twins.SqrtY: (IDENTITY - 1j * Y) / np.sqrt(2),
-        }
-        matrix = matrices[type(stmt)]
-        if getattr(stmt, "adjoint", False):
-            matrix = matrix.conj().T
-        qubit = frame.get(stmt.qubit)
-        sim.apply(matrix, (qubit,))
-        return (qubit,)
+    @interp.impl(stmts.Gate)
+    def gate(self, sim, frame, stmt):
+        wires = frame.get_values(stmt.wires)
+        sim.apply(
+            gate_matrix(stmt.kind, frame.get_values(stmt.params), stmt.adjoint), wires
+        )
+        return wires
 
-    @interp.impl(twins.Rx)
-    @interp.impl(twins.Ry)
-    @interp.impl(twins.Rz)
-    def rotation(self, sim, frame, stmt):
-        angle, qubit = frame.get_values(stmt.args)
-        pauli = {twins.Rx: X, twins.Ry: Y, twins.Rz: Z}[type(stmt)]
-        matrix = np.cos(np.pi * angle) * IDENTITY - 1j * np.sin(np.pi * angle) * pauli
-        sim.apply(matrix, (qubit,))
-        return (qubit,)
-
-    @interp.impl(twins.CX)
-    @interp.impl(twins.CY)
-    @interp.impl(twins.CZ)
-    @interp.impl(twins.Swap)
-    def pair(self, sim, frame, stmt):
-        operands = frame.get_values(stmt.args)
-        if isinstance(stmt, twins.Swap):
-            matrix = np.eye(4)[[0, 2, 1, 3]]
-        else:
-            matrix = np.eye(4, dtype=complex)
-            matrix[2:, 2:] = {twins.CX: X, twins.CY: Y, twins.CZ: Z}[type(stmt)]
-        sim.apply(matrix, operands)
-        return operands
-
-    @interp.impl(twins.Measure)
+    @interp.impl(stmts.Measure)
     def measure(self, sim, frame, stmt):
-        qubit = frame.get(stmt.qubit)
+        qubit = frame.get(stmt.wire)
         outcome = sim.outcomes[sim.measurements]
         sim.measurements += 1
         sim.apply(np.diag([1 - outcome, outcome]), (qubit,))
@@ -202,72 +160,82 @@ class WireSemantics(interp.MethodTable):
         sim.rho /= weight
         return qubit, outcome
 
-    @interp.impl(twins.Reset)
+    @interp.impl(stmts.Reset)
     def reset(self, sim, frame, stmt):
-        qubit = frame.get(stmt.qubit)
+        qubit = frame.get(stmt.wire)
         sim.channel((np.array([[1, 0], [0, 0]]), np.array([[0, 1], [0, 0]])), (qubit,))
         return (qubit,)
 
-    @interp.impl(twins.Depolarize)
-    def depolarize(self, sim, frame, stmt):
-        probability, qubit = frame.get_values(stmt.args)
-        sim.channel(
-            (
-                np.sqrt(1 - probability) * IDENTITY,
-                *(np.sqrt(probability / 3) * p for p in (X, Y, Z)),
-            ),
-            (qubit,),
-        )
-        return (qubit,)
+    @interp.impl(stmts.Noise)
+    def noise(self, sim, frame, stmt):
+        wires = frame.get_values(stmt.wires)
+        sim.channel(noise_operators(stmt.kind, frame.get_values(stmt.params)), wires)
+        return wires
 
-    @interp.impl(twins.SingleQubitPauliChannel)
-    def pauli(self, sim, frame, stmt):
-        px, py, pz, qubit = frame.get_values(stmt.args)
-        sim.channel(
-            (
-                np.sqrt(1 - px - py - pz) * IDENTITY,
-                np.sqrt(px) * X,
-                np.sqrt(py) * Y,
-                np.sqrt(pz) * Z,
-            ),
-            (qubit,),
-        )
-        return (qubit,)
-
+    @interp.impl(stmts.RegisterGate)
+    @interp.impl(stmts.RegisterNoise)
+    @interp.impl(stmts.RegisterMeasure)
+    @interp.impl(stmts.RegisterReset)
     def broadcast(self, sim, frame, stmt):
-        """Apply the scalar twin of a register twin to each register position."""
-        trait = stmt.get_present_trait(RegisterTwin)
-        scalar = trait.scalar
-        registers = {field: frame.get(getattr(stmt, field)) for _, field in trait.wires}
-        lengths = {len(register) for register in registers.values()}
-        assert trait.truncate or len(lengths) == 1, "the registers differ in length"
-        count = min(lengths)
-        fields = getattr(scalar, "__kirin_stmt_fields")
-        register_of = {
-            wire: source for source, wire in scalar.get_present_trait(Twin).wires
-        }
-        names = list(fields.std_args)
-        probe = scalar(
-            **{name: ir.TestValue(fields.std_args[name].type) for name in names},
-            **{name: getattr(stmt, name) for name in fields.attributes},
-        )
-        collected = [[] for _ in trait.results]
-        for i in range(count):
-            values = [
-                (
-                    registers[register_of[name]][i]
-                    if name in register_of
-                    else frame.get(getattr(stmt, name))
-                )
-                for name in names
-            ]
+        """Apply the scalar form of a register operation at each register position."""
+        registers = frame.get_values(stmt.linear)
+        lengths = {len(register) for register in registers}
+        assert truncates(stmt) or len(lengths) == 1, "the registers differ in length"
+        probe = stmt.scalar(tuple(ir.TestValue(WireType) for _ in registers))
+        collected = [[] for _ in stmt.classical]
+        for i in range(min(lengths)):
             inner = sim.initialize_frame(probe)
-            inner.set_values(probe.args, values)
+            inner.set_values(probe.linear, [register[i] for register in registers])
+            inner.set_values(probe.parameters, frame.get_values(stmt.parameters))
             outputs = sim.lookup_registry(inner, probe)(sim, inner, probe)
             for results, value in zip(collected, outputs[len(registers) :]):
                 results.append(value)
-        return (*registers.values(), *(ilist.IList(values) for values in collected))
+        return (*registers, *(ilist.IList(values) for values in collected))
 
-    for _register_twin in twins.REGISTER_TWINS.values():
-        broadcast = interp.impl(_register_twin)(broadcast)
-    del _register_twin
+
+def gate_matrix(kind, params, adjoint):
+    """Return the matrix of the gate `kind` with its angles in turns."""
+    if kind in SINGLE:
+        matrix = SINGLE[kind]
+    elif kind in ROTATION:
+        (angle,) = params
+        pauli = ROTATION[kind]
+        matrix = np.cos(np.pi * angle) * IDENTITY - 1j * np.sin(np.pi * angle) * pauli
+    elif kind is GateKind.SWAP:
+        matrix = np.eye(4)[[0, 2, 1, 3]]
+    else:
+        matrix = np.eye(4, dtype=complex)
+        matrix[2:, 2:] = CONTROLLED[kind]
+    return matrix.conj().T if adjoint else matrix
+
+
+def noise_operators(kind, params):
+    """Return the Kraus operators of the noise channel `kind`."""
+    if kind is NoiseKind.DEPOLARIZE:
+        (probability,) = params
+        return (
+            np.sqrt(1 - probability) * IDENTITY,
+            *(np.sqrt(probability / 3) * p for p in (X, Y, Z)),
+        )
+    assert kind is NoiseKind.SINGLE_QUBIT_PAULI_CHANNEL
+    px, py, pz = params
+    return (
+        np.sqrt(1 - px - py - pz) * IDENTITY,
+        np.sqrt(px) * X,
+        np.sqrt(py) * Y,
+        np.sqrt(pz) * Z,
+    )
+
+
+SINGLE = {
+    GateKind.X: X,
+    GateKind.Y: Y,
+    GateKind.Z: Z,
+    GateKind.H: H,
+    GateKind.S: np.diag([1, 1j]),
+    GateKind.T: np.diag([1, np.exp(1j * np.pi / 4)]),
+    GateKind.SQRT_X: (IDENTITY - 1j * X) / np.sqrt(2),
+    GateKind.SQRT_Y: (IDENTITY - 1j * Y) / np.sqrt(2),
+}
+ROTATION = {GateKind.RX: X, GateKind.RY: Y, GateKind.RZ: Z}
+CONTROLLED = {GateKind.CX: X, GateKind.CY: Y, GateKind.CZ: Z}

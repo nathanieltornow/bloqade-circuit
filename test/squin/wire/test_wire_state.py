@@ -9,8 +9,7 @@ from kirin.ir.exception import ValidationErrorGroup
 from bloqade import squin
 from bloqade.qubit import qalloc
 from bloqade.constants import constant_int
-from bloqade.squin.gate import stmts as gates
-from bloqade.squin.wire import WireConversionError, stmts, twins
+from bloqade.squin.wire import GateKind, WireConversionError, stmts
 from bloqade.squin.emit.wire import EmitWire
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
@@ -98,12 +97,17 @@ def allocation_order():
     squin.z(a)
 
 
+def gate_kind(node):
+    """Return the kind of a wire gate, or None for any other statement."""
+    return node.kind if isinstance(node, stmts.Gate) else None
+
+
 def test_allocations_keep_source_order_and_live_until_the_block_exit():
     method = SquinToWire().emit(allocation_order)
     nodes = list(method.callable_region.blocks[0].stmts)
     first, second = [node for node in nodes if isinstance(node, stmts.Alloc)]
-    x = next(node for node in nodes if isinstance(node, twins.TWINS[gates.X]))
-    z = next(node for node in nodes if isinstance(node, twins.TWINS[gates.Z]))
+    x = next(node for node in nodes if gate_kind(node) is GateKind.X)
+    z = next(node for node in nodes if gate_kind(node) is GateKind.Z)
     assert x.args[0] is second.result
     assert z.args[0] is first.result
     assert nodes.index(first) < nodes.index(second) < nodes.index(x) < nodes.index(z)

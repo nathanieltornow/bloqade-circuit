@@ -16,7 +16,7 @@ signature rule turns each wire parameter back into a qubit parameter and drops t
 returned wires from the return statement.
 """
 
-from typing import Any, TypeVar
+from typing import TypeVar
 from dataclasses import field, dataclass
 
 from kirin import ir, types
@@ -30,7 +30,7 @@ from bloqade.types import QubitType
 from bloqade.squin.wire import stmts
 from bloqade.squin.wire.group import kernel as wire_kernel, reference_kernel
 from bloqade.squin.wire.types import RegisterType, is_linear
-from bloqade.squin.wire.traits import Twin, RegisterTwin
+from bloqade.squin.wire.sources import source_of
 from bloqade.squin.wire.ownership import KEY as OWNED, owns_inputs
 from bloqade.squin.wire.signature import packed_type, output_types
 from bloqade.squin.rewrite.wire.driver import CheckedFixpoint
@@ -78,10 +78,8 @@ class FromWireStatements(RewriteRule):
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Rewrite `node` if it belongs to the wire dialect."""
-        if (twin := node.get_trait(Twin)) is not None:
-            self.twin(node, twin)
-        elif (register_twin := node.get_trait(RegisterTwin)) is not None:
-            self.register_twin(node, register_twin)
+        if isinstance(node, stmts.Operation):
+            self.operation(node)
         elif isinstance(node, stmts.Alloc):
             node.result.replace_by(_put(qubit_stmts.New(), node).result)
         elif isinstance(node, stmts.AllocRegister):
@@ -144,53 +142,37 @@ class FromWireStatements(RewriteRule):
         node.delete()
         return RewriteResult(has_done_something=True)
 
-    def twin(self, node: ir.Statement, twin: Twin) -> None:
-        """Insert the squin statement of the twin `node` before it.
+    def operation(self, node: stmts.Operation) -> None:
+        """Insert the squin statement of the wire operation `node` before it.
 
-        Each wire becomes a list of one qubit. A scalar result, such as a
-        measurement result, becomes item 0 of the list result of the squin
-        statement.
+        On a scalar operation, each wire becomes a list of one qubit, and a scalar
+        result, such as a measurement result, becomes item 0 of the list result of
+        the squin statement. On a register operation, each register becomes the list
+        of qubits that it holds, and each list result stays a list.
         """
-        fields = getattr(twin.source, "__kirin_stmt_fields")
-        wires = dict(twin.wires)
-        kwargs: dict[str, Any] = {}
-        for name in fields.std_args:
-            if name in wires:
-                qubit = getattr(node, wires[name])
-                listed = _put(ilist.New(values=(qubit,), elem_type=QubitType), node)
-                kwargs[name] = listed.result
-            else:
-                kwargs[name] = getattr(node, name)
-        for name in fields.attributes:
-            kwargs[name] = getattr(node, name)
-        made = _put(twin.source(**kwargs), node)
-        for source, result in twin.results:
-            zero = _put(py.Constant(0), node)
-            item = _put(py.GetItem(getattr(made, source), zero.result), node)
-            item.result.type = getattr(node, result).type
-            getattr(node, result).replace_by(item.result)
-        for wire in wires.values():
-            getattr(node, f"{wire}_out").replace_by(getattr(node, wire))
-
-    def register_twin(self, node: ir.Statement, twin: RegisterTwin) -> None:
-        """Insert the squin statement of the register twin `node` before it.
-
-        Each register becomes the list of qubits that it holds, and each list result
-        stays a list.
-        """
-        fields = getattr(twin.source, "__kirin_stmt_fields")
-        wires = dict(twin.wires)
-        kwargs: dict[str, Any] = {
-            name: getattr(node, wires[name] if name in wires else name)
-            for name in fields.std_args
-        }
-        for name in fields.attributes:
-            kwargs[name] = getattr(node, name)
-        made = _put(twin.source(**kwargs), node)
-        for source, result in twin.results:
-            getattr(node, result).replace_by(getattr(made, source))
-        for wire in wires.values():
-            getattr(node, f"{wire}_out").replace_by(getattr(node, wire))
+        entry = source_of(node)
+        scalar = not isinstance(node, stmts.RegisterOperation)
+        qubits = tuple(
+            (
+                _put(ilist.New(values=(value,), elem_type=QubitType), node).result
+                if scalar
+                else value
+            )
+            for value in node.linear
+        )
+        adjoint = getattr(node, "adjoint", False)
+        made = _put(entry.build(qubits, node.parameters, adjoint), node)
+        for result, value in zip(
+            node.classical, entry.result_values(made), strict=True
+        ):
+            if scalar:
+                zero = _put(py.Constant(0), node)
+                item = _put(py.GetItem(value, zero.result), node)
+                item.result.type = result.type
+                value = item.result
+            result.replace_by(value)
+        for output, value in zip(node.outputs, node.linear, strict=True):
+            output.replace_by(value)
 
 
 def _without(values: tuple[ir.SSAValue, ...], dropped: list[int]) -> list[ir.SSAValue]:

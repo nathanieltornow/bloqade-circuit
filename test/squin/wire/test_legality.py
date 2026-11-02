@@ -7,8 +7,7 @@ from test_roundtrip import ladder
 
 from bloqade import squin
 from bloqade.types import QubitType
-from bloqade.squin.wire import WireConversionError
-from bloqade.squin.wire.twins import TWINS, H
+from bloqade.squin.wire import Gate, GateKind, Operation, WireConversionError
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.analysis.validation.wire import StructureValidation
@@ -45,13 +44,13 @@ def test_full_conversion_rejects_an_operation_without_a_lowering(kernel):
 
 def test_conversion_checks_wire_operand_types():
     wired = SquinToWire().emit(ladder)
-    assert any(type(node) in TWINS.values() for node in wired.callable_region.walk())
+    assert any(isinstance(node, Operation) for node in wired.callable_region.walk())
     assert StructureValidation().run(wired)[1] == []
     block = wired.callable_region.blocks[0]
     head = block.first_stmt
     number = py.Constant(1)
     number.insert_before(head)
-    H(qubit=number.result).insert_before(head)
+    Gate(GateKind.H, (number.result,)).insert_before(head)
     assert StructureValidation().run(wired)[1]
 
 

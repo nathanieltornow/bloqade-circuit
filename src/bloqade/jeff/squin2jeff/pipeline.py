@@ -13,6 +13,7 @@ from kirin.dialects.ilist import stmts as ilist_stmts
 
 from bloqade.jeff.dialects import kernel as jeff_kernel
 from bloqade.squin.wire.group import kernel as wire_kernel, reference_kernel
+from bloqade.squin.wire.stmts import Operation
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.ownership import KEY as OWNED
 from bloqade.jeff.analysis.validation import LinearityValidation, StructureValidation
@@ -106,7 +107,8 @@ class Unsupported(RewriteRule):
             or isinstance(node, KEPT)
         ):
             return RewriteResult()
-        raise JeffEmissionError(node, f"Jeff has no form for '{node.name}'.")
+        name = node.label if isinstance(node, Operation) else node.name
+        raise JeffEmissionError(node, f"Jeff has no form for '{name}'.")
 
 
 @dataclass

@@ -12,7 +12,8 @@ from test_roundtrip import simulate
 from bloqade import squin, native
 from bloqade.types import Qubit
 from bloqade.pyqrack import DynamicMemorySimulator
-from bloqade.squin.wire.traits import Twin, RegisterTwin
+from bloqade.squin.wire import Operation, RegisterOperation
+from bloqade.squin.wire.sources import source_of
 from bloqade.native.dialects.gate import stmts as native_stmts
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.passes.squin_to_wire import SquinToWire
@@ -125,7 +126,9 @@ def test_runtime_broadcasts_emit_completely_and_preserve_results(kernel, bit, n)
     converter = SquinToWire()
     wired = converter.emit(kernel)
     assert ConversionTarget.check(wired) == []
-    assert any(node.get_trait(RegisterTwin) for node in wired.callable_region.walk())
+    assert any(
+        isinstance(node, RegisterOperation) for node in wired.callable_region.walk()
+    )
     WireValidation().check(wired)
     back = WireToSquin().emit(wired)
     back.verify_type()
@@ -154,9 +157,9 @@ def test_paired_broadcasts_of_unequal_lengths_fail_like_the_source(sizes):
 def test_native_broadcasts_preserve_their_gates_and_results(n):
     wired = SquinToWire().emit(native_broadcast)
     sources = {
-        trait.source
+        source_of(node).source
         for node in wired.callable_region.walk()
-        if (trait := node.get_trait(Twin) or node.get_trait(RegisterTwin)) is not None
+        if isinstance(node, Operation)
     }
     assert {native_stmts.CZ, native_stmts.R, native_stmts.Rz} <= sources
     back = WireToSquin().emit(wired)

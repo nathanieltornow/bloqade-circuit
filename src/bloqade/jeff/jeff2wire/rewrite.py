@@ -1,7 +1,6 @@
 """Replace Jeff quantum operations and calls with explicit squin wire operations."""
 
 import math
-from typing import cast
 from dataclasses import dataclass
 from collections.abc import Mapping, Callable
 
@@ -9,7 +8,6 @@ from kirin import ir, types
 from kirin.dialects import py, func, ilist
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
-from bloqade.qubit import stmts as qubits
 from bloqade.jeff.gates import canonical
 from bloqade.jeff.types import (
     WireType as JeffWireType,
@@ -22,8 +20,8 @@ from bloqade.jeff.types import (
 from bloqade.squin.gate import stmts as gates
 from bloqade.squin.wire import stmts as wire
 from bloqade.jeff.dialects import stmts
-from bloqade.squin.wire.twins import TWINS
 from bloqade.squin.wire.types import WireType, register_type
+from bloqade.squin.wire.sources import SOURCES
 from bloqade.squin.wire.signature import packed_type
 from bloqade.jeff.analysis.validation.to_squin.gates import (
     SINGLE,
@@ -105,7 +103,7 @@ class Quantum(RewriteRule):
             stmts.RegSplit: wire.SplitRegister,
             stmts.RegJoin: wire.JoinRegister,
             stmts.RegLength: wire.Length,
-            stmts.Reset: TWINS[qubits.Reset],
+            stmts.Reset: wire.Reset,
         }
         if build := direct.get(type(node)):
             made = put(build(*node.args), node)
@@ -114,10 +112,7 @@ class Quantum(RewriteRule):
             made = put(wire.PackRegister(node.wires), node)
             return replace(node, made.result)
         if isinstance(node, (stmts.Measure, stmts.MeasureNd)):
-            measured = put(
-                cast(Callable[..., ir.Statement], TWINS[qubits.Measure])(node.wire),
-                node,
-            )
+            measured = put(wire.Measure(node.wire), node)
             if isinstance(node, stmts.MeasureNd):
                 return replace(node, *measured.results)
             put(wire.Free(measured.results[0]), node)
@@ -157,14 +152,10 @@ class Quantum(RewriteRule):
             raise ValueError(f"Gate '{shape.name}' has no squin wire form.")
         current = {value: value for value in (*node.targets, *node.controls)}
 
-        def apply(source, operands, angles=(), **attrs):
-            made = put(
-                TWINS[source](
-                    *angles, *(current[value] for value in operands), **attrs
-                ),
-                node,
-            )
-            current.update(zip(operands, made.results, strict=True))
+        def apply(source, operands, angles=(), adjoint=False):
+            wires = tuple(current[value] for value in operands)
+            made = put(SOURCES[source].scalar(wires, angles, adjoint), node)
+            current.update(zip(operands, made.outputs, strict=True))
 
         def turns(value):
             scale = put(py.Constant(1 / (2 * math.pi)), node).result

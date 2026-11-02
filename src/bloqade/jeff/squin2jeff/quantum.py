@@ -1,4 +1,4 @@
-"""Replace wire statements and twins with Jeff quantum statements.
+"""Replace wire statements with Jeff quantum statements.
 
 A Jeff register value carries its static length in its type, such as `qureg(3)`,
 whenever the rewrite knows that length. An operation that continues a register
@@ -14,7 +14,7 @@ from bloqade.jeff.forms import GATES
 from bloqade.jeff.types import IntArrayType, qureg, is_subtype, qureg_length
 from bloqade.squin.wire import stmts as wire
 from bloqade.jeff.dialects import stmts
-from bloqade.squin.wire.traits import Twin, RegisterTwin
+from bloqade.squin.wire.stmts import truncates
 
 from .kinds import JeffEmissionError, put, radians, replace, bitwidth, elements
 
@@ -48,7 +48,7 @@ CONTINUES = (
 
 
 class Quantum(RewriteRule):
-    """Replace each wire statement, twin and measurement predicate with Jeff."""
+    """Replace each wire statement and measurement predicate with Jeff."""
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Rewrite `node` if it has a Jeff form, and leave any other statement."""
@@ -65,12 +65,12 @@ class Quantum(RewriteRule):
             replace(node, made.result)
         elif isinstance(node, wire.PackRegister):
             replace(node, put(stmts.RegCreate(node.wires), node).result)
-        elif node.has_trait(Twin):
-            if not supported(type(node)):
+        elif isinstance(node, wire.RegisterOperation):
+            replace(node, *broadcast(node))
+        elif isinstance(node, wire.Operation):
+            if not supported(node):
                 return RewriteResult()
             replace(node, *scalar(node))
-        elif (trait := node.get_trait(RegisterTwin)) is not None:
-            replace(node, *broadcast(node, trait))
         elif isinstance(node, qubit_stmts.IsOne):
             # A measurement bit is its own test for one.
             replace(node, node.measurements)
@@ -81,30 +81,33 @@ class Quantum(RewriteRule):
         return RewriteResult(has_done_something=True)
 
 
-def supported(twin: type[ir.Statement]) -> bool:
-    """Check whether the scalar twin `twin` has a Jeff form."""
-    source = twin.get_present_trait(Twin).source
-    return source in (qubit_stmts.Measure, qubit_stmts.Reset) or source in GATES
+def supported(node: wire.Operation) -> bool:
+    """Check whether the wire operation `node` has a Jeff form."""
+    if isinstance(node, (wire.Gate, wire.RegisterGate)):
+        return node.kind in GATES
+    return isinstance(
+        node, (wire.Measure, wire.Reset, wire.RegisterMeasure, wire.RegisterReset)
+    )
 
 
-def scalar(node: ir.Statement) -> tuple[ir.SSAValue, ...]:
-    """Insert the Jeff form of the scalar twin `node` and return its results.
+def scalar(node: wire.Operation) -> tuple[ir.SSAValue, ...]:
+    """Insert the Jeff form of the scalar operation `node` and return its results.
 
     Gate angles change from turns to radians. Jeff puts targets before controls,
     so the results go back to the wire order.
     """
-    source = node.get_present_trait(Twin).source
-    if source is qubit_stmts.Measure:
-        measured = put(stmts.MeasureNd(node.args[0]), node)
+    if isinstance(node, wire.Measure):
+        measured = put(stmts.MeasureNd(node.wire), node)
         return measured.result_wire, measured.bit
-    if source is qubit_stmts.Reset:
-        return (put(stmts.Reset(node.args[0]), node).result,)
-    form = GATES[source]
-    angles = tuple(radians(angle, node) for angle in node.args[: form.angles])
-    qubits = tuple(node.args[form.angles :])
-    controls, targets = qubits[: form.controls], qubits[form.controls :]
-    adjoint = bool(getattr(node, "adjoint", False))
-    gate = stmts.Gate(targets, controls, angles, gate_name=form.name, adjoint=adjoint)
+    if isinstance(node, wire.Reset):
+        return (put(stmts.Reset(node.wire), node).result,)
+    assert isinstance(node, wire.Gate)
+    form = GATES[node.kind]
+    angles = tuple(radians(angle, node) for angle in node.params)
+    controls, targets = node.wires[: form.controls], node.wires[form.controls :]
+    gate = stmts.Gate(
+        targets, controls, angles, gate_name=form.name, adjoint=node.adjoint
+    )
     made = put(gate, node)
     count = len(targets)
     return (*made.results[count:], *made.results[:count])
@@ -134,79 +137,59 @@ def negated(node: qubit_stmts.IsZero) -> ir.SSAValue:
 
 
 def applied(
-    node: ir.Statement,
-    trait: RegisterTwin,
-    qubits: dict[str, ir.SSAValue],
+    node: wire.RegisterOperation,
+    qubits: list[ir.SSAValue],
     before: ir.Statement,
 ) -> tuple[ir.SSAValue, ...]:
-    """Insert the scalar twin of the register twin `node` and return its results.
+    """Insert the scalar form of the register operation `node` and return its results.
 
-    `qubits` maps each qubit-list field of the source statement to one Jeff wire.
-    The classical operands and attributes come from `node`.
+    `qubits` holds one Jeff wire per register of `node`.
     """
-    fields = getattr(trait.scalar, "__kirin_stmt_fields")
-    register_of = {
-        wire_field: source
-        for source, wire_field in trait.scalar.get_present_trait(Twin).wires
-    }
-    made = trait.scalar(
-        **{
-            name: (
-                qubits[register_of[name]]
-                if name in register_of
-                else getattr(node, name)
-            )
-            for name in fields.std_args
-        },
-        **{name: getattr(node, name) for name in fields.attributes},
-    )
+    made = node.scalar(tuple(qubits))
     made.insert_before(before)
     results = scalar(made)
     made.delete()
     return results
 
 
-def broadcast(node: ir.Statement, trait: RegisterTwin) -> tuple[ir.SSAValue, ...]:
-    """Insert the Jeff form of the register twin `node` and return its results.
+def broadcast(node: wire.RegisterOperation) -> tuple[ir.SSAValue, ...]:
+    """Insert the Jeff form of the register operation `node` and return its results.
 
     Jeff gates act on single qubits. If the registers have a static length, the
-    rewrite emits the scalar twin once per position. Otherwise it emits a Jeff loop
-    that fills arrays of runtime length.
+    rewrite emits the scalar operation once per position. Otherwise it emits a Jeff
+    loop that fills arrays of runtime length.
     """
-    if not supported(trait.scalar):
-        raise JeffEmissionError(node, f"Jeff has no form for '{trait.scalar.name}'.")
-    registers = [getattr(node, field) for _, field in trait.wires]
+    if not supported(node):
+        raise JeffEmissionError(node, f"Jeff has no form for '{node.label}'.")
+    registers = list(node.linear)
     lengths = [qureg_length(register.type) for register in registers]
-    if trait.truncate:
+    if truncates(node):
         size = None if None in lengths else min(n for n in lengths if n is not None)
     else:
         size = next((n for n in lengths if n is not None), None)
-    widths = [
-        bitwidth(elements(getattr(node, result).type)) for _, result in trait.results
-    ]
+    widths = [bitwidth(elements(result.type)) for result in node.classical]
     if size is None:
-        return looped(node, trait, registers, widths)
-    return unrolled(node, trait, registers, widths, size)
+        return looped(node, registers, widths)
+    return unrolled(node, registers, widths, size)
 
 
 def unrolled(
-    node: ir.Statement,
-    trait: RegisterTwin,
+    node: wire.RegisterOperation,
     registers: list[ir.SSAValue],
     widths: list[int],
     size: int,
 ) -> tuple[ir.SSAValue, ...]:
-    """Emit the scalar twin at each of the `size` positions of the registers."""
+    """Emit the scalar operation at each of the `size` positions of the registers."""
     collected: list[list[ir.SSAValue]] = [[] for _ in widths]
     for position in range(size):
         at = put(stmts.ConstInt(value=position), node).result
-        qubits: dict[str, ir.SSAValue] = {}
-        for k, (source, _) in enumerate(trait.wires):
-            made = put(stmts.Extract(registers[k], at), node)
-            made.result_reg.type = registers[k].type
+        qubits: list[ir.SSAValue] = []
+        for k, register in enumerate(registers):
+            made = put(stmts.Extract(register, at), node)
+            made.result_reg.type = register.type
             registers[k] = made.result_reg
-            qubits[source] = made.wire
-        outputs = applied(node, trait, qubits, node)
+            qubits.append(made.wire)
+        outputs = applied(node, qubits, node)
         for k, register in enumerate(registers):
             inserted = put(stmts.Insert(register, at, outputs[k]), node)
             inserted.result.type = register.type
@@ -221,12 +204,11 @@ def unrolled(
 
 
 def looped(
-    node: ir.Statement,
-    trait: RegisterTwin,
+    node: wire.RegisterOperation,
     registers: list[ir.SSAValue],
     widths: list[int],
 ) -> tuple[ir.SSAValue, ...]:
-    """Emit a Jeff loop that applies the scalar twin at each register position.
+    """Emit a Jeff loop that applies the scalar operation at each register position.
 
     Each classical result goes into an array of runtime length. The loop body reads
     the classical operands of `node` from the enclosing block. The pass
@@ -235,7 +217,7 @@ def looped(
     """
     # Without truncation, every register has the length of the first one.
     sizes: list[ir.SSAValue] = []
-    for k in range(len(registers) if trait.truncate else 1):
+    for k in range(len(registers) if truncates(node) else 1):
         made = put(stmts.RegLength(registers[k]), node)
         made.result_reg.type = registers[k].type
         registers[k] = made.result_reg
@@ -254,13 +236,13 @@ def looped(
     bits: list[ir.SSAValue] = [body.args.append_from(IntArrayType) for _ in arrays]
     end = stmts.Yield()
     body.stmts.append(end)
-    qubits: dict[str, ir.SSAValue] = {}
-    for k, (source, _) in enumerate(trait.wires):
-        made = put(stmts.Extract(carried[k], index), end)
-        made.result_reg.type = carried[k].type
+    qubits: list[ir.SSAValue] = []
+    for k, register in enumerate(carried):
+        made = put(stmts.Extract(register, index), end)
+        made.result_reg.type = register.type
         carried[k] = made.result_reg
-        qubits[source] = made.wire
-    outputs = applied(node, trait, qubits, end)
+        qubits.append(made.wire)
+    outputs = applied(node, qubits, end)
     for k, register in enumerate(carried):
         inserted = put(stmts.Insert(register, index, outputs[k]), end)
         inserted.result.type = register.type

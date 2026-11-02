@@ -184,8 +184,8 @@ class BorrowCheck(CachedCalls[Slots]):
     ) -> tuple[Slots, ...]:
         """Check that each register operand holds no unavailable slot.
 
-        A result that continues a register operand, such as the output of a register
-        twin, keeps the state of that operand, so it keeps a known length.
+        A result that continues a register operand, such as the output of a
+        `RegisterGate`, keeps the state of that operand, so it keeps a known length.
         """
         self.expect_empty(frame, node, node.args)
         states = dict(zip(node.results, self.results(node), strict=True))

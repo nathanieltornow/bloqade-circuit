@@ -8,7 +8,7 @@ from test_roundtrip import nested, simulate
 
 from bloqade import squin
 from bloqade.types import Qubit
-from bloqade.squin.wire import WireConversionError, stmts, twins
+from bloqade.squin.wire import WireConversionError, stmts
 from bloqade.squin.emit.wire import EmitWire
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.passes.squin_to_wire import SquinToWire
@@ -128,7 +128,7 @@ def test_library_operations_take_the_location_of_the_user_call():
         if isinstance(node, func.Invoke) and node.callee.sym_name == "cx"
     )
     wired = SquinToWire().emit(paired_slices)
-    emitted = (stmts.TakeSlice, stmts.PutSlice, twins.BroadcastCX)
+    emitted = (stmts.TakeSlice, stmts.PutSlice, stmts.RegisterGate)
     sources = [node.source for node in wired.code.walk() if isinstance(node, emitted)]
     assert call.source is not None and len(sources) == 5
     assert {None if s is None else s.lineno for s in sources} == {call.source.lineno}

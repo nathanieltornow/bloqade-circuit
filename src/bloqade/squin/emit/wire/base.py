@@ -15,9 +15,9 @@ from bloqade.types import holds_qubits
 from bloqade.squin.wire import stmts
 from bloqade.analysis.indices import Sym, Iter, Emitted, Indices, IndexExpr
 from bloqade.squin.wire.group import reference_kernel
-from bloqade.squin.wire.twins import TWINS
 from bloqade.squin.wire.types import WireType
 from bloqade.squin.wire.errors import WireConversionError
+from bloqade.squin.wire.sources import SOURCES
 
 from .values import (
     Grid,
@@ -297,8 +297,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
         return None
 
     def eval_fallback(self, frame: WireFrame, node: ir.Statement) -> tuple[Value, ...]:
-        """Emit declared quantum twins or copy supported classical operations with mapped operands."""
-        if type(node) in TWINS:
+        """Emit the wire form of a squin operation, or copy a classical operation with mapped operands."""
+        if type(node) in SOURCES:
             # `gates` imports this module, so this import must stay local.
             from .gates import emit_gate
 

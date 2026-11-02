@@ -9,8 +9,7 @@ from kirin.ir.exception import ValidationErrorGroup
 
 from bloqade import squin
 from bloqade.types import MeasurementResult
-from bloqade.squin.gate import stmts as gate_stmts
-from bloqade.squin.wire import TWINS, stmts as wire_stmts
+from bloqade.squin.wire import Gate, GateKind, stmts as wire_stmts
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.analysis.validation.wire import (
     WireValidation,
@@ -100,6 +99,6 @@ def test_a_gate_on_a_classical_value_breaks_the_types():
     alloc = first(wired, wire_stmts.AllocRegister)
     number = py.Constant(1)
     number.insert_after(alloc)
-    gate = TWINS[gate_stmts.H](qubit=number.result)
+    gate = Gate(GateKind.H, (number.result,))
     gate.insert_after(number)
     assert errors(StructureValidation(), wired)

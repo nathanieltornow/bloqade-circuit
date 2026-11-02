@@ -106,7 +106,7 @@ The operation tables live in `squin.emit.wire`:
 | `functions.py` | Emit function boundaries, library wrappers and calls. |
 | `references.py` | Resolve qubit references in allocations, aliases, lists, tuples, additions, lengths and indexing. |
 | `control.py` | Convert loop and branch regions through Kirin's region interpreter. |
-| `gates.py` | Emit scalar twins on qubits and register twins on whole registers or slices. |
+| `gates.py` | Emit scalar operations on qubits and register operations on whole registers or slices. |
 | `values.py` | Define the location forms and select elements, slices and rows. |
 
 ## Gates and allocation lifetimes
@@ -116,15 +116,21 @@ Each quantum operation consumes its input wire and produces the next version of 
 `Swap` exchanges quantum states while each output continues its corresponding input qubit.
 Measurement produces a classical result and continues the measured qubit.
 
-A twin is the wire form of one source operation on one group of qubits.
-`TWIN_TABLE` declares source fields, wire fields, classical results and broadcast length rules.
-`make_twin` checks these declarations against Kirin's statement schema.
-`WireToSquin` reconstructs the source operation with singleton qubit lists.
+The wire dialect has 4 scalar operations: `Gate`, `Noise`, `Measure` and `Reset`.
+Each one acts on one group of qubits.
+A `Gate` or a `Noise` statement holds its kind as an attribute, such as `GateKind.CX`.
+`kinds.py` gives each kind its number of wires and parameters, and the statements verify that shape.
+The wire dialect imports nothing from squin.
 
-Each source operation also has a register twin, such as `BroadcastCX(controls, targets)`.
-A register twin takes one register for each qubit list and applies the scalar twin at each position.
-Its classical results stay lists, so `BroadcastMeasure` returns one list of measurement results.
-`WireToSquin` reconstructs the source broadcast on the same registers.
+Each scalar operation has a register form: `RegisterGate`, `RegisterNoise`, `RegisterMeasure` and `RegisterReset`.
+A register form takes one register for each qubit list and applies the scalar form at each position.
+Its classical results stay lists, so `RegisterMeasure` returns one list of measurement results.
+
+`sources.py` maps each squin statement on qubits to its kind and names its qubit-list fields, classical fields and results.
+Only the conversions read this table.
+When the module loads, it checks each entry against Kirin's statement schema.
+`WireToSquin` reads the table backwards to rebuild the source operation.
+It gives a scalar operation singleton qubit lists, and a register form the same registers.
 
 A scalar gate handler gets each operand location from the frame.
 For a standalone qubit, it consumes the latest wire and records the output wire.
@@ -135,7 +141,7 @@ For a register element, it emits `Borrow`, the gate and `Release`.
 ```text
 r0 = AllocRegister(2)
 r1, q0 = Borrow(r0, 0)
-q1 = X(q0)
+q1 = Gate(kind=x, wires=(q0,))
 r2 = Release(r1, 0, q1)
 FreeRegister(r2)
 ```
@@ -143,9 +149,9 @@ FreeRegister(r2)
 Allocation handlers record their roots in the current frame.
 At region exit, `free_local_allocations` frees each local allocation that the region still holds.
 
-A broadcast over whole registers or step-1 slices emits one register twin, for any length.
-A slice operand becomes a `TakeSlice` before the twin and a `PutSlice` after it.
-A broadcast over a list of separate qubits, such as `[a, qs[2]]`, emits one scalar twin per operand group.
+A broadcast over whole registers or step-1 slices emits one register operation, for any length.
+A slice operand becomes a `TakeSlice` before the operation and a `PutSlice` after it.
+A broadcast over a list of separate qubits, such as `[a, qs[2]]`, emits one scalar operation per operand group.
 Operations with shortest-list semantics stop at the shortest register.
 For every other operation, equal operand lengths are a precondition of the source program.
 The converter rejects operands whose known lengths differ.
@@ -165,7 +171,7 @@ For zero iterations, the loop returns its initial values.
 r_after = For(indices, initial=r0):
     r_iter = iteration_argument
     r_hole, q0 = Borrow(r_iter, i)
-    q1 = X(q0)
+    q1 = Gate(kind=x, wires=(q0,))
     r_next = Release(r_hole, i, q1)
     Yield(r_next)
 ```
@@ -316,8 +322,8 @@ A wire register type carries its static length when it is known, such as `Regist
 Kirin type inference computes these lengths with the rules in `squin/wire/typeinfer.py`.
 A statement that continues a register keeps the type of its input, and loops and branches join the types of their state.
 A Jeff register type keeps that length, such as `qureg(3)`.
-A register twin of static length becomes one scalar operation per position.
-A register twin of runtime length becomes a Jeff loop that fills arrays of runtime length.
+A register operation of static length becomes one scalar operation per position.
+A register operation of runtime length becomes a Jeff loop that fills arrays of runtime length.
 The Jeff importer rejects those arrays, so such a program has no way back from Jeff to squin.
 The Jeff rewrite rejects noise channels, qubit-loss tests and gates without a registered Jeff form.
 It rejects dynamic list construction, tuple-valued region state and runtime tuple indices.

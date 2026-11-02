@@ -5,8 +5,7 @@ from kirin import ir, types
 from kirin.dialects import py, func
 from kirin.ir.exception import ValidationErrorGroup
 
-from bloqade.squin.wire import WireType, RegisterType, stmts, kernel
-from bloqade.squin.wire.twins import CX
+from bloqade.squin.wire import Gate, GateKind, WireType, RegisterType, stmts, kernel
 from bloqade.squin.passes.wire_to_squin import WireToSquin
 from bloqade.squin.analysis.validation.wire import WireValidation
 
@@ -94,9 +93,10 @@ def borrows(*, offset=None, sequential=False):
         block.stmts.extend([restored, second, final])
     else:
         second = stmts.Borrow(first.register_out, j)
-        gate = CX(first.wire, second.wire)
-        back = stmts.Release(second.register_out, j, gate.target_out)
-        final = stmts.Release(back.register_out, i, gate.control_out)
+        gate = Gate(GateKind.CX, (first.wire, second.wire))
+        control, target = gate.outputs
+        back = stmts.Release(second.register_out, j, target)
+        final = stmts.Release(back.register_out, i, control)
         block.stmts.extend([second, gate, back, final])
     block.stmts.append(func.Return(final.register_out))
     return method(block, (RegisterType, types.Int, types.Int))
