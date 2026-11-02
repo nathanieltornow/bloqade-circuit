@@ -18,6 +18,14 @@ from bloqade.squin.passes.wire_to_squin import WireToSquin
 
 
 @squin.kernel
+def empty_broadcast():
+    qs = squin.qalloc(2)
+    squin.broadcast.x([])
+    squin.x(qs[1])
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
 def negative_index():
     qs = squin.qalloc(3)
     squin.x(qs[-1])
@@ -58,6 +66,7 @@ def calls_classical_helper():
     "kernel, expected",
     [
         (negative_index, [0, 0, 1]),
+        (empty_broadcast, [0, 1]),
         (tuple_slice, [0, 1, 0]),
         (lengths, 5),
         (calls_classical_helper, 1),

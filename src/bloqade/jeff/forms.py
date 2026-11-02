@@ -17,6 +17,7 @@ from bloqade.qubit.stdlib import (
 )
 from bloqade.jeff.dialects import stmts
 from bloqade.squin.stdlib.simple import gate as simple_gate
+from bloqade.native.dialects.gate import stmts as native_stmts
 from bloqade.squin.stdlib.broadcast import gate as broadcast_gate
 
 EMIT_KEY = "emit.squin2jeff"
@@ -87,8 +88,16 @@ GATES: dict[type[ir.Statement], GateForm] = {
     gate_stmts.CZ: _FORMS["cz"],
     gate_stmts.CCZ: _FORMS["ccz"],
     gate_stmts.Swap: _FORMS["swap"],
+    # The native Rz and CZ are the same gates as the squin Rz and CZ. The native Rz
+    # also takes its angle in turns.
+    native_stmts.Rz: _FORMS["rz"],
+    native_stmts.CZ: _FORMS["cz"],
 }
-"""The jeff gate of each squin gate statement, whose angles are in turns."""
+"""The jeff gate of each squin or native gate statement, whose angles are in turns.
+
+Each entry is the same gate in both forms. A gate without an equal Jeff gate, such
+as the native `R`, has no entry.
+"""
 
 QUBIT_KERNELS: dict[ir.Method, type[ir.Statement]] = {
     _new.new: qubit_stmts.New,

@@ -6,7 +6,7 @@ from collections.abc import Mapping
 
 from kirin import ir, types
 from kirin.emit import EmitABC, EmitFrame
-from kirin.dialects import py, func
+from kirin.dialects import py, func, ilist
 from kirin.emit.abc import EmitTable
 from kirin.worklist import WorkList
 from kirin.dialects.py.len import Len
@@ -279,9 +279,16 @@ class EmitWire(EmitABC[WireFrame, Value]):
         return node.results[1]
 
     def known_items(self, value: Value, at: ir.Statement) -> tuple[Value, ...] | None:
-        """Return the item meanings of a container whose length is known, or None."""
+        """Return the item meanings of a container whose length is known, or None.
+
+        A constant empty list, such as the operand of `broadcast.x([])`, has no items.
+        """
         if isinstance(value, tuple):
             return value
+        if isinstance(value, ir.SSAValue) and isinstance(value.owner, py.Constant):
+            data = value.owner.value.unwrap()
+            if isinstance(data, ilist.IList) and len(data) == 0:
+                return ()
         if isinstance(value, (Register, View, Grid, Rows)) and value.length is not None:
             if (count := value.length.constant) is not None:
                 return tuple(

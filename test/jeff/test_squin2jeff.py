@@ -7,7 +7,7 @@ from kirin import ir, types
 from kirin.dialects import ilist
 from kirin.ir.exception import ValidationErrorGroup
 
-from bloqade import squin
+from bloqade import squin, native
 from bloqade.qubit import _interface as qstmt
 from bloqade.types import Qubit, MeasurementResult
 from bloqade.jeff.types import WireType, QuregType, qureg
@@ -609,6 +609,21 @@ def test_rows_slices_and_ladders_convert():
     (loop,) = statements(mt, stmts.For)
     adds = [s for s in loop.body.walk() if isinstance(s, stmts.IntAdd)]
     assert len(adds) == 2
+
+
+@native.kernel
+def native_rotation_and_cz(angle: float) -> None:
+    a = squin.qubit.new()
+    b = squin.qubit.new()
+    native.rz(angle, a)
+    native.cz(a, b)
+
+
+def test_native_rz_and_cz_become_the_equal_jeff_gates():
+    mt = converted(native_rotation_and_cz)
+    assert gate_names(mt) == ["rz", "z"]
+    (cz,) = [s for s in statements(mt, stmts.Gate) if s.gate_name == "z"]
+    assert len(cz.controls) == 1
 
 
 def test_a_literal_list_converts_to_gates_on_each_item():
