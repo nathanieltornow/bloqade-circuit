@@ -184,3 +184,71 @@ def past_the_register():
 def test_an_index_that_can_lie_outside_the_register_is_rejected(kernel):
     with pytest.raises(WireConversionError, match="can lie outside"):
         SquinToWire().emit(kernel)
+
+
+@squin.kernel
+def single_tuple(n: int) -> tuple[int]:
+    return (n,)
+
+
+@squin.kernel
+def measured_single_tuple():
+    q = squin.qubit.new()
+    squin.x(q)
+    return (squin.measure(q),)
+
+
+@squin.kernel
+def overlapping_slices():
+    qs = squin.qalloc(3)
+    squin.x(qs[0])
+    squin.broadcast.cx(qs[0:2], qs[1:3])
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def slice_in_branch(flag: bool):
+    qs = squin.qalloc(4)
+    if flag:
+        squin.broadcast.x(qs[1:3])
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def slice_in_loop(n: int):
+    qs = squin.qalloc(4)
+    for _ in range(n):
+        squin.broadcast.x(qs[1:3])
+    return squin.broadcast.measure(qs)
+
+
+@pytest.mark.parametrize(
+    "kernel, args, expected",
+    [
+        (single_tuple, (7,), [7]),
+        (measured_single_tuple, (), [1]),
+        (overlapping_slices, (), [1, 1, 1]),
+        (slice_in_branch, (True,), [0, 1, 1, 0]),
+        (slice_in_branch, (False,), [0, 0, 0, 0]),
+        (slice_in_loop, (3,), [0, 1, 1, 0]),
+    ],
+)
+def test_a_form_keeps_its_result_and_its_shape_after_the_trip(kernel, args, expected):
+    assert simulate(kernel, *args) == simulate(trip(kernel), *args) == expected
+
+
+@squin.kernel
+def slice_of_parameter(qs: ilist.IList[Qubit, Literal[4]]):
+    squin.broadcast.x(qs[1:3])
+
+
+def test_a_slice_of_a_register_parameter_keeps_its_qubits():
+    back = trip(slice_of_parameter)
+
+    @squin.kernel
+    def run_flat():
+        qs = squin.qalloc(4)
+        back(qs)
+        return squin.broadcast.measure(qs)
+
+    assert simulate(run_flat) == [0, 1, 1, 0]

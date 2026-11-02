@@ -1,8 +1,10 @@
 """Test positional contracts that preserve linear use counts when they fail."""
 
+from typing import Literal
+
 import pytest
 from kirin import ir
-from kirin.dialects import py, scf, func
+from kirin.dialects import py, scf, func, ilist
 from test_validation import first, errors, ladder
 from kirin.ir.exception import ValidationErrorGroup
 
@@ -145,3 +147,20 @@ def test_a_function_must_return_every_borrowed_parameter():
         "every borrowed parameter" in error
         for error in errors(PositionValidation(), wired)
     )
+
+
+@squin.kernel
+def two_slices(qs: ilist.IList[Qubit, Literal[4]]):
+    squin.broadcast.cx(qs[0:2], qs[2:4])
+
+
+def test_a_slice_must_return_to_the_range_that_it_left():
+    wired = SquinToWire().emit(two_slices)
+    first_put, second_put = [
+        node
+        for node in wired.callable_region.walk()
+        if isinstance(node, stmts.PutSlice)
+    ]
+    first_start, second_start = first_put.start, second_put.start
+    first_put.args[1], second_put.args[1] = second_start, first_start
+    assert_only_positions_fail(wired, "return suffix position")

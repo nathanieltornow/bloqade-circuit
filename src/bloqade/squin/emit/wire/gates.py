@@ -95,7 +95,10 @@ def emit_gate(
 ) -> tuple[Value, ...]:
     """Emit a register twin on whole registers and step-1 slices, or scalar twins.
 
-    Scalar twins need operands whose qubits are all known, such as a list of qubits.
+    A register twin takes each operand as its own register, so the operands must
+    share no qubit. Overlapping slices, such as `cx(qs[0:2], qs[1:3])`, get one
+    scalar twin per group in order, which is the order of the source broadcast.
+    Scalar twins need operands whose qubits are all known.
     """
     trait = TWINS[type(source)].get_present_trait(Twin)
     operands = tuple(
@@ -107,9 +110,20 @@ def emit_gate(
         for value in operands
     ):
         parts = cast(tuple[Register | View, ...], operands)
-        return register_gate(emit, frame, source, parts)
+        if apart(parts):
+            return register_gate(emit, frame, source, parts)
     maybe_items = tuple(emit.known_items(value, source) for value in operands)
     if any(items is None for items in maybe_items):
+        if all(
+            isinstance(value, Register)
+            or (isinstance(value, View) and value.span.step == 1)
+            for value in operands
+        ):
+            raise WireConversionError(
+                "A runtime broadcast over register parts that can share qubits has"
+                " no wire form.",
+                source,
+            )
         if not all(isinstance(value, (Register, View, tuple)) for value in operands):
             raise WireConversionError(
                 "A runtime broadcast requires resolved register operands.", source
@@ -142,3 +156,27 @@ def emit_gate(
         ).results[0]
         for (source_field, _), values in zip(trait.results, outputs, strict=True)
     )
+
+
+def apart(parts: tuple[Register | View, ...]) -> bool:
+    """Check whether the register parts provably share no qubit.
+
+    Parts of different allocations never meet. 2 slices of one allocation are apart
+    if one ends before the other starts.
+    """
+    for i, left in enumerate(parts):
+        for right in parts[i + 1 :]:
+            if left.root is not right.root:
+                continue
+            if not (isinstance(left, View) and isinstance(right, View)):
+                return False
+            a, b = left.span, right.span
+            if a.length is None or b.length is None:
+                return False
+            gaps = (
+                (a.start + a.length - b.start).constant,
+                (b.start + b.length - a.start).constant,
+            )
+            if not any(gap is not None and gap <= 0 for gap in gaps):
+                return False
+    return True

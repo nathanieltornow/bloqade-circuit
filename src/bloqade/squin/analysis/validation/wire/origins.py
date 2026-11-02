@@ -45,8 +45,18 @@ class ElementHandle:
     """The index of the element in the register."""
 
 
-Handle: TypeAlias = QubitHandle | RegisterHandle | ElementHandle
-"""Identify an allocation or one element of a register allocation."""
+@dataclass(frozen=True)
+class SliceHandle:
+    """Identify the range that a `TakeSlice` moved out of a register allocation."""
+
+    root: Hashable
+    """The identity of the register allocation."""
+    start: IndexExpr
+    """The index of the first element of the range in the register."""
+
+
+Handle: TypeAlias = QubitHandle | RegisterHandle | ElementHandle | SliceHandle
+"""Identify an allocation, one element of a register or a range of a register."""
 
 
 def fresh_origin(value: ir.SSAValue, length: IndexExpr | None = None) -> Origin:
@@ -77,6 +87,18 @@ def element_of(origin: Origin, index: IndexExpr) -> Origin:
     if size is not None and position is not None and not 0 <= position < size:
         return Origin.top()
     return HandleOrigin(ElementHandle(register.root, index))
+
+
+def slice_of(origin: Origin, start: IndexExpr) -> Origin:
+    """Return the origin of the range at `start` of a whole register origin.
+
+    The result is unknown for any other origin.
+    """
+    if not isinstance(origin, HandleOrigin) or not isinstance(
+        origin.handle, RegisterHandle
+    ):
+        return Origin.top()
+    return HandleOrigin(SliceHandle(origin.handle.root, start))
 
 
 @dataclass(frozen=True)

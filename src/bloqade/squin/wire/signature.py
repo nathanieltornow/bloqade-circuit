@@ -46,7 +46,11 @@ class Layout:
     ordinary_count: int
     """The number of ordinary source results."""
     packed: bool
-    """Whether the source function returns its ordinary results as one tuple."""
+    """Whether the source function returns 2 or more ordinary results as one tuple.
+
+    A source tuple of one item stays one ordinary result of tuple type, so the wire
+    function returns that tuple whole and keeps its shape.
+    """
 
     @classmethod
     def of(cls, signature: func.Signature) -> Layout:
@@ -58,7 +62,7 @@ class Layout:
             if quantum_type(kind) is not None
         )
         packed = (
-            ordinary_count > 0
+            ordinary_count > 1
             and isinstance(signature.output, types.Generic)
             and signature.output.is_subseteq(types.Tuple)
         )

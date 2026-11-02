@@ -626,6 +626,25 @@ def test_native_rz_and_cz_become_the_equal_jeff_gates():
     assert len(cz.controls) == 1
 
 
+@squin.kernel
+def flips_and_counts(q: Qubit, n: int) -> tuple[int]:
+    squin.x(q)
+    return (n + 1,)
+
+
+@squin.kernel
+def calls_flips_and_counts() -> int:
+    q = squin.qubit.new()
+    counted = flips_and_counts(q, 3)
+    return counted[0]
+
+
+def test_a_tuple_of_one_item_beside_a_borrowed_qubit_flattens_in_jeff():
+    mt = converted(calls_flips_and_counts)
+    (call,) = statements(mt, stmts.Call)
+    assert [r.type for r in call.results] == [types.Int, WireType]
+
+
 def test_a_literal_list_converts_to_gates_on_each_item():
     mt = converted(listed)
     assert gate_names(mt) == ["h", "h"]

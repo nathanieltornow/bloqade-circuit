@@ -52,9 +52,14 @@ def _kept_outputs(
 ) -> tuple[types.TypeAttribute, ...]:
     """Return the ordinary output types of a wire function with `signature`.
 
-    The wire function returns one wire for each linear parameter after them.
+    The wire function returns one wire for each linear parameter after them. A
+    function without such wires returns its source result whole, which keeps the
+    shape of a tuple of one item.
     """
     borrowed = 0 if owned else sum(is_linear(kind) for kind in signature.inputs)
+    if not borrowed:
+        none = signature.output.is_subseteq(types.NoneType)
+        return () if none else (squin_type(signature.output),)
     outputs = output_types(signature.output)
     return tuple(squin_type(kind) for kind in outputs[: len(outputs) - borrowed])
 
@@ -116,6 +121,10 @@ class FromWireStatements(RewriteRule):
             node.slice_register.replace_by(
                 _put(py.GetItem(node.register, part), node).result
             )
+            node.register_out.replace_by(node.register)
+        elif isinstance(node, stmts.PutSlice) and _restores(node):
+            # The qubits return to the range that they left, so the register list
+            # holds the same qubit references as before.
             node.register_out.replace_by(node.register)
         elif isinstance(node, stmts.PutSlice):
             length = _put(py_len.Len(node.slice_register), node).result
@@ -326,25 +335,28 @@ class FromWireSignature(RewriteRule):
         outputs = output_types(signature.output)
         if not any(is_linear(k) for k in (*signature.inputs, *outputs)):
             return RewriteResult()
-        kept = _kept_outputs(signature, node.attributes.get(OWNED) == ir.PyAttr(True))
+        owned = node.attributes.get(OWNED) == ir.PyAttr(True)
+        kept = _kept_outputs(signature, owned)
         block = node.body.blocks[0]
         returned = block.last_stmt
         assert isinstance(returned, func.Return)
-        if len(outputs) == 1:
-            values = [returned.value]
-        elif isinstance(made := returned.value.owner, py.tuple.New):
-            values = list(made.args)
-        else:
-            values = []
-        values = values[: len(kept)]
-        if not values:
-            value = _put(func.ConstantNone(), returned).result
-        elif len(values) == 1:
-            value = values[0]
-        else:
-            value = _put(py.tuple.New(tuple(values)), returned).result
-        _put(func.Return(value), returned)
-        returned.delete()
+        # Without borrowed wires, the function returns its source result whole.
+        if not owned and any(is_linear(kind) for kind in signature.inputs):
+            if len(outputs) == 1:
+                values = [returned.value]
+            elif isinstance(made := returned.value.owner, py.tuple.New):
+                values = list(made.args)
+            else:
+                values = []
+            values = values[: len(kept)]
+            if not values:
+                value = _put(func.ConstantNone(), returned).result
+            elif len(values) == 1:
+                value = values[0]
+            else:
+                value = _put(py.tuple.New(tuple(values)), returned).result
+            _put(func.Return(value), returned)
+            returned.delete()
         inputs = tuple(squin_type(k) for k in signature.inputs)
         for arg in block.args[1:]:
             arg.type = squin_type(arg.type)
@@ -397,6 +409,32 @@ class FromWire:
             .rewrite(method.code)
             .join(result)
         )
+
+
+def _restores(node: stmts.PutSlice) -> bool:
+    """Check whether `node` puts a slice back into the range that it came from.
+
+    The `TakeSlice` rule has already turned the slice into `register[start:stop]`.
+    """
+    part = node.slice_register.owner
+    if not isinstance(part, py.GetItem) or part.obj is not node.register:
+        return False
+    bounds = part.index.owner
+    return isinstance(bounds, py_slice.Slice) and _same(bounds.start, node.start)
+
+
+def _same(left: ir.SSAValue, right: ir.SSAValue) -> bool:
+    """Check whether 2 integer values come from equal constants and arithmetic."""
+    if left is right:
+        return True
+    a, b = left.owner, right.owner
+    if isinstance(a, py.Constant) and isinstance(b, py.Constant):
+        return a.value == b.value
+    return (
+        type(a) is type(b)
+        and isinstance(a, (py.Add, py.Sub, py.Mult))
+        and all(_same(x, y) for x, y in zip(a.args, b.args, strict=True))
+    )
 
 
 def _splice(

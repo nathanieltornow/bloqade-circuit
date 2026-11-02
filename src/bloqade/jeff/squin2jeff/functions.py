@@ -1,7 +1,7 @@
 """Replace wire functions, calls and returns with their Jeff forms."""
 
 from dataclasses import dataclass
-from collections.abc import Mapping
+from collections.abc import Mapping, Iterator
 
 from kirin import ir, types
 from kirin.dialects import py, func
@@ -45,10 +45,11 @@ class Functions(RewriteRule):
     def call(self, node: func.Invoke) -> None:
         """Replace `node` with a Jeff call of the Jeff copy of its callee.
 
-        A tuple result becomes a `py.tuple.New` of the call results, and a later
-        rewrite reads its fields. The arguments already hold Jeff values. A
-        borrowing callee returns each register argument as the same register, so
-        that result keeps the static length of the argument.
+        A tuple result becomes nested `py.tuple.New` statements of the call results
+        in the shape of the wire result, and later rewrites read their fields. The
+        arguments already hold Jeff values. A borrowing callee returns each register
+        argument as the same register, so that result keeps the static length of the
+        argument.
         """
         callee = self.methods[node.callee]
         outputs = declared_outputs(callee.return_type)
@@ -59,18 +60,13 @@ class Functions(RewriteRule):
             for argument, result in zip(borrowed, suffix, strict=True):
                 if argument.type.is_subseteq(QuregType):
                     result.type = argument.type
-        if node.result.type.is_subseteq(types.NoneType):
-            replace(node, put(func.ConstantNone(), node).result)
-        elif node.result.type.is_subseteq(types.Tuple):
-            replace(node, put(py.tuple.New(tuple(made.results)), node).result)
-        else:
-            replace(node, made.results[0])
+        replace(node, nested(node.result.type, iter(made.results), node))
 
 
 def retype(node: func.Function) -> None:
     """Give the function `node` the Jeff types of its parameters and outputs."""
     inputs = tuple(jeff_kind(kind) for kind in node.signature.inputs)
-    outputs = tuple(jeff_kind(kind) for kind in declared_outputs(node.signature.output))
+    outputs = tuple(jeff_kind(kind) for kind in flat_kinds(node.signature.output))
     output = (
         types.NoneType
         if not outputs
@@ -88,13 +84,7 @@ def returned(node: func.Return) -> None:
     function = node.parent_stmt
     if not isinstance(function, func.Function):
         raise JeffEmissionError(node, "Jeff requires returns at function scope.")
-    owner = node.value.owner
-    if isinstance(owner, func.ConstantNone):
-        values: tuple[ir.SSAValue, ...] = ()
-    elif isinstance(owner, py.tuple.New):
-        values = tuple(owner.args)
-    else:
-        values = (node.value,)
+    values = flat_values(node.value)
     kinds = declared_outputs(function.signature.output)
     if len(values) != len(kinds):
         raise JeffEmissionError(
@@ -107,3 +97,44 @@ def returned(node: func.Return) -> None:
     outputs = (fitted(v, k, node) for v, k in zip(values, kinds, strict=True))
     put(stmts.Return(*outputs), node)
     node.delete()
+
+
+def flat_kinds(kind: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:
+    """Return the type of each Jeff output of a wire value of type `kind`.
+
+    Jeff has no tuples, so a nested tuple gives its leaf types in order, and None
+    gives no output.
+    """
+    members = declared_outputs(kind)
+    if members == (kind,):
+        return members
+    return tuple(leaf for member in members for leaf in flat_kinds(member))
+
+
+def flat_values(value: ir.SSAValue) -> tuple[ir.SSAValue, ...]:
+    """Return the leaf values of a value that nested `py.tuple.New` statements build.
+
+    None gives no value, and any other value is its own leaf.
+    """
+    owner = value.owner
+    if isinstance(owner, func.ConstantNone):
+        return ()
+    if isinstance(owner, py.tuple.New):
+        return tuple(leaf for item in owner.args for leaf in flat_values(item))
+    return (value,)
+
+
+def nested(
+    kind: types.TypeAttribute, results: Iterator[ir.SSAValue], before: ir.Statement
+) -> ir.SSAValue:
+    """Build a value of the wire type `kind` from the next flat Jeff call results.
+
+    This is the inverse of `flat_kinds`.
+    """
+    members = declared_outputs(kind)
+    if members == (kind,):
+        return next(results)
+    if not members:
+        return put(func.ConstantNone(), before).result
+    fields = tuple(nested(member, results, before) for member in members)
+    return put(py.tuple.New(fields), before).result

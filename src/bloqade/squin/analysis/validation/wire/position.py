@@ -16,7 +16,14 @@ from bloqade.squin.wire.traits import Threads
 from bloqade.squin.wire.ownership import KEY as OWNED
 
 from .calls import CachedCalls
-from .origins import Origin, TupleOrigin, HandleOrigin, element_of, fresh_origin
+from .origins import (
+    Origin,
+    TupleOrigin,
+    HandleOrigin,
+    slice_of,
+    element_of,
+    fresh_origin,
+)
 
 KEY = "squin.wire.positions"
 
@@ -130,8 +137,6 @@ class WirePositions(interp.MethodTable):
     @interp.impl(stmts.PackRegister)
     @interp.impl(stmts.JoinRegister)
     @interp.impl(stmts.SplitRegister)
-    @interp.impl(stmts.TakeSlice)
-    @interp.impl(stmts.PutSlice)
     def allocate(
         self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: ir.Statement
     ) -> tuple[Origin, ...]:
@@ -153,6 +158,35 @@ class WirePositions(interp.MethodTable):
         """Keep the register's origin and identify the selected element."""
         register = frame.get(stmt.register)
         return register, element_of(register, check.indices.of(stmt.index))
+
+    @interp.impl(stmts.TakeSlice)
+    def take_slice(
+        self,
+        check: PositionAnalysis,
+        frame: ForwardFrame[Origin],
+        stmt: stmts.TakeSlice,
+    ) -> tuple[Origin, ...]:
+        """Keep the register's origin and name the moved range by its start."""
+        register = frame.get(stmt.register)
+        return register, slice_of(register, check.indices.of(stmt.start))
+
+    @interp.impl(stmts.PutSlice)
+    def put_slice(
+        self, check: PositionAnalysis, frame: ForwardFrame[Origin], stmt: stmts.PutSlice
+    ) -> tuple[Origin, ...]:
+        """Keep the register's origin when the slice returns to the range it left.
+
+        A slice from anywhere else, such as in register surgery that Jeff import
+        produces, gives the result a new origin.
+        """
+        register = frame.get(stmt.register)
+        returned = slice_of(register, check.indices.of(stmt.start))
+        if (
+            isinstance(returned, HandleOrigin)
+            and frame.get(stmt.slice_register) == returned
+        ):
+            return (register,)
+        return (fresh_origin(stmt.register_out),)
 
     @interp.impl(stmts.Release)
     def release(
