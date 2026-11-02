@@ -4,8 +4,12 @@ from dataclasses import dataclass
 
 from kirin import ir
 from kirin.rewrite import Walk, Chain, Fixpoint, DeadCodeElimination
+from kirin.dialects import py
 from kirin.validation import ValidationSuite
+from kirin.dialects.py import slice as py_slice
+from kirin.rewrite.abc import RewriteRule, RewriteResult
 from kirin.ir.exception import ValidationErrorGroup
+from kirin.dialects.ilist import stmts as ilist_stmts
 
 from bloqade.jeff.dialects import kernel as jeff_kernel
 from bloqade.squin.wire.group import kernel as wire_kernel, reference_kernel
@@ -48,14 +52,17 @@ class WireToJeff:
         copies = {
             source: source.similar(jeff_kernel.union(wire_kernel)) for source in methods
         }
-        rules = Chain(Functions(copies), ControlFlow(), Quantum(), Classical())
+        rules = Chain(
+            Functions(copies), ControlFlow(), Quantum(), Classical(), Unsupported()
+        )
+        cleanup = Fixpoint(Walk(DeadCodeElimination()))
         # `reachable` lists each callee before its callers.
         for copy in copies.values():
             copy.code.attributes.pop(OWNED, None)
             try:
+                cleanup.rewrite(copy.code)
                 Walk(rules, region_first=True).rewrite(copy.code)
-                Fixpoint(Walk(DeadCodeElimination())).rewrite(copy.code)
-                leftover(copy)
+                cleanup.rewrite(copy.code)
             except JeffEmissionError as error:
                 raise ValidationErrorGroup(
                     f"Jeff emission failed for '{method.sym_name}'.",
@@ -69,11 +76,37 @@ class WireToJeff:
         return copies[method]
 
 
-def leftover(method: ir.Method) -> None:
-    """Reject the first statement of `method` that the rules left without a Jeff form."""
-    for node in method.callable_region.walk():
-        if node.dialect not in jeff_kernel.data:
-            raise JeffEmissionError(node, f"Jeff has no form for '{node.name}'.")
+KEPT = (
+    py.Constant,
+    py.tuple.New,
+    py.indexing.GetItem,
+    ilist_stmts.Range,
+    py_slice.Slice,
+)
+"""The statements that the rules can leave for dead-code elimination to remove.
+
+A range, a slice and the constant None have no Jeff value, and a tuple has fields
+that later rules read.
+"""
+
+
+class Unsupported(RewriteRule):
+    """Reject a live statement that no earlier rule replaced and that has no Jeff form.
+
+    The rule runs last in the chain on each statement. A replaced statement has
+    already left its block. Dead-code elimination runs before the rules, so every
+    statement that remains has a use.
+    """
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Raise an error for `node` if it stays in its block without a Jeff form."""
+        if (
+            node.parent_block is None
+            or node.dialect in jeff_kernel.data
+            or isinstance(node, KEPT)
+        ):
+            return RewriteResult()
+        raise JeffEmissionError(node, f"Jeff has no form for '{node.name}'.")
 
 
 @dataclass

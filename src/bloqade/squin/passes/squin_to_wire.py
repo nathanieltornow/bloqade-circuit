@@ -5,7 +5,6 @@ from dataclasses import field, dataclass
 from kirin import ir
 from kirin.passes import TypeInfer
 from kirin.rewrite import Walk, Fixpoint, DeadCodeElimination
-from kirin.dialects import func
 from kirin.validation import ValidationSuite
 
 from bloqade.squin.emit.wire import EmitWire
@@ -17,7 +16,10 @@ from bloqade.squin.analysis.validation.wire import (
     WireValidation,
     StructureValidation,
 )
-from bloqade.squin.analysis.validation.wire.stages import SourceValidation
+from bloqade.squin.analysis.validation.wire.stages import (
+    SourceAnalysis,
+    SourceValidation,
+)
 
 
 @dataclass
@@ -47,17 +49,15 @@ class SquinToWire:
             )
         self.active.add(source)
         try:
-            ValidationSuite(
+            checked = ValidationSuite(
                 [StructureValidation, SourceValidation], fail_fast=True
-            ).validate(source).raise_if_invalid()
-            callees = {
-                node.callee
-                for node in source.code.walk()
-                if isinstance(node, func.Invoke)
-            }
+            ).validate(source)
+            checked.raise_if_invalid()
+            analysis = checked.frames[SourceValidation().name()]
+            assert isinstance(analysis, SourceAnalysis)
             # Sorting by name gives a deterministic conversion order. A library
             # wrapper gets no conversion, because `run_library` emits its body.
-            for callee in sorted(callees, key=lambda item: item.sym_name or ""):
+            for callee in sorted(analysis.callees, key=lambda m: m.sym_name or ""):
                 if not is_library(callee):
                     self.convert(callee)
             method = self.emit_and_validate(source)

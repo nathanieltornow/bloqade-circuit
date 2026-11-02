@@ -1,12 +1,13 @@
 """Check source representation through Kirin's validation and interpreter infrastructure."""
 
-from dataclasses import replace, dataclass
+from dataclasses import field, replace, dataclass
 
 from kirin import ir, interp
 from kirin.lattice import EmptyLattice
 from kirin.analysis import Forward
 from kirin.dialects import scf, func
 from kirin.validation import ValidationPass
+from typing_extensions import Self
 from kirin.interp.value import RegionResult
 from kirin.analysis.forward import ForwardFrame
 
@@ -19,6 +20,14 @@ class SourceAnalysis(Forward[EmptyLattice]):
 
     keys = (KEY,)
     lattice = EmptyLattice
+    callees: set[ir.Method] = field(default_factory=set, init=False)
+    """The method of each static call in the analyzed method."""
+
+    def initialize(self) -> Self:
+        """Forget the callees of the previous run."""
+        super().initialize()
+        self.callees = set()
+        return self
 
     def method_self(self, method: ir.Method) -> EmptyLattice:
         """Return the empty abstract value for the function object."""
@@ -31,7 +40,9 @@ class SourceAnalysis(Forward[EmptyLattice]):
         self.add_validation_error(node, error)
 
     def check_node(self, node: ir.Statement) -> None:
-        """Require static calls and supported structured region owners."""
+        """Record static callees, and require static calls and supported regions."""
+        if isinstance(node, func.Invoke):
+            self.callees.add(node.callee)
         if isinstance(node, func.Call):
             self.error(node, "Wire emission requires a static call target.")
         if node.regions and not isinstance(node, (func.Function, scf.For, scf.IfElse)):
