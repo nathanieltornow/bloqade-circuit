@@ -67,14 +67,22 @@ def fresh_origin(value: ir.SSAValue, length: IndexExpr | None = None) -> Origin:
 
 
 def element_of(origin: Origin, index: IndexExpr) -> Origin:
-    """Return the origin of element `index` of a whole register origin.
+    """Return the origin of element `index` of a register or slice origin.
 
-    The result is unknown for any other origin and for an index outside a known
-    length.
+    Element `k` of a slice that starts at `s` is element `s + k` of the register
+    that the slice came from. The result is unknown for any other origin, for a
+    negative index into a slice, and for an index outside a known length.
     """
-    if not isinstance(origin, HandleOrigin) or not isinstance(
-        origin.handle, RegisterHandle
-    ):
+    if not isinstance(origin, HandleOrigin):
+        return Origin.top()
+    if isinstance(origin.handle, SliceHandle):
+        position = index.constant
+        if position is not None and position < 0:
+            return Origin.top()
+        return HandleOrigin(
+            ElementHandle(origin.handle.root, origin.handle.start + index)
+        )
+    if not isinstance(origin.handle, RegisterHandle):
         return Origin.top()
     register = origin.handle
     position = index.constant

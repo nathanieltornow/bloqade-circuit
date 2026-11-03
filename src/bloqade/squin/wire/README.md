@@ -295,6 +295,25 @@ Tuple construction, extraction, calls and region boundaries must preserve quantu
 Function parameters and region state carry separate wire or register values.
 Function results can use a flat tuple of ordinary outputs followed by borrowed parameters.
 
+## Unpacking registers
+
+`UnpackRegisters` in `squin/passes/wire_unpack.py` turns constant-size registers into separate wires.
+Its rules live in `squin/rewrite/wire/unpack.py`, and they read static lengths from the types.
+`ExpandBroadcast` replaces a register operation of static length with one `Borrow`, scalar operation and `Release` per position.
+`UnpackRegister` then replaces a local register with one `Alloc` per qubit.
+It applies only if every statement on the register's chain is a `Borrow` or `Release` at a constant index, a `Length`, or the final free, all in one block.
+A register that a loop, a branch or a call takes stays a register.
+
+```text
+r0 = AllocRegister(2)            a = Alloc()
+r1, q0 = Borrow(r0, 0)           b = Alloc()
+q1 = Gate(kind=h, wires=(q0,))   a1 = Gate(kind=h, wires=(a,))
+r2 = Release(r1, 0, q1)          Free(a1)
+FreeRegister(r2)                 Free(b)
+```
+
+After unpacking, 2 gates on one qubit are neighbours on one wire, so a peephole rule can match them.
+
 ## Jeff emission through rewrite rules
 
 ```python

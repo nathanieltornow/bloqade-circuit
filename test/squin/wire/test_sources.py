@@ -123,7 +123,7 @@ def test_an_entry_rebuilds_its_squin_statement():
 
 
 def test_every_statement_that_continues_a_linear_operand_has_a_threads_trait():
-    from bloqade.squin.wire import Threads, dialect, stmts
+    from bloqade.squin.wire import Threads, stmts, dialect
 
     ends = {
         stmts.Alloc,
