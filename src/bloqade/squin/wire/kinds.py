@@ -1,7 +1,8 @@
 """Name the gates and noise channels of the wire dialect and state their facts.
 
 A `Gate` or a `Noise` statement holds its kind as an attribute. The facts tables give
-each kind its number of wires and parameters, which the statements verify.
+each kind its number of wires and parameters, which the statements check. A
+measurement and a reset have one fixed shape each.
 """
 
 import enum
@@ -99,3 +100,9 @@ NOISE_FACTS: dict[NoiseKind, Facts] = {
     NoiseKind.QUBIT_LEAKAGE: Facts(1, 2),
 }
 """Give the shape of each noise channel."""
+
+MEASURE_FACTS = Facts(1)
+"""Give the shape of a measurement."""
+
+RESET_FACTS = Facts(1)
+"""Give the shape of a reset."""

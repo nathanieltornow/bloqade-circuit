@@ -14,7 +14,6 @@ from bloqade.jeff.forms import GATES
 from bloqade.jeff.types import IntArrayType, qureg, is_subtype, qureg_length
 from bloqade.squin.wire import stmts as wire
 from bloqade.jeff.dialects import stmts
-from bloqade.squin.wire.stmts import truncates
 
 from .kinds import JeffEmissionError, put, radians, replace, bitwidth, elements
 
@@ -163,7 +162,7 @@ def broadcast(node: wire.RegisterOperation) -> tuple[ir.SSAValue, ...]:
         raise JeffEmissionError(node, f"Jeff has no form for '{node.label}'.")
     registers = list(node.linear)
     lengths = [qureg_length(register.type) for register in registers]
-    if truncates(node):
+    if node.facts.truncate:
         size = None if None in lengths else min(n for n in lengths if n is not None)
     else:
         size = next((n for n in lengths if n is not None), None)
@@ -217,7 +216,7 @@ def looped(
     """
     # Without truncation, every register has the length of the first one.
     sizes: list[ir.SSAValue] = []
-    for k in range(len(registers) if truncates(node) else 1):
+    for k in range(len(registers) if node.facts.truncate else 1):
         made = put(stmts.RegLength(registers[k]), node)
         made.result_reg.type = registers[k].type
         registers[k] = made.result_reg

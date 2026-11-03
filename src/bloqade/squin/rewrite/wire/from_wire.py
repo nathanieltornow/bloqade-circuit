@@ -160,7 +160,11 @@ class FromWireStatements(RewriteRule):
             )
             for value in node.linear
         )
-        adjoint = getattr(node, "adjoint", False)
+        adjoint = (
+            node.adjoint
+            if isinstance(node, (stmts.Gate, stmts.RegisterGate))
+            else False
+        )
         made = _put(entry.build(qubits, node.parameters, adjoint), node)
         for result, value in zip(
             node.classical, entry.result_values(made), strict=True

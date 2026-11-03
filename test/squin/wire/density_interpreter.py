@@ -12,7 +12,6 @@ from kirin import ir, interp
 from kirin.dialects import ilist
 
 from bloqade.squin.wire import GateKind, WireType, NoiseKind, stmts
-from bloqade.squin.wire.stmts import truncates
 
 IDENTITY = np.eye(2, dtype=complex)
 X = np.array([[0, 1], [1, 0]], dtype=complex)
@@ -180,7 +179,9 @@ class WireSemantics(interp.MethodTable):
         """Apply the scalar form of a register operation at each register position."""
         registers = frame.get_values(stmt.linear)
         lengths = {len(register) for register in registers}
-        assert truncates(stmt) or len(lengths) == 1, "the registers differ in length"
+        assert (
+            stmt.facts.truncate or len(lengths) == 1
+        ), "the registers differ in length"
         probe = stmt.scalar(tuple(ir.TestValue(WireType) for _ in registers))
         collected = [[] for _ in stmt.classical]
         for i in range(min(lengths)):

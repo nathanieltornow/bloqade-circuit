@@ -22,7 +22,15 @@ from bloqade.squin.gate import stmts as gate_stmts
 from bloqade.squin.noise import stmts as noise_stmts
 from bloqade.native.dialects.gate import stmts as native_stmts
 
-from .kinds import GATE_FACTS, NOISE_FACTS, Facts, GateKind, NoiseKind
+from .kinds import (
+    GATE_FACTS,
+    NOISE_FACTS,
+    RESET_FACTS,
+    MEASURE_FACTS,
+    Facts,
+    GateKind,
+    NoiseKind,
+)
 from .stmts import (
     Gate,
     Noise,
@@ -90,11 +98,11 @@ class Entry:
         return cast(Callable[..., ir.Statement], self.source)(**fields)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class GateEntry(Entry):
     """Map a squin gate to the wire gate of the kind `kind`."""
 
-    kind: GateKind = GateKind.X
+    kind: GateKind
 
     @property
     def facts(self) -> Facts:
@@ -120,11 +128,11 @@ class GateEntry(Entry):
         return RegisterGate(self.kind, registers, params, adjoint=adjoint)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class NoiseEntry(Entry):
     """Map a squin noise channel to the wire channel of the kind `kind`."""
 
-    kind: NoiseKind = NoiseKind.DEPOLARIZE
+    kind: NoiseKind
 
     @property
     def facts(self) -> Facts:
@@ -157,7 +165,7 @@ class MeasureEntry(Entry):
     @property
     def facts(self) -> Facts:
         """Return the shape of a measurement."""
-        return Facts(1)
+        return MEASURE_FACTS
 
     def scalar(
         self,
@@ -187,7 +195,7 @@ class ResetEntry(Entry):
     @property
     def facts(self) -> Facts:
         """Return the shape of a reset."""
-        return Facts(1)
+        return RESET_FACTS
 
     def scalar(
         self,
