@@ -23,11 +23,11 @@ from bloqade.squin.noise import stmts as noise_stmts
 from bloqade.native.dialects.gate import stmts as native_stmts
 
 from .kinds import (
-    GATE_FACTS,
-    NOISE_FACTS,
-    RESET_FACTS,
-    MEASURE_FACTS,
-    Facts,
+    GATE_SHAPES,
+    RESET_SHAPE,
+    NOISE_SHAPES,
+    MEASURE_SHAPE,
+    Shape,
     GateKind,
     NoiseKind,
 )
@@ -105,9 +105,9 @@ class GateEntry(Entry):
     kind: GateKind
 
     @property
-    def facts(self) -> Facts:
+    def shape(self) -> Shape:
         """Return the shape of the gate."""
-        return GATE_FACTS[self.kind]
+        return GATE_SHAPES[self.kind]
 
     def scalar(
         self,
@@ -135,9 +135,9 @@ class NoiseEntry(Entry):
     kind: NoiseKind
 
     @property
-    def facts(self) -> Facts:
+    def shape(self) -> Shape:
         """Return the shape of the channel."""
-        return NOISE_FACTS[self.kind]
+        return NOISE_SHAPES[self.kind]
 
     def scalar(
         self,
@@ -163,9 +163,9 @@ class MeasureEntry(Entry):
     """Map the squin measurement to `Measure` and `RegisterMeasure`."""
 
     @property
-    def facts(self) -> Facts:
+    def shape(self) -> Shape:
         """Return the shape of a measurement."""
-        return MEASURE_FACTS
+        return MEASURE_SHAPE
 
     def scalar(
         self,
@@ -193,9 +193,9 @@ class ResetEntry(Entry):
     """Map the squin reset to `Reset` and `RegisterReset`."""
 
     @property
-    def facts(self) -> Facts:
+    def shape(self) -> Shape:
         """Return the shape of a reset."""
-        return RESET_FACTS
+        return RESET_SHAPE
 
     def scalar(
         self,
@@ -311,8 +311,8 @@ def check(entry: Source) -> Source:
     if tuple(fields.results) != entry.results:
         raise ValueError(f"The wire entry of {name} must list its results in order.")
     if (len(entry.qubits), len(entry.params)) != (
-        entry.facts.wires,
-        entry.facts.params,
+        entry.shape.wires,
+        entry.shape.params,
     ):
         raise ValueError(f"The wire entry of {name} must match the shape of its kind.")
     return entry

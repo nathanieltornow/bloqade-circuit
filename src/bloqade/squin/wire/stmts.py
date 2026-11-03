@@ -18,11 +18,11 @@ from kirin.dialects import ilist
 from bloqade.types import MeasurementResultType
 
 from .kinds import (
-    GATE_FACTS,
-    NOISE_FACTS,
-    RESET_FACTS,
-    MEASURE_FACTS,
-    Facts,
+    GATE_SHAPES,
+    RESET_SHAPE,
+    NOISE_SHAPES,
+    MEASURE_SHAPE,
+    Shape,
     GateKind,
     NoiseKind,
 )
@@ -212,7 +212,7 @@ class Operation(ir.Statement):
         return tuple(result for result in self.results if result not in outputs)
 
     @property
-    def facts(self) -> Facts:
+    def shape(self) -> Shape:
         """Return the number of wires and parameters that the operation needs."""
         raise NotImplementedError
 
@@ -224,20 +224,20 @@ class Operation(ir.Statement):
 
 @dataclass(frozen=True)
 class HasShape(ir.StmtTrait):
-    """Check that an operation has the number of wires and parameters of its facts.
+    """Check that an operation has the number of wires and parameters of its kind.
 
     Kirin's generated `check` of each statement runs this trait.
     """
 
     def verify(self, node: ir.Statement) -> None:
-        """Raise a validation error if `node` has another shape than its facts."""
+        """Raise a validation error if `node` has another shape than its kind."""
         assert isinstance(node, Operation)
-        facts = node.facts
+        shape = node.shape
         wires, params = len(node.linear), len(node.parameters)
-        if (wires, params) != (facts.wires, facts.params):
+        if (wires, params) != (shape.wires, shape.params):
             raise ir.ValidationError(
                 node,
-                f"'{node.label}' needs {facts.wires} qubits and {facts.params}"
+                f"'{node.label}' needs {shape.wires} qubits and {shape.params}"
                 f" parameters, but it has {wires} and {params}.",
             )
 
@@ -276,9 +276,9 @@ class Gate(Operation):
         )
 
     @property
-    def facts(self) -> Facts:
+    def shape(self) -> Shape:
         """Return the shape of the gate kind."""
-        return GATE_FACTS[self.kind]
+        return GATE_SHAPES[self.kind]
 
     @property
     def label(self) -> str:
@@ -317,9 +317,9 @@ class Noise(Operation):
         )
 
     @property
-    def facts(self) -> Facts:
+    def shape(self) -> Shape:
         """Return the shape of the channel kind."""
-        return NOISE_FACTS[self.kind]
+        return NOISE_SHAPES[self.kind]
 
     @property
     def label(self) -> str:
@@ -338,9 +338,9 @@ class Measure(Operation):
     bit: ir.ResultValue = info.result(MeasurementResultType)
 
     @property
-    def facts(self) -> Facts:
+    def shape(self) -> Shape:
         """Return the shape of a measurement."""
-        return MEASURE_FACTS
+        return MEASURE_SHAPE
 
 
 @statement(dialect=dialect)
@@ -353,17 +353,16 @@ class Reset(Operation):
     wire_out: ir.ResultValue = info.result(WireType)
 
     @property
-    def facts(self) -> Facts:
+    def shape(self) -> Shape:
         """Return the shape of a reset."""
-        return RESET_FACTS
+        return RESET_SHAPE
 
 
 class RegisterOperation(Operation):
     """Apply a single-wire operation at every position of whole registers.
 
-    Position `i` of each register forms one group of wires. Unless the facts say
-    that the operation truncates, the program must give every register the same
-    length.
+    Position `i` of each register forms one group of wires. Unless the shape of the operation
+    truncates, the program must give every register the same length.
     """
 
     def scalar(self, wires: tuple[ir.SSAValue, ...]) -> Operation:
@@ -402,9 +401,9 @@ class RegisterGate(RegisterOperation):
         )
 
     @property
-    def facts(self) -> Facts:
+    def shape(self) -> Shape:
         """Return the shape of the gate kind."""
-        return GATE_FACTS[self.kind]
+        return GATE_SHAPES[self.kind]
 
     @property
     def label(self) -> str:
@@ -444,9 +443,9 @@ class RegisterNoise(RegisterOperation):
         )
 
     @property
-    def facts(self) -> Facts:
+    def shape(self) -> Shape:
         """Return the shape of the channel kind."""
-        return NOISE_FACTS[self.kind]
+        return NOISE_SHAPES[self.kind]
 
     @property
     def label(self) -> str:
@@ -471,9 +470,9 @@ class RegisterMeasure(RegisterOperation):
     )
 
     @property
-    def facts(self) -> Facts:
+    def shape(self) -> Shape:
         """Return the shape of a measurement."""
-        return MEASURE_FACTS
+        return MEASURE_SHAPE
 
     def scalar(self, wires: tuple[ir.SSAValue, ...]) -> Measure:
         """Return the measurement of one wire."""
@@ -491,9 +490,9 @@ class RegisterReset(RegisterOperation):
     register_out: ir.ResultValue = info.result(RegisterType)
 
     @property
-    def facts(self) -> Facts:
+    def shape(self) -> Shape:
         """Return the shape of a reset."""
-        return RESET_FACTS
+        return RESET_SHAPE
 
     def scalar(self, wires: tuple[ir.SSAValue, ...]) -> Reset:
         """Return the reset of one wire."""

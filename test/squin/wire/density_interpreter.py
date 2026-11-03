@@ -180,7 +180,7 @@ class WireSemantics(interp.MethodTable):
         registers = frame.get_values(stmt.linear)
         lengths = {len(register) for register in registers}
         assert (
-            stmt.facts.truncate or len(lengths) == 1
+            stmt.shape.truncate or len(lengths) == 1
         ), "the registers differ in length"
         probe = stmt.scalar(tuple(ir.TestValue(WireType) for _ in registers))
         collected = [[] for _ in stmt.classical]

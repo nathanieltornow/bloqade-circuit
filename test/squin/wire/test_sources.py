@@ -16,7 +16,7 @@ from bloqade.squin.wire import (
     RegisterMeasure,
 )
 from bloqade.squin.noise import stmts as noise_stmts
-from bloqade.squin.wire.kinds import GATE_FACTS, NOISE_FACTS
+from bloqade.squin.wire.kinds import GATE_SHAPES, NOISE_SHAPES
 from bloqade.squin.wire.sources import (
     SOURCES,
     GATE_SOURCES,
@@ -40,8 +40,8 @@ def test_every_flat_qubit_statement_has_an_entry():
 
 
 def test_every_kind_has_exactly_one_source():
-    assert set(GATE_SOURCES) == set(GATE_FACTS) == set(GateKind)
-    assert set(NOISE_SOURCES) == set(NOISE_FACTS) == set(NoiseKind)
+    assert set(GATE_SOURCES) == set(GATE_SHAPES) == set(GateKind)
+    assert set(NOISE_SOURCES) == set(NOISE_SHAPES) == set(NoiseKind)
 
 
 def test_native_gates_keep_their_own_kinds():
