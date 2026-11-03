@@ -2,7 +2,13 @@
 
 `Alloc` and `Free` start and end the life of one qubit. `AllocRegister` and
 `FreeRegister` do the same for a list of qubits. `Borrow` and `Release` take one
-qubit out of a register and put it back. `Length` reads the size of a register.
+qubit out of a register and put it back. `Take` and `Put` move a qubit out of a
+register and fill an empty element, and `TakeSlice` and `PutSlice` do the same for a
+range. `Length` reads the size of a register.
+
+A statement whose result continues one of its wires or registers has a `Threads`
+trait. `PackRegister`, `SplitRegister`, `JoinRegister` and the frees end their inputs
+and start new values, so they have none.
 
 `Gate`, `Noise`, `Measure` and `Reset` act on single wires. Their register forms
 act at every position of whole registers. A gate or a noise channel names its
@@ -107,6 +113,8 @@ class Length(ir.Statement):
 class Take(ir.Statement):
     """Move one qubit out of a register and leave its element empty."""
 
+    name = "take"
+    traits = frozenset({ThreadsPairs((("register", "register_out"),))})
     register: ir.SSAValue = info.argument(RegisterType)
     index: ir.SSAValue = info.argument(types.Int)
     register_out: ir.ResultValue = info.result(RegisterType)
@@ -117,6 +125,8 @@ class Take(ir.Statement):
 class Put(ir.Statement):
     """Fill an empty register element with an owned qubit."""
 
+    name = "put"
+    traits = frozenset({ThreadsPairs((("register", "register_out"),))})
     register: ir.SSAValue = info.argument(RegisterType)
     index: ir.SSAValue = info.argument(types.Int)
     wire: ir.SSAValue = info.argument(WireType)
@@ -127,6 +137,7 @@ class Put(ir.Statement):
 class PackRegister(ir.Statement):
     """Consume qubits and form a register in operand order."""
 
+    name = "pack_register"
     wires: tuple[ir.SSAValue, ...] = info.argument(WireType)
     result: ir.ResultValue = info.result(RegisterType)
 
@@ -135,6 +146,7 @@ class PackRegister(ir.Statement):
 class SplitRegister(ir.Statement):
     """Divide a complete register at an index into two owned registers."""
 
+    name = "split_register"
     register: ir.SSAValue = info.argument(RegisterType)
     index: ir.SSAValue = info.argument(types.Int)
     before: ir.ResultValue = info.result(RegisterType)
@@ -145,6 +157,7 @@ class SplitRegister(ir.Statement):
 class JoinRegister(ir.Statement):
     """Consume two complete registers and concatenate their qubits."""
 
+    name = "join_register"
     first: ir.SSAValue = info.argument(RegisterType)
     second: ir.SSAValue = info.argument(RegisterType)
     result: ir.ResultValue = info.result(RegisterType)
@@ -154,6 +167,8 @@ class JoinRegister(ir.Statement):
 class TakeSlice(ir.Statement):
     """Move a contiguous range into an owned register and leave its source elements empty."""
 
+    name = "take_slice"
+    traits = frozenset({ThreadsPairs((("register", "register_out"),))})
     register: ir.SSAValue = info.argument(RegisterType)
     start: ir.SSAValue = info.argument(types.Int)
     length: ir.SSAValue = info.argument(types.Int)
@@ -165,6 +180,8 @@ class TakeSlice(ir.Statement):
 class PutSlice(ir.Statement):
     """Fill an empty contiguous range with the qubits of an owned register."""
 
+    name = "put_slice"
+    traits = frozenset({ThreadsPairs((("register", "register_out"),))})
     register: ir.SSAValue = info.argument(RegisterType)
     start: ir.SSAValue = info.argument(types.Int)
     slice_register: ir.SSAValue = info.argument(RegisterType)
@@ -175,6 +192,7 @@ class PutSlice(ir.Statement):
 class DiscardRegister(ir.Statement):
     """Consume a register and free its remaining qubits, including registers with moved-out elements."""
 
+    name = "discard_register"
     register: ir.SSAValue = info.argument(RegisterType)
 
 

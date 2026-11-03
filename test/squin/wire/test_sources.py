@@ -120,3 +120,20 @@ def test_an_entry_rebuilds_its_squin_statement():
     assert isinstance(made, gate_stmts.T) and made.adjoint
     assert SOURCES[gate_stmts.T].adjoint(made)
     assert not SOURCES[gate_stmts.X].has_adjoint
+
+
+def test_every_statement_that_continues_a_linear_operand_has_a_threads_trait():
+    from bloqade.squin.wire import Threads, dialect, stmts
+
+    ends = {
+        stmts.Alloc,
+        stmts.Free,
+        stmts.AllocRegister,
+        stmts.FreeRegister,
+        stmts.PackRegister,
+        stmts.SplitRegister,
+        stmts.JoinRegister,
+        stmts.DiscardRegister,
+    }
+    for value in dialect.stmts:
+        assert (value.get_trait(Threads) is None) == (value in ends), value.__name__
