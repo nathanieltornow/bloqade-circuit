@@ -10,6 +10,7 @@ Both rules read static lengths from the types, so Kirin's type inference must ru
 first.
 """
 
+import itertools
 from dataclasses import dataclass
 
 from kirin import ir, types
@@ -79,40 +80,53 @@ def element_type(kind: types.TypeAttribute) -> types.TypeAttribute:
 
 
 @dataclass(frozen=True)
-class Step:
-    """Record one statement on the linear chain of a register and the slot it reads.
+class View:
+    """Name the range of the root register that one register value holds.
 
-    `slot` is the constant index of a `Borrow` or a `Release`. It is None for a
-    `Length` and for the statement that frees the register.
+    The root register has the view `View(0, 0, size)`. A `TakeSlice` creates a view
+    with a new `key` for its range.
+    """
+
+    key: int
+    offset: int
+    """The position of the first element of the range in the root register."""
+    size: int
+
+
+@dataclass(frozen=True)
+class Step:
+    """Record one statement that uses a register of the root and what it reads.
+
+    `position` is the root position of a `Borrow` or a `Release`. `size` is the size
+    of the view that a `Length` reads.
     """
 
     stmt: ir.Statement
-    slot: int | None = None
+    position: int | None = None
+    size: int | None = None
 
 
 class UnpackRegister(RewriteRule):
     """Replace a local register of constant size with one wire per qubit.
 
     The rule starts at an `AllocRegister` with a constant size or at a
-    `PackRegister`. It follows the register from each statement to the statement
-    that consumes its continuing result. Every statement on that chain must be a
-    `Borrow` or a `Release` at a constant index, a `Length`, or the final free, and
-    it must sit in the block of the register. If any statement breaks these rules,
-    the rule leaves the register unchanged. A loop, a branch or a call that takes
-    the register breaks them.
+    `PackRegister`, which is the root register. `plan` lists every statement that
+    uses the root or a slice of it. Each one must be a `Borrow` or `Release` at a
+    constant index, a `Length`, a `TakeSlice` or `PutSlice` with constant bounds, or
+    the final free, all in the block of the root. If any statement breaks these
+    rules, the rule leaves the register unchanged. A loop, a branch or a call that
+    takes the register breaks them.
     """
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
-        """Unpack the register that `node` creates, if its whole chain is static."""
+        """Unpack the register that `node` creates, if every use is static."""
         if isinstance(node, stmts.AllocRegister):
             size = constant_int(node.size)
-            start: ir.SSAValue = node.result
         elif isinstance(node, stmts.PackRegister):
             size = len(node.wires)
-            start = node.result
         else:
             return RewriteResult()
-        if size is None or (steps := chain(node, start, size)) is None:
+        if size is None or (steps := plan(node, size)) is None:
             return RewriteResult()
         if isinstance(node, stmts.PackRegister):
             slots: list[ir.SSAValue] = list(node.wires)
@@ -125,61 +139,123 @@ class UnpackRegister(RewriteRule):
         for step in steps:
             stmt = step.stmt
             if isinstance(stmt, stmts.Borrow):
-                assert step.slot is not None
-                stmt.wire.replace_by(slots[step.slot])
+                assert step.position is not None
+                stmt.wire.replace_by(slots[step.position])
             elif isinstance(stmt, stmts.Release):
-                assert step.slot is not None
-                slots[step.slot] = stmt.wire
+                assert step.position is not None
+                slots[step.position] = stmt.wire
             elif isinstance(stmt, stmts.Length):
-                count = py.Constant(size)
+                count = py.Constant(step.size)
                 count.insert_before(stmt)
                 stmt.result.replace_by(count.result)
-            else:
+            elif isinstance(stmt, (stmts.FreeRegister, stmts.DiscardRegister)):
                 for wire in slots:
                     stmts.Free(wire).insert_before(stmt)
-        # Each register value has one use, which is the next statement on the
-        # chain. Deleting from the end keeps every deleted result unused.
+        # Each register value has one use, and that use comes later in the block.
+        # Deleting from the end keeps every deleted result unused.
         for step in reversed(steps):
             step.stmt.delete()
         node.delete()
         return RewriteResult(has_done_something=True)
 
 
-def chain(node: ir.Statement, start: ir.SSAValue, size: int) -> list[Step] | None:
-    """Return the statements on the linear chain of the register `start`, or None.
+def plan(node: ir.Statement, size: int) -> list[Step] | None:
+    """Return the statements that use the register of `node` or its slices, or None.
 
-    The result ends with the `FreeRegister` or `DiscardRegister` of the register. A
-    `Borrow` must read a slot that holds its qubit, and a `Release` must fill an
-    empty slot. The function returns None if a statement breaks the rules of
-    `UnpackRegister`.
+    The function reads the block of `node` in order and tracks the view of each
+    register value. A position belongs to one view at a time, and it is full or
+    borrowed. A `Borrow` needs a full position of its view, and a `Release` needs a
+    borrowed one. A `TakeSlice` moves full positions to a new view, and a `PutSlice`
+    moves them back. The list ends with the free of the root, which needs every
+    position back in the root and full. The function returns None if a statement
+    breaks the rules of `UnpackRegister`.
     """
+    block = node.parent_block
+    root = View(0, 0, size)
+    owner = [root.key] * size
     full = [True] * size
+    views: dict[ir.SSAValue, View] = {}
     steps: list[Step] = []
-    current = start
-    while True:
-        if len(current.uses) != 1:
+    keys = itertools.count(root.key + 1)
+
+    def track(value: ir.SSAValue, view: View) -> bool:
+        """Track `value` if its one use sits in the block of the root."""
+        uses = list(value.uses)
+        if len(uses) != 1 or uses[0].stmt.parent_block is not block:
+            return False
+        views[value] = view
+        return True
+
+    def position(view: View, index: ir.SSAValue) -> int | None:
+        """Return the root position of the constant `index` into `view`, or None."""
+        at = constant_int(index)
+        if at is None or not 0 <= at < view.size:
             return None
-        (use,) = current.uses
-        stmt = use.stmt
-        if stmt.parent_block is not node.parent_block:
-            return None
-        if isinstance(stmt, (stmts.FreeRegister, stmts.DiscardRegister)):
-            if not all(full):
+        return view.offset + at
+
+    def holds(view: View, start: int, count: int) -> bool:
+        """Check that `view` owns the full positions from `start` on."""
+        span = range(start, start + count)
+        return all(owner[p] == view.key and full[p] for p in span)
+
+    if not track(node.results[0], root):
+        return None
+    stmt = node.next_stmt
+    while stmt is not None:
+        if not any(value in views for value in stmt.args):
+            stmt = stmt.next_stmt
+            continue
+        if isinstance(stmt, (stmts.Borrow, stmts.Release)):
+            view = views.pop(stmt.register)
+            at = position(view, stmt.index)
+            borrow = isinstance(stmt, stmts.Borrow)
+            # A `Borrow` empties a full position, and a `Release` fills it again.
+            if at is None or owner[at] != view.key or full[at] != borrow:
+                return None
+            full[at] = not borrow
+            steps.append(Step(stmt, position=at))
+            if not track(stmt.register_out, view):
+                return None
+        elif isinstance(stmt, stmts.Length):
+            view = views.pop(stmt.register)
+            steps.append(Step(stmt, size=view.size))
+            if not track(stmt.register_out, view):
+                return None
+        elif isinstance(stmt, stmts.TakeSlice):
+            view = views.pop(stmt.register)
+            start, count = constant_int(stmt.start), constant_int(stmt.length)
+            if start is None or count is None or start < 0 or start + count > view.size:
+                return None
+            part = View(next(keys), view.offset + start, count)
+            if not holds(view, part.offset, count):
+                return None
+            for p in range(part.offset, part.offset + count):
+                owner[p] = part.key
+            steps.append(Step(stmt))
+            if not track(stmt.register_out, view) or not track(
+                stmt.slice_register, part
+            ):
+                return None
+        elif isinstance(stmt, stmts.PutSlice):
+            view = views.pop(stmt.register)
+            part = views.pop(stmt.slice_register, None)
+            start = constant_int(stmt.start)
+            if part is None or start is None or part.offset != view.offset + start:
+                return None
+            if not holds(part, part.offset, part.size):
+                return None
+            for p in range(part.offset, part.offset + part.size):
+                owner[p] = view.key
+            steps.append(Step(stmt))
+            if not track(stmt.register_out, view):
+                return None
+        elif isinstance(stmt, (stmts.FreeRegister, stmts.DiscardRegister)):
+            view = views.pop(stmt.register)
+            if view != root or views or not holds(root, 0, size):
                 return None
             steps.append(Step(stmt))
             return steps
-        if isinstance(stmt, stmts.Length):
-            steps.append(Step(stmt))
-            current = stmt.register_out
-            continue
-        if not isinstance(stmt, (stmts.Borrow, stmts.Release)):
+        else:
             return None
-        slot = constant_int(stmt.index)
-        if slot is None or not 0 <= slot < size:
-            return None
-        # A `Borrow` empties a full slot, and a `Release` fills an empty one.
-        if full[slot] != isinstance(stmt, stmts.Borrow):
-            return None
-        full[slot] = not full[slot]
-        steps.append(Step(stmt, slot))
-        current = stmt.register_out
+        stmt = stmt.next_stmt
+    return None

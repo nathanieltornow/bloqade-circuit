@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from kirin import ir
 from test_forms import single_tuple, slice_in_loop, slice_in_branch, overlapping_slices
-from kirin.dialects import ilist
+from kirin.dialects import func, ilist
 from test_roundtrip import CASES, simulate
 
 from bloqade import squin
@@ -60,6 +60,30 @@ def passed_to_a_call() -> ilist.IList[MeasurementResult, Any]:
     return squin.broadcast.measure(qs)
 
 
+@squin.kernel
+def sliced() -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(4)
+    squin.broadcast.x(qs[1:3])
+    squin.x(qs[1:3][0])
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def twice(qs: ilist.IList[Qubit, Any]):
+    squin.h(qs[0])
+    squin.x(qs[1])
+    squin.h(qs[0])
+    squin.x(qs[1])
+
+
+@squin.kernel
+def calls_twice() -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(2)
+    squin.x(qs[0])
+    twice(qs)
+    return squin.broadcast.measure(qs)
+
+
 @pytest.mark.parametrize(
     "kernel, args, expected",
     [
@@ -70,6 +94,8 @@ def passed_to_a_call() -> ilist.IList[MeasurementResult, Any]:
         (slice_in_loop, (3,), [0, 1, 1, 0]),
         (repeated_h, (), [1, 0]),
         (passed_to_a_call, (), [1, 1]),
+        (sliced, (), [0, 0, 1, 0]),
+        (calls_twice, (), [1, 0]),
     ],
 )
 def test_unpacking_keeps_the_result_of_the_kernel(kernel, args, expected):
@@ -100,3 +126,26 @@ def test_a_register_that_a_loop_indexes_stays_but_loses_its_broadcasts():
 def test_a_register_that_a_call_takes_stays():
     nodes = statements(unpacked(passed_to_a_call))
     assert any(isinstance(node, stmts.AllocRegister) for node in nodes)
+
+
+def test_a_slice_with_constant_bounds_unpacks():
+    nodes = statements(unpacked(sliced))
+    assert not any(isinstance(node, (*REGISTERS, stmts.TakeSlice)) for node in nodes)
+
+
+def test_borrows_of_one_element_join_across_other_elements():
+    wired = SquinToWire().emit(calls_twice)
+    (callee,) = {
+        node.callee for node in statements(wired) if isinstance(node, func.Invoke)
+    }
+    UnpackRegisters(callee.dialects)(callee)
+    WireValidation().check(callee)
+    nodes = statements(callee)
+    assert sum(isinstance(node, stmts.Borrow) for node in nodes) == 2
+    first, second = (
+        node
+        for node in nodes
+        if isinstance(node, stmts.Gate) and node.kind is GateKind.H
+    )
+    assert second.wires[0] is first.outputs[0]
+    assert simulate(WireToSquin().emit(wired)) == [1, 0]

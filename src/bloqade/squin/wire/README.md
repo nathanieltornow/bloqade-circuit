@@ -300,9 +300,11 @@ Function results can use a flat tuple of ordinary outputs followed by borrowed p
 `UnpackRegisters` in `squin/passes/wire_unpack.py` turns constant-size registers into separate wires.
 Its rules live in `squin/rewrite/wire/unpack.py`, and they read static lengths from the types.
 `ExpandBroadcast` replaces a register operation of static length with one `Borrow`, scalar operation and `Release` per position.
+`JoinBorrow` in `squin/rewrite/wire/join.py` removes a `Release` whose next statement on the register borrows the same element again.
+`HoistBorrow` moves a `Borrow` above a `Release` of another constant element, so that more such pairs meet.
 `UnpackRegister` then replaces a local register with one `Alloc` per qubit.
-It applies only if every statement on the register's chain is a `Borrow` or `Release` at a constant index, a `Length`, or the final free, all in one block.
-A register that a loop, a branch or a call takes stays a register.
+It applies only if every statement that uses the register or a slice of it reads constant indices and bounds, all in one block.
+A register that a loop, a branch or a call takes stays a register, but its borrows still join.
 
 ```text
 r0 = AllocRegister(2)            a = Alloc()
