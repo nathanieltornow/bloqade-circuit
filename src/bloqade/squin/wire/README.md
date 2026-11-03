@@ -119,8 +119,9 @@ Measurement produces a classical result and continues the measured qubit.
 The wire dialect has 4 scalar operations: `Gate`, `Noise`, `Measure` and `Reset`.
 Each one acts on one group of qubits.
 A `Gate` or a `Noise` statement holds its kind as an attribute, such as `GateKind.CX`.
-`kinds.py` gives each kind its number of wires and parameters.
-The `HasShape` trait checks that shape when Kirin verifies the IR.
+`kinds.py` gives each kind its arity, which is its number of wires and parameters.
+The `HasArity` trait checks the arity when Kirin verifies the IR.
+`TRUNCATES` in `kinds.py` names the kinds whose register form stops at the shortest register.
 The `Threads` trait is the one record of which result continues which wire.
 The wire dialect imports nothing from squin.
 

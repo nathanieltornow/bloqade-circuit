@@ -49,7 +49,7 @@ def register_gate(
     Operands of different known lengths fail, unless the statement stops at the
     shortest register.
     """
-    truncate = SOURCES[type(source)].shape.truncate
+    truncate = SOURCES[type(source)].truncates
     counts = [None if part.length is None else part.length.constant for part in parts]
     known = {count for count in counts if count is not None}
     if not truncate and len(known) > 1:
@@ -108,7 +108,7 @@ def emit_gate(
             source,
         )
     operand_items = tuple(items for items in maybe_items if items is not None)
-    if not entry.shape.truncate and len({len(items) for items in operand_items}) > 1:
+    if not entry.truncates and len({len(items) for items in operand_items}) > 1:
         raise WireConversionError(
             f"'{source.name}' requires qubit lists of equal length.", source
         )

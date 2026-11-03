@@ -18,11 +18,12 @@ from kirin.dialects import ilist
 from bloqade.types import MeasurementResultType
 
 from .kinds import (
-    GATE_SHAPES,
-    RESET_SHAPE,
-    NOISE_SHAPES,
-    MEASURE_SHAPE,
-    Shape,
+    TRUNCATES,
+    GATE_ARITY,
+    NOISE_ARITY,
+    RESET_ARITY,
+    MEASURE_ARITY,
+    Arity,
     GateKind,
     NoiseKind,
 )
@@ -212,7 +213,7 @@ class Operation(ir.Statement):
         return tuple(result for result in self.results if result not in outputs)
 
     @property
-    def shape(self) -> Shape:
+    def arity(self) -> Arity:
         """Return the number of wires and parameters that the operation needs."""
         raise NotImplementedError
 
@@ -223,21 +224,21 @@ class Operation(ir.Statement):
 
 
 @dataclass(frozen=True)
-class HasShape(ir.StmtTrait):
+class HasArity(ir.StmtTrait):
     """Check that an operation has the number of wires and parameters of its kind.
 
     Kirin's generated `check` of each statement runs this trait.
     """
 
     def verify(self, node: ir.Statement) -> None:
-        """Raise a validation error if `node` has another shape than its kind."""
+        """Raise a validation error if `node` has another arity than its kind."""
         assert isinstance(node, Operation)
-        shape = node.shape
+        arity = node.arity
         wires, params = len(node.linear), len(node.parameters)
-        if (wires, params) != (shape.wires, shape.params):
+        if (wires, params) != (arity.wires, arity.params):
             raise ir.ValidationError(
                 node,
-                f"'{node.label}' needs {shape.wires} qubits and {shape.params}"
+                f"'{node.label}' needs {arity.wires} qubits and {arity.params}"
                 f" parameters, but it has {wires} and {params}.",
             )
 
@@ -250,7 +251,7 @@ class Gate(Operation):
     """
 
     name = "gate"
-    traits = frozenset({ThreadsInOrder("wires"), HasShape()})
+    traits = frozenset({ThreadsInOrder("wires"), HasArity()})
     wires: tuple[ir.SSAValue, ...] = info.argument(WireType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: GateKind = info.attribute()
@@ -276,9 +277,9 @@ class Gate(Operation):
         )
 
     @property
-    def shape(self) -> Shape:
-        """Return the shape of the gate kind."""
-        return GATE_SHAPES[self.kind]
+    def arity(self) -> Arity:
+        """Return the arity of the gate kind."""
+        return GATE_ARITY[self.kind]
 
     @property
     def label(self) -> str:
@@ -294,7 +295,7 @@ class Noise(Operation):
     """
 
     name = "noise"
-    traits = frozenset({ThreadsInOrder("wires"), HasShape()})
+    traits = frozenset({ThreadsInOrder("wires"), HasArity()})
     wires: tuple[ir.SSAValue, ...] = info.argument(WireType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: NoiseKind = info.attribute()
@@ -317,9 +318,9 @@ class Noise(Operation):
         )
 
     @property
-    def shape(self) -> Shape:
-        """Return the shape of the channel kind."""
-        return NOISE_SHAPES[self.kind]
+    def arity(self) -> Arity:
+        """Return the arity of the channel kind."""
+        return NOISE_ARITY[self.kind]
 
     @property
     def label(self) -> str:
@@ -332,15 +333,15 @@ class Measure(Operation):
     """Measure the qubit of `wire`, keep it, and return its measurement result."""
 
     name = "measure"
-    traits = frozenset({ThreadsPairs((("wire", "wire_out"),)), HasShape()})
+    traits = frozenset({ThreadsPairs((("wire", "wire_out"),)), HasArity()})
     wire: ir.SSAValue = info.argument(WireType)
     wire_out: ir.ResultValue = info.result(WireType)
     bit: ir.ResultValue = info.result(MeasurementResultType)
 
     @property
-    def shape(self) -> Shape:
-        """Return the shape of a measurement."""
-        return MEASURE_SHAPE
+    def arity(self) -> Arity:
+        """Return the arity of a measurement."""
+        return MEASURE_ARITY
 
 
 @statement(dialect=dialect)
@@ -348,22 +349,27 @@ class Reset(Operation):
     """Reset the qubit of `wire` to the zero state."""
 
     name = "reset"
-    traits = frozenset({ThreadsPairs((("wire", "wire_out"),)), HasShape()})
+    traits = frozenset({ThreadsPairs((("wire", "wire_out"),)), HasArity()})
     wire: ir.SSAValue = info.argument(WireType)
     wire_out: ir.ResultValue = info.result(WireType)
 
     @property
-    def shape(self) -> Shape:
-        """Return the shape of a reset."""
-        return RESET_SHAPE
+    def arity(self) -> Arity:
+        """Return the arity of a reset."""
+        return RESET_ARITY
 
 
 class RegisterOperation(Operation):
     """Apply a single-wire operation at every position of whole registers.
 
-    Position `i` of each register forms one group of wires. Unless the shape of the operation
+    Position `i` of each register forms one group of wires. Unless the operation
     truncates, the program must give every register the same length.
     """
+
+    @property
+    def truncates(self) -> bool:
+        """Check whether the operation stops at the shortest register."""
+        return False
 
     def scalar(self, wires: tuple[ir.SSAValue, ...]) -> Operation:
         """Return the single-wire operation that this statement applies to `wires`."""
@@ -375,7 +381,7 @@ class RegisterGate(RegisterOperation):
     """Apply the gate `kind` at every position of one register per qubit of the gate."""
 
     name = "register_gate"
-    traits = frozenset({ThreadsInOrder("registers"), HasShape()})
+    traits = frozenset({ThreadsInOrder("registers"), HasArity()})
     registers: tuple[ir.SSAValue, ...] = info.argument(RegisterType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: GateKind = info.attribute()
@@ -401,14 +407,19 @@ class RegisterGate(RegisterOperation):
         )
 
     @property
-    def shape(self) -> Shape:
-        """Return the shape of the gate kind."""
-        return GATE_SHAPES[self.kind]
+    def arity(self) -> Arity:
+        """Return the arity of the gate kind."""
+        return GATE_ARITY[self.kind]
 
     @property
     def label(self) -> str:
         """Return the gate kind."""
         return self.kind.value
+
+    @property
+    def truncates(self) -> bool:
+        """Check whether the kind stops at the shortest register."""
+        return self.kind in TRUNCATES
 
     def scalar(self, wires: tuple[ir.SSAValue, ...]) -> Gate:
         """Return the gate on one wire per register."""
@@ -420,7 +431,7 @@ class RegisterNoise(RegisterOperation):
     """Apply the noise channel `kind` at every position of whole registers."""
 
     name = "register_noise"
-    traits = frozenset({ThreadsInOrder("registers"), HasShape()})
+    traits = frozenset({ThreadsInOrder("registers"), HasArity()})
     registers: tuple[ir.SSAValue, ...] = info.argument(RegisterType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: NoiseKind = info.attribute()
@@ -443,14 +454,19 @@ class RegisterNoise(RegisterOperation):
         )
 
     @property
-    def shape(self) -> Shape:
-        """Return the shape of the channel kind."""
-        return NOISE_SHAPES[self.kind]
+    def arity(self) -> Arity:
+        """Return the arity of the channel kind."""
+        return NOISE_ARITY[self.kind]
 
     @property
     def label(self) -> str:
         """Return the channel kind."""
         return self.kind.value
+
+    @property
+    def truncates(self) -> bool:
+        """Check whether the kind stops at the shortest register."""
+        return self.kind in TRUNCATES
 
     def scalar(self, wires: tuple[ir.SSAValue, ...]) -> Noise:
         """Return the noise channel on one wire per register."""
@@ -462,7 +478,7 @@ class RegisterMeasure(RegisterOperation):
     """Measure every qubit of `register` and return the results in order."""
 
     name = "register_measure"
-    traits = frozenset({ThreadsPairs((("register", "register_out"),)), HasShape()})
+    traits = frozenset({ThreadsPairs((("register", "register_out"),)), HasArity()})
     register: ir.SSAValue = info.argument(RegisterType)
     register_out: ir.ResultValue = info.result(RegisterType)
     bits: ir.ResultValue = info.result(
@@ -470,9 +486,9 @@ class RegisterMeasure(RegisterOperation):
     )
 
     @property
-    def shape(self) -> Shape:
-        """Return the shape of a measurement."""
-        return MEASURE_SHAPE
+    def arity(self) -> Arity:
+        """Return the arity of a measurement."""
+        return MEASURE_ARITY
 
     def scalar(self, wires: tuple[ir.SSAValue, ...]) -> Measure:
         """Return the measurement of one wire."""
@@ -485,14 +501,14 @@ class RegisterReset(RegisterOperation):
     """Reset every qubit of `register` to the zero state."""
 
     name = "register_reset"
-    traits = frozenset({ThreadsPairs((("register", "register_out"),)), HasShape()})
+    traits = frozenset({ThreadsPairs((("register", "register_out"),)), HasArity()})
     register: ir.SSAValue = info.argument(RegisterType)
     register_out: ir.ResultValue = info.result(RegisterType)
 
     @property
-    def shape(self) -> Shape:
-        """Return the shape of a reset."""
-        return RESET_SHAPE
+    def arity(self) -> Arity:
+        """Return the arity of a reset."""
+        return RESET_ARITY
 
     def scalar(self, wires: tuple[ir.SSAValue, ...]) -> Reset:
         """Return the reset of one wire."""

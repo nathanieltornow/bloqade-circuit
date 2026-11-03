@@ -179,9 +179,7 @@ class WireSemantics(interp.MethodTable):
         """Apply the scalar form of a register operation at each register position."""
         registers = frame.get_values(stmt.linear)
         lengths = {len(register) for register in registers}
-        assert (
-            stmt.shape.truncate or len(lengths) == 1
-        ), "the registers differ in length"
+        assert stmt.truncates or len(lengths) == 1, "the registers differ in length"
         probe = stmt.scalar(tuple(ir.TestValue(WireType) for _ in registers))
         collected = [[] for _ in stmt.classical]
         for i in range(min(lengths)):

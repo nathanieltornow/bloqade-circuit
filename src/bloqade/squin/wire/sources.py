@@ -23,11 +23,12 @@ from bloqade.squin.noise import stmts as noise_stmts
 from bloqade.native.dialects.gate import stmts as native_stmts
 
 from .kinds import (
-    GATE_SHAPES,
-    RESET_SHAPE,
-    NOISE_SHAPES,
-    MEASURE_SHAPE,
-    Shape,
+    TRUNCATES,
+    GATE_ARITY,
+    NOISE_ARITY,
+    RESET_ARITY,
+    MEASURE_ARITY,
+    Arity,
     GateKind,
     NoiseKind,
 )
@@ -78,6 +79,11 @@ class Entry:
         """Check whether the squin statement has the attribute `adjoint`."""
         return "adjoint" in getattr(self.source, "__kirin_stmt_fields").attributes
 
+    @property
+    def truncates(self) -> bool:
+        """Check whether the register form stops at the shortest register."""
+        return False
+
     def adjoint(self, stmt: ir.Statement) -> bool:
         """Return the value of the attribute `adjoint` of the squin statement `stmt`."""
         return self.has_adjoint and getattr(stmt, "adjoint")
@@ -105,9 +111,14 @@ class GateEntry(Entry):
     kind: GateKind
 
     @property
-    def shape(self) -> Shape:
-        """Return the shape of the gate."""
-        return GATE_SHAPES[self.kind]
+    def arity(self) -> Arity:
+        """Return the arity of the gate."""
+        return GATE_ARITY[self.kind]
+
+    @property
+    def truncates(self) -> bool:
+        """Check whether the register form of the kind stops at the shortest register."""
+        return self.kind in TRUNCATES
 
     def scalar(
         self,
@@ -135,9 +146,14 @@ class NoiseEntry(Entry):
     kind: NoiseKind
 
     @property
-    def shape(self) -> Shape:
-        """Return the shape of the channel."""
-        return NOISE_SHAPES[self.kind]
+    def arity(self) -> Arity:
+        """Return the arity of the channel."""
+        return NOISE_ARITY[self.kind]
+
+    @property
+    def truncates(self) -> bool:
+        """Check whether the register form of the kind stops at the shortest register."""
+        return self.kind in TRUNCATES
 
     def scalar(
         self,
@@ -163,9 +179,9 @@ class MeasureEntry(Entry):
     """Map the squin measurement to `Measure` and `RegisterMeasure`."""
 
     @property
-    def shape(self) -> Shape:
-        """Return the shape of a measurement."""
-        return MEASURE_SHAPE
+    def arity(self) -> Arity:
+        """Return the arity of a measurement."""
+        return MEASURE_ARITY
 
     def scalar(
         self,
@@ -193,9 +209,9 @@ class ResetEntry(Entry):
     """Map the squin reset to `Reset` and `RegisterReset`."""
 
     @property
-    def shape(self) -> Shape:
-        """Return the shape of a reset."""
-        return RESET_SHAPE
+    def arity(self) -> Arity:
+        """Return the arity of a reset."""
+        return RESET_ARITY
 
     def scalar(
         self,
@@ -311,10 +327,10 @@ def check(entry: Source) -> Source:
     if tuple(fields.results) != entry.results:
         raise ValueError(f"The wire entry of {name} must list its results in order.")
     if (len(entry.qubits), len(entry.params)) != (
-        entry.shape.wires,
-        entry.shape.params,
+        entry.arity.wires,
+        entry.arity.params,
     ):
-        raise ValueError(f"The wire entry of {name} must match the shape of its kind.")
+        raise ValueError(f"The wire entry of {name} must match the arity of its kind.")
     return entry
 
 
