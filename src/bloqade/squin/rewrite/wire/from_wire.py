@@ -16,7 +16,9 @@ signature rule turns each wire parameter back into a qubit parameter and drops t
 returned wires from the return statement.
 """
 
+from typing import Any
 from dataclasses import field, dataclass
+from collections.abc import Callable
 
 from kirin import ir, types
 from kirin.rewrite import Walk, Chain, DeadCodeElimination
@@ -84,64 +86,9 @@ class FromWireStatements(RewriteRule):
             self.operation(node)
         elif (form := node.get_trait(ReferenceForm)) is not None:
             self.extension(node, form)
-        elif isinstance(node, stmts.Alloc):
-            node.result.replace_by(put(qubit_stmts.New(), node).result)
-        elif isinstance(node, stmts.AllocRegister):
-            call = put(func.Invoke((node.size,), callee=qalloc), node)
-            call.result.type = qalloc.return_type
-            node.result.replace_by(call.result)
-        elif isinstance(node, (stmts.Borrow, stmts.Take)):
-            item = put(py.GetItem(node.register, node.index), node)
-            item.result.type = QubitType
-            node.wire.replace_by(item.result)
-            node.register_out.replace_by(node.register)
-        elif isinstance(node, stmts.Put):
-            one = put(py.Constant(1), node).result
-            stop = put(py.Add(node.index, one), node).result
-            middle = put(ilist.New((node.wire,), elem_type=QubitType), node).result
-            node.register_out.replace_by(
-                _splice(node.register, node.index, stop, middle, node)
-            )
-        elif isinstance(node, stmts.PackRegister):
-            node.result.replace_by(
-                put(ilist.New(node.wires, elem_type=QubitType), node).result
-            )
-        elif isinstance(node, stmts.JoinRegister):
-            node.result.replace_by(put(py.Add(node.first, node.second), node).result)
-        elif isinstance(node, stmts.SplitRegister):
-            zero = put(py.Constant(0), node).result
-            one = put(py.Constant(1), node).result
-            length = put(py_len.Len(node.register), node).result
-            head = put(py_slice.Slice(zero, node.index, one), node).result
-            tail = put(py_slice.Slice(node.index, length, one), node).result
-            node.before.replace_by(put(py.GetItem(node.register, head), node).result)
-            node.after.replace_by(put(py.GetItem(node.register, tail), node).result)
-        elif isinstance(node, stmts.TakeSlice):
-            stop = put(py.Add(node.start, node.length), node).result
-            one = put(py.Constant(1), node).result
-            part = put(py_slice.Slice(node.start, stop, one), node).result
-            node.slice_register.replace_by(
-                put(py.GetItem(node.register, part), node).result
-            )
-            node.register_out.replace_by(node.register)
-        elif isinstance(node, stmts.PutSlice) and _restores(node):
-            # The qubits return to the range that they left, so the register list
-            # holds the same qubit references as before.
-            node.register_out.replace_by(node.register)
-        elif isinstance(node, stmts.PutSlice):
-            length = put(py_len.Len(node.slice_register), node).result
-            stop = put(py.Add(node.start, length), node).result
-            node.register_out.replace_by(
-                _splice(node.register, node.start, stop, node.slice_register, node)
-            )
-        elif isinstance(node, stmts.Release):
-            node.register_out.replace_by(node.register)
-        elif isinstance(node, stmts.Length):
-            node.result.replace_by(put(py_len.Len(node.register), node).result)
-            node.register_out.replace_by(node.register)
-        elif not isinstance(
-            node, (stmts.Free, stmts.FreeRegister, stmts.DiscardRegister)
-        ):
+        elif (rule := REFERENCE_RULES.get(type(node))) is not None:
+            rule(node)
+        else:
             return RewriteResult()
         node.delete()
         return RewriteResult(has_done_something=True)
@@ -206,6 +153,119 @@ class FromWireStatements(RewriteRule):
             result.replace_by(value)
         for output, value in zip(node.outputs, node.linear, strict=True):
             output.replace_by(value)
+
+
+def from_alloc(node: stmts.Alloc) -> None:
+    """Read the wire of an allocation as a new qubit."""
+    node.result.replace_by(put(qubit_stmts.New(), node).result)
+
+
+def from_alloc_register(node: stmts.AllocRegister) -> None:
+    """Read the register of an allocation as a call of `qalloc`."""
+    call = put(func.Invoke((node.size,), callee=qalloc), node)
+    call.result.type = qalloc.return_type
+    node.result.replace_by(call.result)
+
+
+def from_borrow(node: stmts.Borrow | stmts.Take) -> None:
+    """Read the borrowed wire as the qubit at its index."""
+    item = put(py.GetItem(node.register, node.index), node)
+    item.result.type = QubitType
+    node.wire.replace_by(item.result)
+    node.register_out.replace_by(node.register)
+
+
+def from_put(node: stmts.Put) -> None:
+    """Read the filled register as the list with the qubit at its index."""
+    one = put(py.Constant(1), node).result
+    stop = put(py.Add(node.index, one), node).result
+    middle = put(ilist.New((node.wire,), elem_type=QubitType), node).result
+    node.register_out.replace_by(_splice(node.register, node.index, stop, middle, node))
+
+
+def from_pack(node: stmts.PackRegister) -> None:
+    """Read the packed register as the list of its qubits."""
+    node.result.replace_by(put(ilist.New(node.wires, elem_type=QubitType), node).result)
+
+
+def from_join(node: stmts.JoinRegister) -> None:
+    """Read the joined register as the concatenation of both lists."""
+    node.result.replace_by(put(py.Add(node.first, node.second), node).result)
+
+
+def from_split(node: stmts.SplitRegister) -> None:
+    """Read both parts of the split register as slices of its list."""
+    zero = put(py.Constant(0), node).result
+    one = put(py.Constant(1), node).result
+    length = put(py_len.Len(node.register), node).result
+    head = put(py_slice.Slice(zero, node.index, one), node).result
+    tail = put(py_slice.Slice(node.index, length, one), node).result
+    node.before.replace_by(put(py.GetItem(node.register, head), node).result)
+    node.after.replace_by(put(py.GetItem(node.register, tail), node).result)
+
+
+def from_take_slice(node: stmts.TakeSlice) -> None:
+    """Read the moved range as a slice of the register list."""
+    stop = put(py.Add(node.start, node.length), node).result
+    one = put(py.Constant(1), node).result
+    part = put(py_slice.Slice(node.start, stop, one), node).result
+    node.slice_register.replace_by(put(py.GetItem(node.register, part), node).result)
+    node.register_out.replace_by(node.register)
+
+
+def from_put_slice(node: stmts.PutSlice) -> None:
+    """Read the filled register as the list with the slice in its range.
+
+    If the slice returns to the range that it left, the register list holds the
+    same qubit references as before.
+    """
+    if _restores(node):
+        node.register_out.replace_by(node.register)
+        return
+    length = put(py_len.Len(node.slice_register), node).result
+    stop = put(py.Add(node.start, length), node).result
+    node.register_out.replace_by(
+        _splice(node.register, node.start, stop, node.slice_register, node)
+    )
+
+
+def from_release(node: stmts.Release) -> None:
+    """Read the register after a release as the register before it."""
+    node.register_out.replace_by(node.register)
+
+
+def from_length(node: stmts.Length) -> None:
+    """Read the length of a register as the length of its list."""
+    node.result.replace_by(put(py_len.Len(node.register), node).result)
+    node.register_out.replace_by(node.register)
+
+
+def from_free(node: stmts.Free | stmts.FreeRegister | stmts.DiscardRegister) -> None:
+    """Drop a free, which has no reference squin form."""
+
+
+REFERENCE_RULES: dict[type[ir.Statement], Callable[[Any], None]] = {
+    stmts.Alloc: from_alloc,
+    stmts.AllocRegister: from_alloc_register,
+    stmts.Borrow: from_borrow,
+    stmts.Take: from_borrow,
+    stmts.Put: from_put,
+    stmts.PackRegister: from_pack,
+    stmts.JoinRegister: from_join,
+    stmts.SplitRegister: from_split,
+    stmts.TakeSlice: from_take_slice,
+    stmts.PutSlice: from_put_slice,
+    stmts.Release: from_release,
+    stmts.Length: from_length,
+    stmts.Free: from_free,
+    stmts.FreeRegister: from_free,
+    stmts.DiscardRegister: from_free,
+}
+"""Map each wire statement class to the rule that inserts its reference form.
+
+Each rule inserts the reference statements before the wire statement and replaces
+its results. `FromWireStatements` then deletes the wire statement.
+"""
 
 
 def _without(values: tuple[ir.SSAValue, ...], dropped: list[int]) -> list[ir.SSAValue]:
