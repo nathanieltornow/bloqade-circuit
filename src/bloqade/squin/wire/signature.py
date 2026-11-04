@@ -12,6 +12,8 @@ from collections.abc import Sequence
 from kirin import types
 from kirin.dialects import func
 
+from bloqade.types import is_subtype
+
 from .types import quantum_type
 
 
@@ -21,9 +23,9 @@ def output_types(output: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]
     `None` gives no output. A tuple gives one output per member, and any other type
     gives one output.
     """
-    if output.is_subseteq(types.NoneType):
+    if is_subtype(output, types.NoneType):
         return ()
-    if isinstance(output, types.Generic) and output.is_subseteq(types.Tuple):
+    if isinstance(output, types.Generic) and is_subtype(output, types.Tuple):
         return tuple(output.vars)
     return (output,)
 
@@ -64,7 +66,7 @@ class Layout:
         packed = (
             ordinary_count > 1
             and isinstance(signature.output, types.Generic)
-            and signature.output.is_subseteq(types.Tuple)
+            and is_subtype(signature.output, types.Tuple)
         )
         return cls(borrowed_positions, ordinary_count, packed)
 

@@ -16,6 +16,7 @@ from kirin.dialects import scf, func
 from kirin.validation import ValidationPass
 from kirin.analysis.forward import ForwardFrame
 
+from bloqade.types import is_subtype
 from bloqade.squin.wire import stmts
 from bloqade.analysis.indices import Sym, Slice, Indices, IndexExpr
 from bloqade.squin.wire.types import (
@@ -162,7 +163,7 @@ class BorrowCheck(CachedCalls[Slots]):
     ) -> None:
         """Record an error at `node` for each register of `values` with an unavailable slot."""
         for value in values:
-            if not value.type.is_subseteq(RegisterType):
+            if not is_subtype(value.type, RegisterType):
                 continue
             state = frame.get(value)
             if isinstance(state, UnknownSlots):
@@ -175,7 +176,7 @@ class BorrowCheck(CachedCalls[Slots]):
     def results(self, node: ir.Statement) -> tuple[Slots, ...]:
         """Return no unavailable slot for each register result, and top for the others."""
         return tuple(
-            EMPTY if r.type.is_subseteq(RegisterType) else Slots.top()
+            EMPTY if is_subtype(r.type, RegisterType) else Slots.top()
             for r in node.results
         )
 
@@ -385,7 +386,7 @@ class _BorrowScf(interp.MethodTable):
             if not region.blocks:
                 continue
             args = [
-                EMPTY if a.type.is_subseteq(RegisterType) else Slots.top()
+                EMPTY if is_subtype(a.type, RegisterType) else Slots.top()
                 for a in region.blocks[0].args
             ]
             with check.new_frame(stmt, has_parent_access=True) as inner:
@@ -421,7 +422,7 @@ class _BorrowFunc(interp.MethodTable):
         check.expect_empty(frame, stmt, stmt.args)
         params = stmt.callee.callable_region.blocks[0].args[1:]
         args = [
-            EMPTY if p.type.is_subseteq(RegisterType) else Slots.top() for p in params
+            EMPTY if is_subtype(p.type, RegisterType) else Slots.top() for p in params
         ]
         check.call(stmt.callee.code, Slots.top(), *args)
         return check.results(stmt)
@@ -441,7 +442,7 @@ class BorrowValidation(ValidationPass[ForwardFrame[Slots]]):
         analysis = BorrowCheck(method.dialects)
         params = method.callable_region.blocks[0].args[1:]
         args = [
-            EMPTY if p.type.is_subseteq(RegisterType) else Slots.top() for p in params
+            EMPTY if is_subtype(p.type, RegisterType) else Slots.top() for p in params
         ]
         frame, _ = analysis.run(method, *args)
         return frame, analysis.get_validation_errors()

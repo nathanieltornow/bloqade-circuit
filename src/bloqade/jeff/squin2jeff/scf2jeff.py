@@ -5,6 +5,7 @@ from kirin.dialects import scf
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 from kirin.dialects.ilist import stmts as ilist_stmts
 
+from bloqade.types import is_subtype
 from bloqade.jeff.forms import loop_range
 from bloqade.jeff.dialects import stmts
 
@@ -34,7 +35,7 @@ class ControlFlow(RewriteRule):
 
 def separate(node: ir.Statement, values: tuple[ir.SSAValue, ...]) -> None:
     """Reject a tuple among `values`, because Jeff has no tuples."""
-    if any(value.type.is_subseteq(types.Tuple) for value in values):
+    if any(is_subtype(value.type, types.Tuple) for value in values):
         raise JeffEmissionError(
             node, f"a region of {node.name} requires separate scalar or array results"
         )

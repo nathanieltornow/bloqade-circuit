@@ -5,6 +5,7 @@ from typing import Any, cast
 from kirin import ir, types, interp
 from kirin.dialects import ilist
 
+from bloqade.types import item_type
 from bloqade.squin.gate import stmts as gate_stmts
 from bloqade.squin.noise import stmts as noise_stmts
 from bloqade.squin.wire.stmts import Operation
@@ -68,7 +69,7 @@ def register_gate(
     made = apply(emit, frame, source, parts, register=True)
     length = types.Any if size is None else types.Literal(size)
     for value in made.classical:
-        value.type = ilist.IListType[element_type(value.type), length]
+        value.type = ilist.IListType[item_type(value.type), length]
     return made.classical
 
 
@@ -136,9 +137,9 @@ def emit_gate(
         for collected, value in zip(outputs, made.classical, strict=True):
             collected.append(value)
     return tuple(
-        frame.push(
-            ilist.New(tuple(values), elem_type=element_type(result.type))
-        ).results[0]
+        frame.push(ilist.New(tuple(values), elem_type=item_type(result.type))).results[
+            0
+        ]
         for result, values in zip(entry.result_values(source), outputs, strict=True)
     )
 
@@ -160,12 +161,6 @@ def disjoint(groups: list[tuple[Location, ...]]) -> bool:
             if gap is None or gap == 0:
                 return False
     return True
-
-
-def element_type(kind: types.TypeAttribute) -> types.TypeAttribute:
-    """Return the item type of the list type `kind`."""
-    assert isinstance(kind, types.Generic)
-    return kind.vars[0]
 
 
 def apart(parts: tuple[Register | View, ...]) -> bool:

@@ -9,13 +9,14 @@ from kirin import ir, types
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade.qubit import stmts as qubit_stmts
+from bloqade.types import item_type
 from bloqade.constants import constant_int
 from bloqade.jeff.forms import GATES
 from bloqade.jeff.types import IntArrayType, qureg, is_subtype, qureg_length
 from bloqade.squin.wire import stmts as wire
 from bloqade.jeff.dialects import stmts
 
-from .kinds import JeffEmissionError, put, radians, replace, bitwidth, elements
+from .kinds import JeffEmissionError, put, radians, replace, bitwidth
 
 DIRECT: dict[type[ir.Statement], type[ir.Statement]] = {
     wire.Alloc: stmts.Alloc,
@@ -170,7 +171,7 @@ def broadcast(node: wire.RegisterOperation) -> tuple[ir.SSAValue, ...]:
         size = None if None in lengths else min(n for n in lengths if n is not None)
     else:
         size = next((n for n in lengths if n is not None), None)
-    widths = [bitwidth(elements(result.type)) for result in node.classical]
+    widths = [bitwidth(item_type(result.type)) for result in node.classical]
     if size is None:
         return looped(node, registers, widths)
     return unrolled(node, registers, widths, size)

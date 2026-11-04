@@ -13,10 +13,11 @@ first.
 import itertools
 from dataclasses import dataclass
 
-from kirin import ir, types
+from kirin import ir
 from kirin.dialects import py, ilist
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
+from bloqade.types import item_type
 from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
 from bloqade.squin.wire.types import register_length
@@ -76,19 +77,13 @@ class ExpandBroadcast(RewriteRule):
             for items, value in zip(collected, scalar.classical, strict=True):
                 items.append(value)
         for result, items in zip(node.classical, collected, strict=True):
-            made = ilist.New(tuple(items), elem_type=element_type(result.type))
+            made = ilist.New(tuple(items), elem_type=item_type(result.type))
             made.insert_before(node)
             result.replace_by(made.result)
         for output, register in zip(node.outputs, registers, strict=True):
             output.replace_by(register)
         node.delete()
         return RewriteResult(has_done_something=True)
-
-
-def element_type(kind: types.TypeAttribute) -> types.TypeAttribute:
-    """Return the item type of the list type `kind`."""
-    assert isinstance(kind, types.Generic)
-    return kind.vars[0]
 
 
 @dataclass(frozen=True)

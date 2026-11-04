@@ -7,6 +7,7 @@ from kirin import ir, types
 from kirin.dialects import py, func
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
+from bloqade.types import is_subtype
 from bloqade.jeff.types import QuregType, is_linear
 from bloqade.jeff.dialects import stmts
 from bloqade.squin.wire.ownership import owns_inputs
@@ -58,7 +59,7 @@ class Functions(RewriteRule):
             borrowed = [value for value in node.inputs if is_linear(value.type)]
             suffix = made.results[len(made.results) - len(borrowed) :]
             for argument, result in zip(borrowed, suffix, strict=True):
-                if argument.type.is_subseteq(QuregType):
+                if is_subtype(argument.type, QuregType):
                     result.type = argument.type
         replace(node, nested(node.result.type, iter(made.results), node))
 
@@ -90,7 +91,7 @@ def returned(node: func.Return) -> None:
         raise JeffEmissionError(
             node, "The return values must match the declared function outputs."
         )
-    if any(value.type.is_subseteq(types.Tuple) for value in values):
+    if any(is_subtype(value.type, types.Tuple) for value in values):
         raise JeffEmissionError(
             node, "Jeff returns require flat scalar or array values."
         )

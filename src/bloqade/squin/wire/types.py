@@ -13,7 +13,7 @@ import math
 from kirin import types
 from kirin.dialects import ilist
 
-from bloqade.types import QubitType
+from bloqade.types import QubitType, is_subtype
 
 
 class Wire:
@@ -40,7 +40,7 @@ def register_type(length: int | None) -> types.TypeAttribute:
 
 def register_length(kind: types.TypeAttribute) -> int | None:
     """Return the static number of qubits of a register type, or None."""
-    if isinstance(kind, types.Generic) and kind.is_subseteq(RegisterType) and kind.vars:
+    if isinstance(kind, types.Generic) and is_subtype(kind, RegisterType) and kind.vars:
         length = kind.vars[0]
         if isinstance(length, types.Literal) and isinstance(length.data, int):
             return length.data
@@ -51,7 +51,7 @@ def is_linear(kind: types.TypeAttribute) -> bool:
     """Return True if a value of the type `kind` must have exactly one use."""
     if isinstance(kind, types.BottomType):
         return False
-    return kind.is_subseteq(WireType) or kind.is_subseteq(RegisterType)
+    return is_subtype(kind, WireType) or is_subtype(kind, RegisterType)
 
 
 def contains_linear(kind: types.TypeAttribute) -> bool:
@@ -80,7 +80,7 @@ def linear_paths(kind: types.TypeAttribute) -> tuple[tuple[int, ...], ...]:
         return ()
     if (
         isinstance(kind, types.Generic)
-        and kind.is_subseteq(types.Tuple)
+        and is_subtype(kind, types.Tuple)
         and kind.vararg is None
     ):
         return tuple(
@@ -95,11 +95,11 @@ def quantum_type(kind: types.TypeAttribute) -> types.TypeAttribute | None:
     """Return the linear type of a scalar qubit or a nested qubit register."""
     if isinstance(kind, types.BottomType):
         return None
-    if kind.is_subseteq(QubitType) or kind.is_subseteq(WireType):
+    if is_subtype(kind, QubitType) or is_subtype(kind, WireType):
         return WireType
-    if kind.is_subseteq(RegisterType):
+    if is_subtype(kind, RegisterType):
         return RegisterType
-    if isinstance(kind, types.Generic) and kind.is_subseteq(ilist.IListType):
+    if isinstance(kind, types.Generic) and is_subtype(kind, ilist.IListType):
         if quantum_type(kind.vars[0]) is not None:
             return RegisterType
     return None
@@ -107,7 +107,7 @@ def quantum_type(kind: types.TypeAttribute) -> types.TypeAttribute | None:
 
 def typed_length(kind: types.TypeAttribute) -> int | None:
     """Return a list's declared constant length, if its type supplies one."""
-    if isinstance(kind, types.Generic) and kind.is_subseteq(ilist.IListType):
+    if isinstance(kind, types.Generic) and is_subtype(kind, ilist.IListType):
         length = kind.vars[1]
         if isinstance(length, types.Literal) and isinstance(length.data, int):
             return length.data
@@ -117,7 +117,7 @@ def typed_length(kind: types.TypeAttribute) -> int | None:
 def register_shape(kind: types.TypeAttribute) -> tuple[int | None, ...]:
     """Return the source register dimensions in outer-to-inner order."""
     shape = []
-    while isinstance(kind, types.Generic) and kind.is_subseteq(ilist.IListType):
+    while isinstance(kind, types.Generic) and is_subtype(kind, ilist.IListType):
         shape.append(typed_length(kind))
         kind = kind.vars[0]
     return tuple(shape)

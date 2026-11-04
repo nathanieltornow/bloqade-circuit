@@ -5,7 +5,7 @@ from kirin.dialects import py, func, ilist
 from kirin.dialects.py import len as py_len, slice as py_slice
 
 from bloqade import qubit
-from bloqade.types import holds_qubits
+from bloqade.types import is_subtype, holds_qubits
 from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
 from bloqade.analysis.indices import IndexExpr
@@ -121,7 +121,7 @@ class Indexing(interp.MethodTable):
         index = emit.classical_value(frame, index_meaning)
         if isinstance(container, ir.SSAValue):
             return emit.eval_fallback(frame, stmt)
-        if index.type.is_subseteq(types.Slice):
+        if is_subtype(index.type, types.Slice):
             return (slice_item(emit, container, stmt),)
         return (element_item(emit, frame, container, index, stmt),)
 
@@ -208,4 +208,4 @@ def is_none(value: ir.SSAValue) -> bool:
     if isinstance(owner, py.Constant):
         return owner.value.unwrap() is None
     kind = value.type
-    return not isinstance(kind, types.BottomType) and kind.is_subseteq(types.NoneType)
+    return is_subtype(kind, types.NoneType)

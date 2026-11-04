@@ -16,7 +16,6 @@ signature rule turns each wire parameter back into a qubit parameter and drops t
 returned wires from the return statement.
 """
 
-from typing import TypeVar
 from dataclasses import field, dataclass
 
 from kirin import ir, types
@@ -26,7 +25,7 @@ from kirin.dialects.py import len as py_len, slice as py_slice
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade.qubit import stmts as qubit_stmts, qalloc
-from bloqade.types import QubitType
+from bloqade.types import QubitType, is_subtype
 from bloqade.squin.wire import stmts
 from bloqade.squin.wire.group import is_wire, reference_group
 from bloqade.squin.wire.types import RegisterType, is_linear
@@ -35,16 +34,16 @@ from bloqade.squin.wire.traits import Threads, ReferenceForm
 from bloqade.squin.wire.sources import source_of
 from bloqade.squin.wire.ownership import KEY as OWNED, owns_inputs
 from bloqade.squin.wire.signature import packed_type, output_types
-from bloqade.squin.rewrite.wire.driver import CheckedFixpoint
+from bloqade.squin.rewrite.wire.driver import CheckedFixpoint, put
 
 
 def squin_type(kind: types.TypeAttribute) -> types.TypeAttribute:
     """Return the reference squin type of the wire squin type `kind`."""
-    if kind.is_subseteq(RegisterType):
+    if is_subtype(kind, RegisterType):
         return ilist.IListType[QubitType, types.Any]
     if is_linear(kind):
         return QubitType
-    if isinstance(kind, types.Generic) and kind.is_subseteq(types.Tuple):
+    if isinstance(kind, types.Generic) and is_subtype(kind, types.Tuple):
         return types.Generic(tuple, *(squin_type(member) for member in kind.vars))
     return kind
 
@@ -60,19 +59,10 @@ def _kept_outputs(
     """
     borrowed = 0 if owned else sum(is_linear(kind) for kind in signature.inputs)
     if not borrowed:
-        none = signature.output.is_subseteq(types.NoneType)
+        none = is_subtype(signature.output, types.NoneType)
         return () if none else (squin_type(signature.output),)
     outputs = output_types(signature.output)
     return tuple(squin_type(kind) for kind in outputs[: len(outputs) - borrowed])
-
-
-_S = TypeVar("_S", bound=ir.Statement)
-
-
-def _put(stmt: _S, before: ir.Statement) -> _S:
-    """Insert `stmt` before the statement `before` and return `stmt`."""
-    stmt.insert_before(before)
-    return stmt
 
 
 @dataclass
@@ -95,43 +85,43 @@ class FromWireStatements(RewriteRule):
         elif (form := node.get_trait(ReferenceForm)) is not None:
             self.extension(node, form)
         elif isinstance(node, stmts.Alloc):
-            node.result.replace_by(_put(qubit_stmts.New(), node).result)
+            node.result.replace_by(put(qubit_stmts.New(), node).result)
         elif isinstance(node, stmts.AllocRegister):
-            call = _put(func.Invoke((node.size,), callee=qalloc), node)
+            call = put(func.Invoke((node.size,), callee=qalloc), node)
             call.result.type = qalloc.return_type
             node.result.replace_by(call.result)
         elif isinstance(node, (stmts.Borrow, stmts.Take)):
-            item = _put(py.GetItem(node.register, node.index), node)
+            item = put(py.GetItem(node.register, node.index), node)
             item.result.type = QubitType
             node.wire.replace_by(item.result)
             node.register_out.replace_by(node.register)
         elif isinstance(node, stmts.Put):
-            one = _put(py.Constant(1), node).result
-            stop = _put(py.Add(node.index, one), node).result
-            middle = _put(ilist.New((node.wire,), elem_type=QubitType), node).result
+            one = put(py.Constant(1), node).result
+            stop = put(py.Add(node.index, one), node).result
+            middle = put(ilist.New((node.wire,), elem_type=QubitType), node).result
             node.register_out.replace_by(
                 _splice(node.register, node.index, stop, middle, node)
             )
         elif isinstance(node, stmts.PackRegister):
             node.result.replace_by(
-                _put(ilist.New(node.wires, elem_type=QubitType), node).result
+                put(ilist.New(node.wires, elem_type=QubitType), node).result
             )
         elif isinstance(node, stmts.JoinRegister):
-            node.result.replace_by(_put(py.Add(node.first, node.second), node).result)
+            node.result.replace_by(put(py.Add(node.first, node.second), node).result)
         elif isinstance(node, stmts.SplitRegister):
-            zero = _put(py.Constant(0), node).result
-            one = _put(py.Constant(1), node).result
-            length = _put(py_len.Len(node.register), node).result
-            head = _put(py_slice.Slice(zero, node.index, one), node).result
-            tail = _put(py_slice.Slice(node.index, length, one), node).result
-            node.before.replace_by(_put(py.GetItem(node.register, head), node).result)
-            node.after.replace_by(_put(py.GetItem(node.register, tail), node).result)
+            zero = put(py.Constant(0), node).result
+            one = put(py.Constant(1), node).result
+            length = put(py_len.Len(node.register), node).result
+            head = put(py_slice.Slice(zero, node.index, one), node).result
+            tail = put(py_slice.Slice(node.index, length, one), node).result
+            node.before.replace_by(put(py.GetItem(node.register, head), node).result)
+            node.after.replace_by(put(py.GetItem(node.register, tail), node).result)
         elif isinstance(node, stmts.TakeSlice):
-            stop = _put(py.Add(node.start, node.length), node).result
-            one = _put(py.Constant(1), node).result
-            part = _put(py_slice.Slice(node.start, stop, one), node).result
+            stop = put(py.Add(node.start, node.length), node).result
+            one = put(py.Constant(1), node).result
+            part = put(py_slice.Slice(node.start, stop, one), node).result
             node.slice_register.replace_by(
-                _put(py.GetItem(node.register, part), node).result
+                put(py.GetItem(node.register, part), node).result
             )
             node.register_out.replace_by(node.register)
         elif isinstance(node, stmts.PutSlice) and _restores(node):
@@ -139,15 +129,15 @@ class FromWireStatements(RewriteRule):
             # holds the same qubit references as before.
             node.register_out.replace_by(node.register)
         elif isinstance(node, stmts.PutSlice):
-            length = _put(py_len.Len(node.slice_register), node).result
-            stop = _put(py.Add(node.start, length), node).result
+            length = put(py_len.Len(node.slice_register), node).result
+            stop = put(py.Add(node.start, length), node).result
             node.register_out.replace_by(
                 _splice(node.register, node.start, stop, node.slice_register, node)
             )
         elif isinstance(node, stmts.Release):
             node.register_out.replace_by(node.register)
         elif isinstance(node, stmts.Length):
-            node.result.replace_by(_put(py_len.Len(node.register), node).result)
+            node.result.replace_by(put(py_len.Len(node.register), node).result)
             node.register_out.replace_by(node.register)
         elif not isinstance(
             node, (stmts.Free, stmts.FreeRegister, stmts.DiscardRegister)
@@ -194,7 +184,7 @@ class FromWireStatements(RewriteRule):
         scalar = not isinstance(node, stmts.RegisterOperation)
         if scalar:
             qubits = tuple(
-                _put(ilist.New(values=column, elem_type=QubitType), node).result
+                put(ilist.New(values=column, elem_type=QubitType), node).result
                 for column in zip(*node.groups)
             )
         else:
@@ -204,13 +194,13 @@ class FromWireStatements(RewriteRule):
             if isinstance(node, (stmts.Gate, stmts.RegisterGate))
             else False
         )
-        made = _put(entry.build(qubits, node.parameters, adjoint), node)
+        made = put(entry.build(qubits, node.parameters, adjoint), node)
         for result, value in zip(
             node.classical, entry.result_values(made), strict=True
         ):
             if scalar:
-                zero = _put(py.Constant(0), node)
-                item = _put(py.GetItem(value, zero.result), node)
+                zero = put(py.Constant(0), node)
+                item = put(py.GetItem(value, zero.result), node)
                 item.result.type = result.type
                 value = item.result
             result.replace_by(value)
@@ -311,7 +301,7 @@ class FromWireCalls(RewriteRule):
         signature = node.callee.code.signature
         owned = owns_inputs(node.callee)
         squin_kernel = self.convert.kernel_of(node.callee)
-        call = _put(func.Invoke(node.inputs, callee=squin_kernel), node)
+        call = put(func.Invoke(node.inputs, callee=squin_kernel), node)
         kept = _kept_outputs(signature, owned)
         call.result.type = packed_type(kept)
         borrowed = (
@@ -326,8 +316,8 @@ class FromWireCalls(RewriteRule):
                 return borrowed[k - len(kept)]
             if len(kept) == 1:
                 return call.result
-            at = _put(py.Constant(k), before)
-            item = _put(py.GetItem(call.result, at.result), before)
+            at = put(py.Constant(k), before)
+            item = put(py.GetItem(call.result, at.result), before)
             item.result.type = kept[k]
             return item.result
 
@@ -375,12 +365,12 @@ class FromWireSignature(RewriteRule):
                 values = []
             values = values[: len(kept)]
             if not values:
-                value = _put(func.ConstantNone(), returned).result
+                value = put(func.ConstantNone(), returned).result
             elif len(values) == 1:
                 value = values[0]
             else:
-                value = _put(py.tuple.New(tuple(values)), returned).result
-            _put(func.Return(value), returned)
+                value = put(py.tuple.New(tuple(values)), returned).result
+            put(func.Return(value), returned)
             returned.delete()
         inputs = tuple(squin_type(k) for k in signature.inputs)
         for arg in block.args[1:]:
@@ -479,7 +469,7 @@ def _splice(
     before: ir.Statement,
 ) -> ir.SSAValue:
     """Return `reg` with `middle` in place of the slots from `start` to `stop`."""
-    zero, one = _put(py.Constant(0), before).result, _put(py.Constant(1), before).result
+    zero, one = put(py.Constant(0), before).result, put(py.Constant(1), before).result
     (length := py_len.Len(reg)).insert_before(before)
     (head_slice := py_slice.Slice(zero, start, one)).insert_before(before)
     (head := py.indexing.GetItem(reg, head_slice.result)).insert_before(before)
@@ -508,14 +498,14 @@ class ReferenceTypes(RewriteRule):
 
 def bounded_list_lengths(kind: types.TypeAttribute) -> types.TypeAttribute:
     """Constrain unknown list lengths to integers without assuming a concrete size."""
-    if isinstance(kind, types.Generic) and kind.is_subseteq(ilist.IListType):
+    if isinstance(kind, types.Generic) and is_subtype(kind, ilist.IListType):
         element, length = kind.vars
         return ilist.IListType[
             bounded_list_lengths(element), types.Int if length == types.Any else length
         ]
     if (
         isinstance(kind, types.Generic)
-        and kind.is_subseteq(types.Tuple)
+        and is_subtype(kind, types.Tuple)
         and kind.vararg is None
     ):
         return types.Generic(

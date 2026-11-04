@@ -17,7 +17,7 @@ from kirin import ir, types
 from kirin.dialects import ilist
 
 from bloqade.qubit import stmts as qubit_stmts
-from bloqade.types import QubitType, holds_qubits
+from bloqade.types import QubitType, is_subtype, holds_qubits
 from bloqade.squin.gate import stmts as gate_stmts
 from bloqade.squin.noise import stmts as noise_stmts
 from bloqade.native.dialects.gate import stmts as native_stmts
@@ -317,9 +317,8 @@ def flat_qubits(kind: types.TypeAttribute) -> bool:
     """Check whether `kind` is a flat list of qubits, such as `IList[Qubit, N]`."""
     return (
         isinstance(kind, types.Generic)
-        and kind.is_subseteq(ilist.IListType)
-        and kind.vars[0].is_subseteq(QubitType)
-        and not isinstance(kind.vars[0], types.BottomType)
+        and is_subtype(kind, ilist.IListType)
+        and is_subtype(kind.vars[0], QubitType)
     )
 
 

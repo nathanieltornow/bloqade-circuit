@@ -14,6 +14,7 @@ from kirin.validation import ValidationPass
 from kirin.ir.exception import ValidationErrorGroup
 from kirin.analysis.forward import ForwardFrame
 
+from bloqade.types import is_subtype
 from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
 from bloqade.squin.wire.types import (
@@ -221,8 +222,8 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
             self.check_uses(params, node)
             if isinstance(node, func.Function):
                 output = node.signature.output
-                if isinstance(output, types.Generic) and output.is_subseteq(
-                    types.Tuple
+                if isinstance(output, types.Generic) and is_subtype(
+                    output, types.Tuple
                 ):
                     if any(
                         contains_linear(kind) and not is_linear(kind)

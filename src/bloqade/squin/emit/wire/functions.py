@@ -7,6 +7,7 @@ from kirin import ir, types, interp
 from kirin.dialects import py, func
 
 from bloqade import qubit
+from bloqade.types import is_subtype
 from bloqade.squin.wire import stmts
 from bloqade.analysis.indices import IndexExpr
 from bloqade.squin.wire.group import wire_group
@@ -262,7 +263,7 @@ def run_library(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
 
 def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
     """Call a converted function and continue the borrowed qubits with its results."""
-    if any(value.type.is_subseteq(types.Tuple) for value in stmt.inputs):
+    if any(is_subtype(value.type, types.Tuple) for value in stmt.inputs):
         raise UnsupportedCallContract(
             "Wire calls require separate arguments for tuple fields.", stmt
         )

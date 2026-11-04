@@ -6,7 +6,7 @@ from typing import TypeVar
 from kirin import ir, types
 from kirin.dialects import ilist
 
-from bloqade.types import MeasurementResultType
+from bloqade.types import MeasurementResultType, is_subtype
 from bloqade.jeff.types import WireType, IntArrayType, FloatArrayType, qureg, is_bit
 from bloqade.jeff.dialects import stmts
 from bloqade.squin.wire.types import (
@@ -14,6 +14,7 @@ from bloqade.squin.wire.types import (
     RegisterType,
     register_length,
 )
+from bloqade.squin.rewrite.wire.driver import put as insert, replace as replace
 
 StatementT = TypeVar("StatementT", bound=ir.Statement)
 
@@ -46,25 +47,18 @@ def jeff_kind(kind: types.TypeAttribute) -> types.TypeAttribute:
                 return FloatArrayType
             case ilist.IList():
                 return IntArrayType
-    if kind.is_subseteq(SquinWireType):
+    if is_subtype(kind, SquinWireType):
         return WireType
-    if kind.is_subseteq(MeasurementResultType):
+    if is_subtype(kind, MeasurementResultType):
         # Jeff measures to one bit, so the conversion assumes that no qubit is lost.
         return types.Bool
-    if kind.is_subseteq(RegisterType):
+    if is_subtype(kind, RegisterType):
         return qureg(register_length(kind))
-    if kind.is_subseteq(ilist.IListType[types.Float, types.Any]):
+    if is_subtype(kind, ilist.IListType[types.Float, types.Any]):
         return FloatArrayType
-    if kind.is_subseteq(ilist.IListType):
+    if is_subtype(kind, ilist.IListType):
         return IntArrayType
     return kind
-
-
-def elements(kind: types.TypeAttribute) -> types.TypeAttribute:
-    """Return the element type of the list type `kind`, or `Any`."""
-    if isinstance(kind, types.Generic) and kind.is_subseteq(ilist.IListType):
-        return kind.vars[0]
-    return types.Any
 
 
 def bitwidth(elements: types.TypeAttribute) -> int:
@@ -72,7 +66,7 @@ def bitwidth(elements: types.TypeAttribute) -> int:
 
     A measurement result or a boolean is one bit, any other integer is 32 bits.
     """
-    if elements.is_subseteq(MeasurementResultType) or elements.is_subseteq(types.Bool):
+    if is_subtype(elements, MeasurementResultType) or is_subtype(elements, types.Bool):
         return 1
     return 32
 
@@ -84,15 +78,7 @@ def put(stmt: StatementT, before: ir.Statement) -> StatementT:
     """
     if isinstance(stmt, (stmts.IntUnary, stmts.IntBinary)) and is_bit(stmt.args[0]):
         stmt.results[0].type = types.Bool
-    stmt.insert_before(before)
-    return stmt
-
-
-def replace(node: ir.Statement, *values: ir.SSAValue) -> None:
-    """Replace each result of `node` with the value at its position and delete `node`."""
-    for result, value in zip(node.results, values, strict=True):
-        result.replace_by(value)
-    node.delete()
+    return insert(stmt, before)
 
 
 def fitted(

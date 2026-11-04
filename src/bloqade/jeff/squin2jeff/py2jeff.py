@@ -9,6 +9,7 @@ from kirin.dialects.py import len as py_len, slice as py_slice
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 from kirin.dialects.math import stmts as math_stmts
 
+from bloqade.types import item_type
 from bloqade.constants import constant_int
 from bloqade.jeff.forms import SWAPPED, INT_BINARY, FLOAT_UNARY, FLOAT_BINARY
 from bloqade.jeff.types import FloatArrayType, is_bit, is_subtype
@@ -21,7 +22,6 @@ from .kinds import (
     fitted,
     replace,
     bitwidth,
-    elements,
     jeff_kind,
 )
 
@@ -77,7 +77,7 @@ def constant_value(
             floats = tuple(float(member) for member in members)
             return put(stmts.FloatArrayConst(values=floats), before).result
         case ilist.IList(data=list(members)):
-            width = bitwidth(elements(kind))
+            width = bitwidth(item_type(kind))
             ints = tuple(int(member) for member in members)
             return put(stmts.IntArrayConst(values=ints, bitwidth=width), before).result
         case bool() | int() | float() if jeff_kind(kind) == types.Bool:
@@ -93,7 +93,7 @@ def constant_value(
 
 def is_float(value: ir.SSAValue) -> bool:
     """Check whether `value` is a float."""
-    return value.type.is_subseteq(types.Float)
+    return is_subtype(value.type, types.Float)
 
 
 def zero_test(value: ir.SSAValue, before: ir.Statement) -> ir.SSAValue:
@@ -130,7 +130,7 @@ def binary(node: ir.Statement) -> Values:
     """Return the Jeff form of a binary operation or a comparison on two numbers."""
     kind = type(node)
     lhs, rhs = node.args
-    if not all(value.type.is_subseteq(types.Int | types.Float) for value in node.args):
+    if not all(is_subtype(value.type, types.Int | types.Float) for value in node.args):
         raise JeffEmissionError(
             node, f"'{node.name}' requires scalar numeric operands."
         )
@@ -163,7 +163,7 @@ def floored(node: ir.Statement) -> Values:
     remainder is nonzero and the operands differ in sign, the quotient drops one
     and the remainder gains the divisor.
     """
-    if not all(value.type.is_subseteq(types.Int) for value in node.args):
+    if not all(is_subtype(value.type, types.Int) for value in node.args):
         raise JeffEmissionError(
             node, f"'{node.name}' requires integer operands in Jeff."
         )
@@ -199,7 +199,7 @@ def boolop(node: ir.Statement) -> Values:
 
 def integer_only(node: ir.Statement, value: ir.SSAValue) -> None:
     """Reject a bool operand, for which Python gives an int result."""
-    if value.type.is_subseteq(types.Bool):
+    if is_subtype(value.type, types.Bool):
         raise JeffEmissionError(
             node, f"'{node.name}' on a bool requires Python integer semantics."
         )

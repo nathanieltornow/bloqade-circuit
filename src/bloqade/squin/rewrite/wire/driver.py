@@ -1,5 +1,10 @@
-"""Run bounded rewrites and reject unsupported recursive call graphs."""
+"""Run bounded rewrites, insert replacement statements, and reject recursion.
 
+`put` and `replace` are the 2 steps that every rewrite rule of the wire
+conversions uses to swap a statement for its replacement.
+"""
+
+from typing import TypeVar
 from dataclasses import field, dataclass
 from collections.abc import Callable
 
@@ -9,6 +14,21 @@ from kirin.dialects import func
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade.squin.wire.errors import WireConversionError
+
+StatementT = TypeVar("StatementT", bound=ir.Statement)
+
+
+def put(stmt: StatementT, before: ir.Statement) -> StatementT:
+    """Insert `stmt` before the statement `before` and return `stmt`."""
+    stmt.insert_before(before)
+    return stmt
+
+
+def replace(node: ir.Statement, *values: ir.SSAValue) -> None:
+    """Replace each result of `node` with the value at its position and delete `node`."""
+    for result, value in zip(node.results, values, strict=True):
+        result.replace_by(value)
+    node.delete()
 
 
 @dataclass

@@ -23,6 +23,7 @@ from bloqade.jeff.dialects import stmts
 from bloqade.squin.wire.types import WireType, register_type
 from bloqade.squin.wire.sources import SOURCES
 from bloqade.squin.wire.signature import packed_type
+from bloqade.squin.rewrite.wire.driver import put, replace
 from bloqade.jeff.analysis.validation.to_squin.gates import (
     SINGLE,
     ROTATION,
@@ -42,23 +43,9 @@ def wire_type(kind: types.TypeAttribute) -> types.TypeAttribute:
         return ilist.IListType[types.Int, types.Any]
     if is_subtype(kind, FloatArrayType):
         return ilist.IListType[types.Float, types.Any]
-    if isinstance(kind, types.Generic) and kind.is_subseteq(types.Tuple):
+    if isinstance(kind, types.Generic) and is_subtype(kind, types.Tuple):
         return types.Generic(tuple, *(wire_type(member) for member in kind.vars))
     return kind
-
-
-def put(node, before):
-    """Insert one replacement operation before its source operation."""
-    node.insert_before(before)
-    return node
-
-
-def replace(node: ir.Statement, *values: ir.SSAValue) -> RewriteResult:
-    """Replace each result in order and remove its source operation."""
-    for old, new in zip(node.results, values, strict=True):
-        old.replace_by(new)
-    node.delete()
-    return RewriteResult(has_done_something=True)
 
 
 class Retype(RewriteRule):
@@ -107,16 +94,20 @@ class Quantum(RewriteRule):
         }
         if build := direct.get(type(node)):
             made = put(build(*node.args), node)
-            return replace(node, *made.results)
+            replace(node, *made.results)
+            return RewriteResult(has_done_something=True)
         if isinstance(node, stmts.RegCreate):
             made = put(wire.PackRegister(node.wires), node)
-            return replace(node, made.result)
+            replace(node, made.result)
+            return RewriteResult(has_done_something=True)
         if isinstance(node, (stmts.Measure, stmts.MeasureNd)):
             measured = put(wire.Measure(node.wire), node)
             if isinstance(node, stmts.MeasureNd):
-                return replace(node, *measured.results)
+                replace(node, *measured.results)
+                return RewriteResult(has_done_something=True)
             put(wire.Free(measured.results[0]), node)
-            return replace(node, measured.results[1])
+            replace(node, measured.results[1])
+            return RewriteResult(has_done_something=True)
         if isinstance(node, stmts.Gate):
             return self.gate(node)
         if isinstance(node, stmts.Call):
@@ -133,7 +124,8 @@ class Quantum(RewriteRule):
                     item = put(py.GetItem(call.result, index), node)
                     item.result.type = kind
                     values.append(item.result)
-            return replace(node, *values)
+            replace(node, *values)
+            return RewriteResult(has_done_something=True)
         if isinstance(node, stmts.Return):
             if not node.values:
                 value = put(func.ConstantNone(), node).result
@@ -192,6 +184,5 @@ class Quantum(RewriteRule):
                     operands,
                     (negative(angle) if shape.adjoint else angle,),
                 )
-        return replace(
-            node, *(current[value] for value in (*node.targets, *node.controls))
-        )
+        replace(node, *(current[value] for value in (*node.targets, *node.controls)))
+        return RewriteResult(has_done_something=True)
