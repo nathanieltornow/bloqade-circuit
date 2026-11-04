@@ -55,7 +55,7 @@ class Functions(RewriteRule):
         callee = self.methods[node.callee]
         outputs = declared_outputs(callee.return_type)
         made = put(stmts.Call(callee, tuple(node.inputs), outputs), node)
-        if not owns_inputs(node.callee):
+        if not owns_inputs(node.callee.code):
             borrowed = [value for value in node.inputs if is_linear(value.type)]
             suffix = made.results[len(made.results) - len(borrowed) :]
             for argument, result in zip(borrowed, suffix, strict=True):

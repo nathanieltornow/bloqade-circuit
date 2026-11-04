@@ -359,7 +359,7 @@ class FromWireCalls(RewriteRule):
             return RewriteResult()
         assert isinstance(node.callee.code, func.Function)
         signature = node.callee.code.signature
-        owned = owns_inputs(node.callee)
+        owned = owns_inputs(node.callee.code)
         squin_kernel = self.convert.kernel_of(node.callee)
         call = put(func.Invoke(node.inputs, callee=squin_kernel), node)
         kept = _kept_outputs(signature, owned)
@@ -410,7 +410,7 @@ class FromWireSignature(RewriteRule):
         outputs = output_types(signature.output)
         if not any(is_linear(k) for k in (*signature.inputs, *outputs)):
             return RewriteResult()
-        owned = node.attributes.get(OWNED) == ir.PyAttr(True)
+        owned = owns_inputs(node)
         kept = _kept_outputs(signature, owned)
         block = node.body.blocks[0]
         returned = block.last_stmt
@@ -481,7 +481,7 @@ class FromWire:
             Chain(FromWireStatements(self.wire_dialects), FromWireCalls(self))
         )
         result = CheckedFixpoint(statements).rewrite(method.code)
-        if owns_inputs(method):
+        if owns_inputs(method.code):
             result = Walk(FromWireSignature()).rewrite(method.code).join(result)
             result = Walk(ReferenceTypes()).rewrite(method.code).join(result)
             method.code.attributes.pop(OWNED)
