@@ -259,10 +259,26 @@ class EmitWire(EmitABC[WireFrame, Value]):
         """
         inputs = tuple(self.acquire(frame, location) for location in locations)
         made = frame.push(build(inputs))
+        self.check_dialect(made)
         continued = dict(made.get_present_trait(Threads).threads(made))
         for location, wire in zip(locations, inputs, strict=True):
             self.restore(frame, location, continued[wire])
         return made
+
+    def check_dialect(self, made: ir.Statement) -> None:
+        """Raise a conversion error if the wire method cannot hold `made`.
+
+        A wire statement of another dialect needs its dialect in `wire_dialects`,
+        so that the dialect group of the wire method holds it.
+        """
+        if made.dialect is stmts.dialect or made.dialect in self.wire_dialects:
+            return
+        name = "?" if made.dialect is None else made.dialect.name
+        raise WireConversionError(
+            f"The wire statement '{made.name}' belongs to the dialect '{name}'."
+            " Pass that dialect to SquinToWire as one of its wire_dialects.",
+            made,
+        )
 
     def qubits_of(
         self, frame: WireFrame, value: ir.SSAValue, at: ir.Statement
@@ -289,6 +305,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
 
         The region frees the qubit at its end, like a qubit of `qubit.new`.
         """
+        if isinstance(wire.owner, ir.Statement):
+            self.check_dialect(wire.owner)
         frame.latest[wire] = wire
         frame.local_roots.append(wire)
         return Qubit(wire)

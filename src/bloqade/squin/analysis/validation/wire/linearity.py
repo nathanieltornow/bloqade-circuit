@@ -21,7 +21,7 @@ from bloqade.squin.wire.types import (
     linear_paths,
     contains_linear,
 )
-from bloqade.squin.wire.traits import ReferenceForm
+from bloqade.squin.wire.traits import Threads, ReferenceForm
 from bloqade.squin.analysis.validation.wire.calls import CachedCalls
 
 KEY = "squin.wire.linearity"
@@ -143,7 +143,12 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
                 or user.has_trait(ReferenceForm)
                 or isinstance(user, QUANTUM_CONSUMERS)
             ):
-                self.error(user, f"'{user.name}' cannot consume a quantum value.")
+                hint = (
+                    " A wire statement of another dialect needs a ReferenceForm trait."
+                    if user.has_trait(Threads)
+                    else ""
+                )
+                self.error(user, f"'{user.name}' cannot consume a quantum value.{hint}")
             users.append(user)
         return users
 

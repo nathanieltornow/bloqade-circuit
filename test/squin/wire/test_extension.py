@@ -9,9 +9,11 @@ This is the same work that a dialect such as Gemini does.
 import math
 from typing import Any
 
+import pytest
 from kirin import ir, types, interp, lowering
 from kirin.decl import info, statement
 from kirin.dialects import ilist
+from kirin.ir.exception import ValidationErrorGroup
 
 from bloqade import squin, native
 from bloqade.types import Qubit, QubitType
@@ -22,10 +24,10 @@ from bloqade.squin.wire import (
     ThreadsInOrder,
     stmts as wire,
 )
-from bloqade.squin.emit.wire import EmitWire
+from bloqade.squin.emit.wire import EmitWire, WireFrame
 from bloqade.squin.wire.group import reference_kernel
+from bloqade.squin.wire.errors import WireConversionError
 from bloqade.native.dialects.gate import stmts as native_stmts
-from bloqade.squin.emit.wire.base import WireFrame
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
 from bloqade.squin.passes.wire_rotations import merge_native_rotations
@@ -117,6 +119,23 @@ class WireFresh(ir.Statement):
     result: ir.ResultValue = info.result(WireType)
 
 
+@statement(dialect=linear, init=False)
+class Opaque(ir.Statement):
+    """Keep the qubits of `wires`, with no way back to reference squin."""
+
+    name = "opaque"
+    traits = frozenset({ThreadsInOrder("wires")})
+    wires: tuple[ir.SSAValue, ...] = info.argument(WireType)
+
+    def __init__(self, wires: tuple[ir.SSAValue, ...]) -> None:
+        """Build the statement on `wires`."""
+        super().__init__(
+            args=wires,
+            result_types=tuple(WireType for _ in wires),
+            args_slice={"wires": slice(0, len(wires))},
+        )
+
+
 @reference.register(key="emit.squin_wire")
 class Emission(interp.MethodTable):
     """Emit the wire forms of the test statements."""
@@ -193,3 +212,33 @@ def test_an_allocation_of_another_dialect_becomes_a_new_wire():
         Fresh,
         Mark,
     ]
+
+
+def test_a_missing_wire_dialect_names_the_option():
+    with pytest.raises(WireConversionError, match="wire_dialects"):
+        SquinToWire().emit(barrier)
+
+
+def test_merging_without_a_wire_form_returns_the_kernel_under_no_raise():
+    assert merge_native_rotations(barrier, no_raise=True) is barrier
+    with pytest.raises(WireConversionError):
+        merge_native_rotations(barrier)
+
+
+def test_a_wire_statement_without_a_reference_form_names_the_trait():
+    wired = SquinToWire((linear,)).emit(barrier)
+    (made,) = (n for n in statements(wired) if isinstance(n, WireMark))
+    bare = Opaque(tuple(made.wires))
+    bare.insert_before(made)
+    for old, new in zip(made.results, bare.results):
+        old.replace_by(new)
+    made.delete(safe=False)
+    with pytest.raises(ValidationErrorGroup, match="needs a ReferenceForm trait"):
+        WireToSquin((linear,)).emit(wired)
+
+
+def test_a_reference_form_must_return_one_value_per_new_result(monkeypatch):
+    monkeypatch.setattr(MarkReference, "rebuild", lambda self, node: ())
+    wired = SquinToWire((linear,)).emit(barrier)
+    with pytest.raises(WireConversionError, match="returned 0 values for 1"):
+        WireToSquin((linear,)).emit(wired)

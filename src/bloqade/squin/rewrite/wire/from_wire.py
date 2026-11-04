@@ -30,6 +30,7 @@ from bloqade.types import QubitType
 from bloqade.squin.wire import stmts
 from bloqade.squin.wire.group import is_wire, reference_group
 from bloqade.squin.wire.types import RegisterType, is_linear
+from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.traits import Threads, ReferenceForm
 from bloqade.squin.wire.sources import source_of
 from bloqade.squin.wire.ownership import KEY as OWNED, owns_inputs
@@ -74,11 +75,21 @@ def _put(stmt: _S, before: ir.Statement) -> _S:
     return stmt
 
 
+@dataclass
 class FromWireStatements(RewriteRule):
     """Replace each wire statement outside a loop or branch with reference squin."""
 
+    wire_dialects: tuple[ir.Dialect, ...] = ()
+    """The dialects of the wire statements that other dialects add."""
+
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
-        """Rewrite `node` if it belongs to the wire dialect."""
+        """Rewrite `node` if it belongs to the wire dialect or a wire extension."""
+        if node.dialect in self.wire_dialects and not node.has_trait(ReferenceForm):
+            raise WireConversionError(
+                f"The wire statement '{node.name}' has no ReferenceForm trait, so"
+                " WireToSquin cannot rebuild it.",
+                node,
+            )
         if isinstance(node, stmts.Operation):
             self.operation(node)
         elif (form := node.get_trait(ReferenceForm)) is not None:
@@ -157,7 +168,14 @@ class FromWireStatements(RewriteRule):
             for operand, result in ([] if threads is None else threads.threads(node))
         )
         fresh = [result for result in node.results if result not in continued]
-        for result, value in zip(fresh, form.rebuild(node), strict=True):
+        values = form.rebuild(node)
+        if len(values) != len(fresh):
+            raise WireConversionError(
+                f"The ReferenceForm of '{node.name}' returned {len(values)} values"
+                f" for {len(fresh)} results that no Threads pair continues.",
+                node,
+            )
+        for result, value in zip(fresh, values, strict=True):
             result.replace_by(value)
         for result, operand in continued.items():
             result.replace_by(operand)
@@ -409,7 +427,9 @@ class FromWire:
 
     def rewrite(self, method: ir.Method) -> RewriteResult:
         """Run the statement rules, then the region and signature rules, then DCE."""
-        statements = Walk(Chain(FromWireStatements(), FromWireCalls(self)))
+        statements = Walk(
+            Chain(FromWireStatements(self.wire_dialects), FromWireCalls(self))
+        )
         result = CheckedFixpoint(statements).rewrite(method.code)
         if owns_inputs(method):
             result = Walk(FromWireSignature()).rewrite(method.code).join(result)

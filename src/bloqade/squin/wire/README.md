@@ -330,6 +330,9 @@ It owns 3 pieces, and bloqade-circuit needs no change for a new dialect:
 3. A `ReferenceForm` trait on each wire statement. `WireToSquin` calls its `rebuild` method to insert the reference statement.
 
 The caller passes the wire dialect as `wire_dialects` to `SquinToWire`, `WireToSquin` and `merge_native_rotations`.
+If the dialect is missing from `wire_dialects`, `SquinToWire` names the option in its error.
+If a wire statement threads wires but has no `ReferenceForm`, the linearity check names the trait.
+`merge_native_rotations(..., no_raise=True)` returns its input kernel when the kernel has no wire form.
 `test/squin/wire/test_extension.py` shows a complete small dialect.
 The squin, noise and native gate dialects use the same method tables under `emit.squin_wire`.
 
