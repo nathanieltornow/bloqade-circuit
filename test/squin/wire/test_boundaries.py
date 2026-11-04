@@ -1,20 +1,20 @@
-"""Check source contracts and emitted wire boundary types."""
+"""Check source contracts and the types at the boundaries of emitted wire code."""
 
 from typing import Any
 
 import pytest
-from kirin import types
+from kirin import ir, types
 from kirin.source import SourceInfo
 from kirin.dialects import scf, func, ilist
 from kirin.ir.exception import ValidationErrorGroup
 
-from bloqade import squin
+from bloqade import squin, native
 from bloqade.types import Qubit, holds_qubits
 from bloqade.squin.wire.types import WireType, RegisterType
+from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.signature import output_types
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.analysis.validation.wire import WireValidation
-from bloqade.squin.analysis.validation.wire.stages import SourceValidation
 
 
 @squin.kernel
@@ -51,15 +51,18 @@ def test_emitted_loop_arguments_and_borrowed_result_order():
     assert tuple(value.type for value in end.values[-2:]) == (WireType, RegisterType)
 
 
-def test_source_stage_retains_the_location_of_a_missing_yield():
+def test_a_loop_body_with_a_second_block_keeps_its_source_location():
     method = borrowed_loop.similar()
     loop = next(node for node in method.code.walk() if isinstance(node, scf.For))
     loop.source = SourceInfo(17, 4, 17, 12, file="example.py")
-    loop.body.blocks[0].last_stmt.delete()
-    _, errors = SourceValidation().run(method)
-    assert any(
-        error.node is loop and "must end with a yield" in str(error) for error in errors
-    )
+    extra = ir.Block()
+    extra.stmts.append(scf.Yield(*loop.body.blocks[0].last_stmt.args))
+    loop.body.blocks.append(extra)
+    # Kirin's structure check rejects the body before emission starts.
+    with pytest.raises(ValidationErrorGroup, match="single block") as caught:
+        SquinToWire().emit(method)
+    (error,) = caught.value.errors
+    assert error.node is loop
     assert loop.source.file == "example.py"
     assert loop.source.lineno == 17
 
@@ -81,3 +84,15 @@ def test_emitted_signature_rejects_reordered_borrowed_results():
     ]
     with pytest.raises(ValidationErrorGroup, match="return suffix position"):
         WireValidation().check(method)
+
+
+@squin.kernel
+def dynamic_call():
+    qs = squin.qalloc(1)
+    # The native package has no `r`, so the call target is a runtime value.
+    native.r(0.25, 0.5, qs)  # type: ignore[attr-defined]
+
+
+def test_a_call_through_a_function_value_names_the_static_call_rule():
+    with pytest.raises(WireConversionError, match="static call target"):
+        SquinToWire().emit(dynamic_call)

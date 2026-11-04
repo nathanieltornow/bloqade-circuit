@@ -7,10 +7,9 @@ references. A statement of a foreign dialect that holds no qubit reference also 
 from dataclasses import field, dataclass
 
 from kirin import ir
-from kirin.lattice import EmptyLattice
+from kirin.rewrite import Walk
 from kirin.dialects import func
-from kirin.interp.value import RegionResult
-from kirin.analysis.forward import ForwardFrame
+from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade import qubit
 from bloqade.squin import gate, noise
@@ -22,7 +21,6 @@ from bloqade.squin.wire.group import (
     is_wire,
     reference_kernel,
 )
-from bloqade.squin.analysis.validation.wire.stages import SourceAnalysis
 
 CLASSICAL_DIALECTS = reference_kernel.data - {
     qubit.dialect,
@@ -33,19 +31,24 @@ CLASSICAL_DIALECTS = reference_kernel.data - {
 
 
 @dataclass
-class ConversionTarget(SourceAnalysis):
+class ConversionTarget(RewriteRule):
     """Collect the statements that violate the complete wire conversion target.
 
-    This class reuses the region walk of `SourceAnalysis` and replaces its
-    `check_node`. It ignores the validation errors of that walk, because the wire
-    validators check structure separately.
+    Kirin's `Walk` visits every block and statement of the method, including those
+    of nested regions. The rule records each violation and changes nothing.
     """
 
     violations: list[str] = field(default_factory=list)
     """The name of each violating statement, or "block argument"."""
 
-    def check_node(self, node: ir.Statement) -> None:
-        """Record operations that keep references or lack a supported wire form."""
+    def rewrite_Block(self, node: ir.Block) -> RewriteResult:
+        """Record a block argument that holds a qubit reference."""
+        if any(holds_qubits(arg.type) for arg in node.args):
+            self.violations.append("block argument")
+        return RewriteResult()
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Record an operation that keeps references or lacks a supported wire form."""
         legal_dialect = (
             node.dialect in CLASSICAL_DIALECTS
             or node.dialect is stmts.dialect
@@ -66,22 +69,11 @@ class ConversionTarget(SourceAnalysis):
         )
         if not (legal_dialect and legal_values and legal_call and legal_signature):
             self.violations.append(node.name)
-
-    def frame_call_region(
-        self,
-        frame: ForwardFrame[EmptyLattice],
-        node: ir.Statement,
-        region: ir.Region,
-        *args: EmptyLattice,
-    ) -> RegionResult[EmptyLattice]:
-        """Record reference parameters before Kirin checks the region body."""
-        if any(holds_qubits(arg.type) for block in region.blocks for arg in block.args):
-            self.violations.append("block argument")
-        return super().frame_call_region(frame, node, region, *args)
+        return RewriteResult()
 
     @classmethod
     def check(cls, method: ir.Method) -> list[str]:
         """Return every conversion violation in the method and its nested regions."""
-        target = cls(method.dialects)
-        target.run(method)
+        target = cls()
+        Walk(target).rewrite(method.code)
         return target.violations

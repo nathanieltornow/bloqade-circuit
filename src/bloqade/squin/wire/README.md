@@ -17,7 +17,7 @@ reconstructed = WireToSquin().emit(wired)
 
 | Stage | Kirin mechanism | Result |
 | --- | --- | --- |
-| Check source | `ValidationSuite`, `Forward`, `interp.MethodTable` | Check source structure and types, then collect static callees. |
+| Check source | `ValidationSuite`, `Walk` | Check source structure and types, then collect static callees. |
 | Emit | `EmitABC`, `EmitFrame`, `interp.MethodTable`, `ssacfg.Concrete` | Build a fresh wire method from the source method. |
 | Clean up | `Fixpoint`, `Walk`, `DeadCodeElimination` | Delete unused classical expressions, including source slice objects. |
 | Infer types | `TypeInfer` | Resolve types of emitted classical operations and specialized library operations. |
@@ -27,9 +27,10 @@ reconstructed = WireToSquin().emit(wired)
 It converts user callees first and supplies their validated wire methods to the caller's emitter.
 Each callee must pass the same conversion target and validation.
 
+`reachable` in `squin/rewrite/wire/driver.py` lists the user callees before their callers and rejects recursion.
 Before emission, a `ValidationSuite` runs `StructureValidation` for source structure and types.
-`SourceValidation` then checks region forms and static calls.
-The driver reads the callees from the `func.Invoke` operations of the source method.
+The emitter rejects each source form that it cannot convert where it meets the form.
+It requires static calls, and regions only of functions, loops and branches, each with one block.
 Emission visits each source statement once per method conversion.
 Kirin's region interpreter controls statement order and fills the frame after each operation.
 Standard library wrappers execute through nested emission frames with shared output and wire state.

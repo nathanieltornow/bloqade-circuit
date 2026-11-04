@@ -26,7 +26,7 @@ from bloqade.squin.wire.signature import (
     output_types,
 )
 
-from .base import EmitWire, WireFrame
+from .base import EmitWire, WireFrame, body_of
 from .values import (
     Grid,
     Qubit,
@@ -69,7 +69,7 @@ class Functions(interp.MethodTable):
                 "The function return has the impossible type Bottom.", stmt
             )
         layout = Layout.of(stmt.signature)
-        block = stmt.body.blocks[0]
+        block = body_of(stmt.body, stmt, len(stmt.signature.inputs) + 1)
         input_types = tuple(parameter_type(kind) for kind in stmt.signature.inputs)
         # The emitted body decides the output type, so the self argument gets its
         # final type after the body.
@@ -124,6 +124,11 @@ class Functions(interp.MethodTable):
                 "Wire conversion requires a function-level return.", stmt
             )
         return interp.ReturnValue(frame.get(stmt.value))
+
+    @interp.impl(func.Call)
+    def call(self, emit: EmitWire, frame: WireFrame, stmt: func.Call) -> tuple[()]:
+        """Reject a call through a function value, which names no static callee."""
+        raise WireConversionError("Wire emission requires a static call target.", stmt)
 
     @interp.impl(func.Invoke)
     def invoke(

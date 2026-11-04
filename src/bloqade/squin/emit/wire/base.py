@@ -80,6 +80,25 @@ class WireFrame(EmitFrame[Value]):
                 )
 
 
+def body_of(region: ir.Region, node: ir.Statement, count: int) -> ir.Block:
+    """Return the one block of the source region `region` of `node`.
+
+    The emitter builds one output block for each region, so a region with several
+    blocks has no wire form. The block must take `count` arguments, which are the
+    values that `node` passes into the region.
+    """
+    if len(region.blocks) != 1:
+        raise WireConversionError(
+            "Wire emission requires single-block structured regions.", node
+        )
+    block = region.blocks[0]
+    if len(block.args) != count:
+        raise WireConversionError(
+            "Region arguments must match the supplied inputs.", node
+        )
+    return block
+
+
 @dataclass
 class EmitWire(EmitABC[WireFrame, Value]):
     """Translate source operations with method tables and explicit per-region wire state."""
@@ -370,8 +389,14 @@ class EmitWire(EmitABC[WireFrame, Value]):
         """Copy a classical operation with mapped operands.
 
         The quantum operations of each dialect have their own method table, such as
-        the tables in `gates.py`. A statement on qubits without one has no wire form.
+        the tables in `gates.py`. A statement on qubits without one has no wire form,
+        and neither has a statement with regions other than a function, a loop or a
+        branch.
         """
+        if node.regions:
+            raise WireConversionError(
+                "Wire emission requires function, loop or branch regions.", node
+            )
         values = frame.get_values(node.args)
         if (
             node.regions

@@ -11,7 +11,7 @@ from kirin.dialects import scf, ssacfg
 
 from bloqade.squin.wire.errors import WireConversionError
 
-from .base import EmitWire, WireFrame
+from .base import EmitWire, WireFrame, body_of
 from .values import Value, contains_location
 
 
@@ -85,7 +85,7 @@ class ControlFlow(interp.MethodTable):
             emit.classical_value(frame, initial[i]) for i in classical_indices
         )
         iterable = emit.classical_value(frame, frame.get(stmt.iterable))
-        source_args = stmt.body.blocks[0].args
+        source_args = body_of(stmt.body, stmt, len(stmt.initializers) + 1).args
         with emit.new_frame(stmt, has_parent_access=True) as body:
             body.site, body.current_stmt = frame.site, stmt
             arguments = list(initial)
@@ -136,7 +136,7 @@ class ControlFlow(interp.MethodTable):
                 # argument.
                 arguments = tuple(
                     body.output.args.append_from(arg.type, arg.name)
-                    for arg in source.blocks[0].args
+                    for arg in body_of(source, stmt, 1).args
                 )
                 body.latest = dict(frame.latest)
                 yielded = emit.frame_call_region(body, stmt, source, *arguments)
