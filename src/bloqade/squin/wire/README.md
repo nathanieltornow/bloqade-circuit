@@ -439,4 +439,5 @@ Closures, list maps and direct iteration over qubit registers also exceed that c
 Indexed loops, broadcasts and calls with whole-register or scalar-qubit arguments can convert directly.
 The conversion tests have no expected-failure markers.
 The pipeline emits wire operations and removes unused classical expressions.
-It omits common-subexpression elimination, gate cancellation, angle merging and qubit reuse.
+It omits common-subexpression elimination and qubit reuse.
+Register unpacking and the merge of native rotations run only when a caller asks for them.
