@@ -6,11 +6,11 @@ from test_roundtrip import CASES, calls, simulate, cancelling
 
 from bloqade.qubit import stmts as qubit_stmts
 from bloqade.squin.wire import stmts as wire_stmts
-from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.rewrite.wire.driver import reachable
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
 from bloqade.squin.analysis.validation.wire import WireValidation
+from bloqade.squin.analysis.validation.wire.target import ConversionTarget
 
 
 def emitted(kernel: ir.Method) -> ir.Method:

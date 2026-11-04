@@ -21,7 +21,7 @@ reconstructed = WireToSquin().emit(wired)
 | Emit | `EmitABC`, `EmitFrame`, `interp.MethodTable`, `ssacfg.Concrete` | Build a fresh wire method from the source method. |
 | Clean up | `Fixpoint`, `Walk`, `DeadCodeElimination` | Delete unused classical expressions, including source slice objects. |
 | Infer types | `TypeInfer` | Resolve types of emitted classical operations and specialized library operations. |
-| Check output | `ConversionTarget`, wire validation passes | Require complete wire conversion and valid ownership. |
+| Check output | `WireValidation`, which starts with `ConversionTarget` | Require complete wire conversion and valid ownership. |
 
 `SquinToWire.emit()` reads the source method and constructs a separate output method.
 It converts user callees first and supplies their validated wire methods to the caller's emitter.
@@ -272,6 +272,7 @@ Repeated public conversions clear the cache of converted methods.
 
 | Check | Required property |
 | --- | --- |
+| `ConversionTarget` | The method holds only wire operations and classical operations without qubit references. |
 | `StructureValidation` | Kirin verifies method structure and types. |
 | `BoundaryValidation` | Calls, returns, tuples, loops and branches declare a type that names every quantum field. |
 | `LinearityValidation` | Each wire, register and quantum tuple field has one use on each execution path. |

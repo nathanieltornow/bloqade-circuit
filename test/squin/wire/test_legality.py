@@ -8,9 +8,9 @@ from test_roundtrip import ladder
 from bloqade import squin
 from bloqade.types import QubitType
 from bloqade.squin.wire import Gate, GateKind, Operation, WireConversionError
-from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.analysis.validation.wire import StructureValidation
+from bloqade.squin.analysis.validation.wire.target import ConversionTarget
 
 
 @squin.kernel

@@ -6,9 +6,9 @@ from kirin.ir.exception import ValidationErrorGroup
 from bloqade import squin
 from bloqade.squin.emit.wire import EmitWire
 from bloqade.squin.wire.errors import WireConversionError
-from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.analysis.validation.wire import WireValidation, RegisterValidation
+from bloqade.squin.analysis.validation.wire.target import ConversionTarget
 
 
 @squin.kernel

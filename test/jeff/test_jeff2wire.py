@@ -11,11 +11,11 @@ from bloqade.jeff import JeffToWire, WireToJeff
 from bloqade.squin.wire import stmts as wire, kernel as wire_kernel
 from bloqade.squin.wire.types import RegisterType
 from bloqade.squin.wire.ownership import mark_owned
-from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.rewrite.wire.driver import reachable
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
 from bloqade.squin.analysis.validation.wire import WireValidation
+from bloqade.squin.analysis.validation.wire.target import ConversionTarget
 
 from . import test_roundtrip as examples
 from .helpers import simulate, roundtrips

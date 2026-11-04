@@ -10,10 +10,10 @@ from bloqade import squin
 from bloqade.types import Qubit
 from bloqade.squin.wire import WireConversionError, stmts
 from bloqade.squin.emit.wire import EmitWire
-from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
 from bloqade.squin.analysis.validation.wire import WireValidation
+from bloqade.squin.analysis.validation.wire.target import ConversionTarget
 
 
 def test_emission_visits_each_source_statement_once_and_preserves_source(monkeypatch):

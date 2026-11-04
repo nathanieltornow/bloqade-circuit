@@ -9,8 +9,8 @@ from kirin.ir.exception import ValidationErrorGroup
 from bloqade import squin
 from bloqade.types import Qubit, MeasurementResult
 from bloqade.squin.wire import WireConversionError
-from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.passes.squin_to_wire import SquinToWire
+from bloqade.squin.analysis.validation.wire.target import ConversionTarget
 
 
 @squin.kernel

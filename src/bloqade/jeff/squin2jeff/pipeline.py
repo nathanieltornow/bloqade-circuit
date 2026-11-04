@@ -17,7 +17,6 @@ from bloqade.squin.wire.stmts import Operation
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.ownership import KEY as OWNED
 from bloqade.jeff.analysis.validation import LinearityValidation, StructureValidation
-from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.rewrite.wire.driver import reachable
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.analysis.validation.wire import WireValidation
@@ -44,12 +43,6 @@ class WireToJeff:
             raise ValueError("WireToJeff expects squin.wire kernel dialects.")
         methods = reachable(method)
         for callee in methods:
-            if illegal := ConversionTarget.check(callee):
-                raise WireConversionError(
-                    "Jeff requires complete wire conversion: "
-                    f"{', '.join(sorted(set(illegal)))}.",
-                    callee.code,
-                )
             WireValidation().check(callee)
         copies = {
             source: source.similar(jeff_kernel.union(wire_kernel)) for source in methods

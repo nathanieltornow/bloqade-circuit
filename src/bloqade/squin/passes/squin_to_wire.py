@@ -9,8 +9,6 @@ from kirin.validation import ValidationSuite
 
 from bloqade.squin.emit.wire import EmitWire
 from bloqade.squin.wire.group import is_wire
-from bloqade.squin.wire.errors import WireConversionError
-from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.emit.wire.functions import is_library
 from bloqade.squin.rewrite.wire.driver import reachable
 from bloqade.squin.analysis.validation.wire import (
@@ -59,11 +57,5 @@ class SquinToWire:
         ).emit_method()
         Fixpoint(Walk(DeadCodeElimination())).rewrite(method.code)
         TypeInfer(method.dialects)(method)
-        if violations := ConversionTarget.check(method):
-            raise WireConversionError(
-                f"'{method.sym_name}' violates the wire conversion target at: "
-                + ", ".join(sorted(set(violations))),
-                method.code,
-            )
         WireValidation().check(method)
         return method

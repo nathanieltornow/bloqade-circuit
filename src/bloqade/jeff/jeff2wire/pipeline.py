@@ -19,7 +19,6 @@ from bloqade.jeff.analysis.validation import (
     StructureValidation,
     JeffToSquinValidation,
 )
-from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.rewrite.wire.driver import CheckedFixpoint
 from bloqade.squin.analysis.validation.wire import WireValidation
 
@@ -106,11 +105,5 @@ class JeffToWire:
             copy.callable_region.blocks[0].args[0].type = types.MethodType[
                 list(inputs), returned.value.type
             ]
-            if illegal := ConversionTarget.check(copy):
-                raise WireConversionError(
-                    "Jeff conversion left unsupported operations: "
-                    f"{', '.join(sorted(set(illegal)))}.",
-                    copy.code,
-                )
             WireValidation().check(copy)
         return self.methods[method]
