@@ -8,12 +8,9 @@ register as a wire, and `Release` puts the wire back. A register type can carry 
 static number of qubits, such as `Register[3]`.
 """
 
-import math
-
 from kirin import types
-from kirin.dialects import ilist
 
-from bloqade.types import QubitType, is_subtype
+from bloqade.types import is_subtype
 
 
 class Wire:
@@ -38,12 +35,17 @@ def register_type(length: int | None) -> types.TypeAttribute:
     return types.Generic(Register, types.Literal(length))
 
 
+def literal_length(length: types.TypeAttribute) -> int | None:
+    """Return the integer of the length type `length`, such as 3 for `Literal(3)`."""
+    if isinstance(length, types.Literal) and isinstance(length.data, int):
+        return length.data
+    return None
+
+
 def register_length(typ: types.TypeAttribute) -> int | None:
     """Return the static number of qubits of a register type, or None."""
     if isinstance(typ, types.Generic) and is_subtype(typ, RegisterType) and typ.vars:
-        length = typ.vars[0]
-        if isinstance(length, types.Literal) and isinstance(length.data, int):
-            return length.data
+        return literal_length(typ.vars[0])
     return None
 
 
@@ -89,50 +91,3 @@ def linear_paths(typ: types.TypeAttribute) -> tuple[tuple[int, ...], ...]:
             for path in linear_paths(member)
         )
     raise ValueError("Quantum containers must use fixed tuple fields.")
-
-
-def quantum_type(typ: types.TypeAttribute) -> types.TypeAttribute | None:
-    """Return the linear type of a scalar qubit or a nested qubit register."""
-    if isinstance(typ, types.BottomType):
-        return None
-    if is_subtype(typ, QubitType) or is_subtype(typ, WireType):
-        return WireType
-    if is_subtype(typ, RegisterType):
-        return RegisterType
-    if isinstance(typ, types.Generic) and is_subtype(typ, ilist.IListType):
-        if quantum_type(typ.vars[0]) is not None:
-            return RegisterType
-    return None
-
-
-def typed_length(typ: types.TypeAttribute) -> int | None:
-    """Return a list's declared constant length, if its type supplies one."""
-    if isinstance(typ, types.Generic) and is_subtype(typ, ilist.IListType):
-        length = typ.vars[1]
-        if isinstance(length, types.Literal) and isinstance(length.data, int):
-            return length.data
-    return None
-
-
-def register_shape(typ: types.TypeAttribute) -> tuple[int | None, ...]:
-    """Return the source register dimensions in outer-to-inner order."""
-    shape = []
-    while isinstance(typ, types.Generic) and is_subtype(typ, ilist.IListType):
-        shape.append(typed_length(typ))
-        typ = typ.vars[0]
-    return tuple(shape)
-
-
-def parameter_type(typ: types.TypeAttribute) -> types.TypeAttribute:
-    """Return the wire type of a function parameter of the source type `typ`.
-
-    A register keeps its number of qubits if the source type gives every
-    dimension. For example, `IList[IList[Qubit, 2], 3]` becomes `Register[6]`.
-    """
-    linear = quantum_type(typ)
-    if linear is None:
-        return typ
-    shape = register_shape(typ)
-    if linear == RegisterType and shape and all(size is not None for size in shape):
-        return register_type(math.prod(size for size in shape if size is not None))
-    return linear

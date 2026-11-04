@@ -6,15 +6,20 @@ parameter, so `answer = f(q, n)` becomes `answer, q_next = f_wire(q, n)`.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from collections.abc import Sequence
 
 from kirin import types
-from kirin.dialects import func
+from kirin.dialects import func, ilist
 
-from bloqade.types import is_subtype
-
-from .types import quantum_type
+from bloqade.types import QubitType, is_subtype
+from bloqade.squin.wire.types import (
+    WireType,
+    RegisterType,
+    register_type,
+    literal_length,
+)
 
 
 def output_types(output: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:
@@ -82,3 +87,48 @@ class Layout:
                 f"The wire output type {output} must have {count} results."
             )
         return outputs
+
+
+def quantum_type(typ: types.TypeAttribute) -> types.TypeAttribute | None:
+    """Return the linear type of a scalar qubit or a nested qubit register."""
+    if isinstance(typ, types.BottomType):
+        return None
+    if is_subtype(typ, QubitType) or is_subtype(typ, WireType):
+        return WireType
+    if is_subtype(typ, RegisterType):
+        return RegisterType
+    if isinstance(typ, types.Generic) and is_subtype(typ, ilist.IListType):
+        if quantum_type(typ.vars[0]) is not None:
+            return RegisterType
+    return None
+
+
+def list_length(typ: types.TypeAttribute) -> int | None:
+    """Return the static length of a list type, or None."""
+    if isinstance(typ, types.Generic) and is_subtype(typ, ilist.IListType):
+        return literal_length(typ.vars[1])
+    return None
+
+
+def register_shape(typ: types.TypeAttribute) -> tuple[int | None, ...]:
+    """Return the source register dimensions in outer-to-inner order."""
+    shape = []
+    while isinstance(typ, types.Generic) and is_subtype(typ, ilist.IListType):
+        shape.append(list_length(typ))
+        typ = typ.vars[0]
+    return tuple(shape)
+
+
+def parameter_type(typ: types.TypeAttribute) -> types.TypeAttribute:
+    """Return the wire type of a function parameter of the source type `typ`.
+
+    A register keeps its number of qubits if the source type gives every
+    dimension. For example, `IList[IList[Qubit, 2], 3]` becomes `Register[6]`.
+    """
+    linear = quantum_type(typ)
+    if linear is None:
+        return typ
+    shape = register_shape(typ)
+    if linear == RegisterType and shape and all(size is not None for size in shape):
+        return register_type(math.prod(size for size in shape if size is not None))
+    return linear

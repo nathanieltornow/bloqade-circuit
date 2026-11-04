@@ -11,19 +11,17 @@ from bloqade.types import is_subtype
 from bloqade.squin.wire import stmts
 from bloqade.analysis.indices import IndexExpr
 from bloqade.squin.wire.group import wire_group
-from bloqade.squin.wire.types import (
-    WireType,
-    quantum_type,
-    parameter_type,
-    register_shape,
-)
+from bloqade.squin.wire.types import WireType
 from bloqade.squin.wire.errors import (
     WireConversionError,
 )
-from bloqade.squin.wire.signature import (
+from bloqade.squin.rewrite.wire.signature import (
     Layout,
     packed_type,
     output_types,
+    quantum_type,
+    parameter_type,
+    register_shape,
 )
 
 from .base import EmitWire, WireFrame, body_of

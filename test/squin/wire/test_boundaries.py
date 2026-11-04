@@ -12,8 +12,8 @@ from bloqade import squin, native
 from bloqade.types import Qubit, holds_qubits
 from bloqade.squin.wire.types import WireType, RegisterType
 from bloqade.squin.wire.errors import WireConversionError
-from bloqade.squin.wire.signature import output_types
 from bloqade.squin.passes.squin_to_wire import SquinToWire
+from bloqade.squin.rewrite.wire.signature import output_types
 from bloqade.squin.analysis.validation.wire import WireValidation
 
 

@@ -13,8 +13,10 @@ from .group import (
 )
 from .kinds import GateKind as GateKind, NoiseKind as NoiseKind
 from .stmts import (
+    Put as Put,
     Free as Free,
     Gate as Gate,
+    Take as Take,
     Alloc as Alloc,
     Noise as Noise,
     Reset as Reset,
@@ -22,12 +24,18 @@ from .stmts import (
     Length as Length,
     Measure as Measure,
     Release as Release,
+    PutSlice as PutSlice,
     Operation as Operation,
+    TakeSlice as TakeSlice,
     FreeRegister as FreeRegister,
+    JoinRegister as JoinRegister,
+    PackRegister as PackRegister,
     RegisterGate as RegisterGate,
     AllocRegister as AllocRegister,
     RegisterNoise as RegisterNoise,
     RegisterReset as RegisterReset,
+    SplitRegister as SplitRegister,
+    DiscardRegister as DiscardRegister,
     RegisterMeasure as RegisterMeasure,
     RegisterOperation as RegisterOperation,
 )
@@ -37,6 +45,8 @@ from .types import (
     WireType as WireType,
     RegisterType as RegisterType,
     is_linear as is_linear,
+    register_type as register_type,
+    register_length as register_length,
 )
 from .errors import WireConversionError as WireConversionError
 from .traits import (
