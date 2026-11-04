@@ -13,7 +13,7 @@ from kirin.dialects.py.len import Len
 
 from bloqade.types import holds_qubits
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Sym, Iter, Emitted, Indices, IndexExpr
+from bloqade.analysis.indices import Sym, Iter, Indices, IndexExpr
 from bloqade.squin.wire.types import WireType
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.traits import Threads
@@ -190,11 +190,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
     def emitted_symbol(self, frame: WireFrame, symbol: Sym) -> ir.SSAValue:
         """Return the emitted integer of a source index symbol.
 
-        An `Iter` symbol maps to the emitted loop index, and an `Emitted` symbol is
-        already emitted.
+        An `Iter` symbol maps to the emitted loop index.
         """
-        if isinstance(symbol, Emitted):
-            return symbol.value
         if isinstance(symbol, Iter):
             source: ir.SSAValue = symbol.stmt.regions[0].blocks[0].args[0]
         else:

@@ -42,14 +42,6 @@ class IndexAnalysis(Forward[Index]):
     keys = (KEY,)
     lattice = Index
 
-    def run(self, method: ir.Method, *args: Index, **kwargs: Index):
-        """Analyze `method`, with each parameter as a symbol of its own by default."""
-        if not args and not kwargs:
-            args = tuple(
-                own_index(arg) for arg in method.callable_region.blocks[0].args[1:]
-            )
-        return super().run(method, *args, **kwargs)
-
     def method_self(self, method: ir.Method) -> Index:
         """Return no index for the function object."""
         return UnknownIndex()

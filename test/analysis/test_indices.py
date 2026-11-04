@@ -86,8 +86,10 @@ def odd_slot(n: int):
 
 
 def test_the_analysis_runs_on_a_kernel_with_symbolic_parameters():
-    frame, _ = IndexAnalysis(odd_slot.dialects).run(odd_slot)
     n = odd_slot.callable_region.blocks[0].args[1]
+    frame, _ = IndexAnalysis(odd_slot.dialects).run(
+        odd_slot, KnownIndex(IndexExpr.of(n))
+    )
     facts = {value.name: fact for value, fact in frame.entries.items() if value.name}
     assert facts["k"] == KnownIndex(IndexExpr.of(n).scale(2) - 1)
     assert facts["qs"] == UnknownIndex()

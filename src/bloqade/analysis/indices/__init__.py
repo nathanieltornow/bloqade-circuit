@@ -5,7 +5,6 @@ from .expr import (
     Sym as Sym,
     Iter as Iter,
     Slice as Slice,
-    Emitted as Emitted,
     IndexExpr as IndexExpr,
     lift as lift,
     loop_values as loop_values,

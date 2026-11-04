@@ -35,24 +35,13 @@ class Iter:
         return f"%{self.stmt.name}"
 
 
-@dataclass(frozen=True)
-class Emitted:
-    """A symbol for an integer of the output IR that has no source value."""
-
-    value: ir.SSAValue
-
-    def __repr__(self) -> str:
-        """Return the name of the emitted value, such as `%i`."""
-        return _name(self.value)
-
-
 def _name(value: ir.SSAValue) -> str:
     """Return the printed name of an SSA value, such as `%n`."""
     return f"%{value.name}" if value.name else "%?"
 
 
-Sym = ir.SSAValue | Iter | Emitted
-"""Name an integer value, the iteration variable of a loop or an emitted integer."""
+Sym = ir.SSAValue | Iter
+"""Name an integer value or the iteration variable of a loop."""
 
 
 def _values(sym: Sym) -> range | None:
@@ -130,10 +119,6 @@ class IndexExpr:
         for s, a in self.terms:
             out = out + mapping.get(s, IndexExpr.of(s)).scale(a)
         return out
-
-    def symbols(self) -> frozenset[Sym]:
-        """Return the symbols that the index uses."""
-        return frozenset(s for s, _ in self.terms)
 
     def bounds(self) -> tuple[int, int] | None:
         """Return the smallest and the largest value of the index.
