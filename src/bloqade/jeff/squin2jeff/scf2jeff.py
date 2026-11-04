@@ -9,7 +9,7 @@ from bloqade.types import is_subtype
 from bloqade.jeff.forms import loop_range
 from bloqade.jeff.dialects import stmts
 
-from .kinds import JeffEmissionError, put, fitted, replace, jeff_kind
+from .kinds import put, fitted, replace, jeff_kind
 
 
 class ControlFlow(RewriteRule):
@@ -36,7 +36,7 @@ class ControlFlow(RewriteRule):
 def separate(node: ir.Statement, values: tuple[ir.SSAValue, ...]) -> None:
     """Reject a tuple among `values`, because Jeff has no tuples."""
     if any(is_subtype(value.type, types.Tuple) for value in values):
-        raise JeffEmissionError(
+        raise ir.ValidationError(
             node, f"a region of {node.name} requires separate scalar or array results"
         )
 
@@ -60,7 +60,7 @@ def loop(node: scf.For) -> None:
                 put(stmts.ConstInt(value=step), node).result,
             )
         case _:
-            raise JeffEmissionError(node, f"{node.iterable} is not a range")
+            raise ir.ValidationError(node, f"{node.iterable} is not a range")
     region = node.body
     region.detach()
     block = region.blocks[0]
@@ -101,7 +101,7 @@ def switch(node: scf.IfElse) -> None:
 def yielded(node: scf.Yield, kinds: tuple[types.TypeAttribute, ...]) -> None:
     """Replace the region yield `node` with a Jeff yield of values of the types `kinds`."""
     if len(node.values) != len(kinds):
-        raise JeffEmissionError(
+        raise ir.ValidationError(
             node, "The region yield must match its declared result count."
         )
     separate(node, tuple(node.values))

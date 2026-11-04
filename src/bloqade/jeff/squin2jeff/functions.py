@@ -13,7 +13,7 @@ from bloqade.jeff.dialects import stmts
 from bloqade.squin.wire.ownership import owns_inputs
 from bloqade.jeff.dialects.stmts.call import declared_outputs
 
-from .kinds import JeffEmissionError, put, fitted, replace, jeff_kind
+from .kinds import put, fitted, replace, jeff_kind
 
 
 @dataclass
@@ -84,15 +84,15 @@ def returned(node: func.Return) -> None:
     """Replace `node` with a Jeff return of each output in the declared order."""
     function = node.parent_stmt
     if not isinstance(function, func.Function):
-        raise JeffEmissionError(node, "Jeff requires returns at function scope.")
+        raise ir.ValidationError(node, "Jeff requires returns at function scope.")
     values = flat_values(node.value)
     kinds = declared_outputs(function.signature.output)
     if len(values) != len(kinds):
-        raise JeffEmissionError(
+        raise ir.ValidationError(
             node, "The return values must match the declared function outputs."
         )
     if any(is_subtype(value.type, types.Tuple) for value in values):
-        raise JeffEmissionError(
+        raise ir.ValidationError(
             node, "Jeff returns require flat scalar or array values."
         )
     outputs = (fitted(v, k, node) for v, k in zip(values, kinds, strict=True))

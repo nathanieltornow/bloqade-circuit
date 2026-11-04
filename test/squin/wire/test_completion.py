@@ -51,7 +51,7 @@ def call_identical_operands():
 @pytest.mark.parametrize(
     "failure",
     [
-        WireConversionError("unsupported callee operation"),
+        WireConversionError("unsupported callee operation", identical_operands.code),
         RuntimeError("compiler failure"),
         ValueError("invalid compiler state"),
     ],

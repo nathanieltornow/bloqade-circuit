@@ -19,15 +19,6 @@ from bloqade.squin.rewrite.wire.driver import put as insert, replace as replace
 StatementT = TypeVar("StatementT", bound=ir.Statement)
 
 
-class JeffEmissionError(Exception):
-    """Report a wire statement that has no Jeff form."""
-
-    def __init__(self, node: ir.Statement, message: str):
-        """Keep the statement and the condition that it fails."""
-        self.node = node
-        super().__init__(message)
-
-
 def jeff_kind(kind: types.TypeAttribute) -> types.TypeAttribute:
     """Return the Jeff type of a value of the squin type `kind`.
 

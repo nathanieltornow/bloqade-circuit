@@ -40,7 +40,8 @@ class CheckedFixpoint(Fixpoint):
         result = super().rewrite(node)
         if result.exceeded_max_iter:
             raise WireConversionError(
-                f"Wire rewriting did not converge within {self.max_iter} iterations."
+                f"Wire rewriting did not converge within {self.max_iter} iterations.",
+                node,
             )
         return result
 
@@ -68,7 +69,8 @@ def reachable(
     def visit(current: ir.Method) -> None:
         if current in active:
             raise WireConversionError(
-                f"Wire conversion does not support recursive calls to '{current.sym_name}'."
+                f"Wire conversion does not support recursive calls to '{current.sym_name}'.",
+                current.code,
             )
         if current in done or skip(current):
             return

@@ -16,7 +16,7 @@ from bloqade.jeff.types import IntArrayType, qureg, is_subtype, qureg_length
 from bloqade.squin.wire import stmts as wire
 from bloqade.jeff.dialects import stmts
 
-from .kinds import JeffEmissionError, put, radians, replace, bitwidth
+from .kinds import put, radians, replace, bitwidth
 
 DIRECT: dict[type[ir.Statement], type[ir.Statement]] = {
     wire.Alloc: stmts.Alloc,
@@ -131,7 +131,7 @@ def negated(node: qubit_stmts.IsZero) -> ir.SSAValue:
         case stmts.IntArrayConst(values=values):
             size = len(values)
         case _:
-            raise JeffEmissionError(node, f"{bits} is a bit array of unknown length")
+            raise ir.ValidationError(node, f"{bits} is a bit array of unknown length")
     items: list[ir.SSAValue] = []
     for position in range(size):
         at = put(stmts.ConstInt(value=position), node).result
@@ -164,7 +164,7 @@ def broadcast(node: wire.RegisterOperation) -> tuple[ir.SSAValue, ...]:
     loop that fills arrays of runtime length.
     """
     if not supported(node):
-        raise JeffEmissionError(node, f"Jeff has no form for '{node.label}'.")
+        raise ir.ValidationError(node, f"Jeff has no form for '{node.label}'.")
     registers = list(node.linear)
     lengths = [qureg_length(register.type) for register in registers]
     if node.truncates:

@@ -22,7 +22,6 @@ from bloqade.squin.rewrite.wire.driver import reachable
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.analysis.validation.wire import WireValidation
 
-from .kinds import JeffEmissionError
 from .isolate import IsolateRegions
 from .py2jeff import Classical
 from .quantum import Quantum
@@ -47,7 +46,9 @@ class WireToJeff:
         for callee in methods:
             if illegal := ConversionTarget.check(callee):
                 raise WireConversionError(
-                    f"Jeff requires complete wire conversion: {', '.join(sorted(set(illegal)))}."
+                    "Jeff requires complete wire conversion: "
+                    f"{', '.join(sorted(set(illegal)))}.",
+                    callee.code,
                 )
             WireValidation().check(callee)
         copies = {
@@ -64,10 +65,9 @@ class WireToJeff:
                 cleanup.rewrite(copy.code)
                 Walk(rules, region_first=True).rewrite(copy.code)
                 cleanup.rewrite(copy.code)
-            except JeffEmissionError as error:
+            except ir.ValidationError as error:
                 raise ValidationErrorGroup(
-                    f"Jeff emission failed for '{method.sym_name}'.",
-                    [ir.ValidationError(method.code, str(error))],
+                    f"Jeff emission failed for '{method.sym_name}'.", [error]
                 ) from error
             copy.dialects = jeff_kernel
             IsolateRegions(copy.dialects)(copy)
@@ -108,7 +108,7 @@ class Unsupported(RewriteRule):
         ):
             return RewriteResult()
         name = node.label if isinstance(node, Operation) else node.name
-        raise JeffEmissionError(node, f"Jeff has no form for '{name}'.")
+        raise ir.ValidationError(node, f"Jeff has no form for '{name}'.")
 
 
 @dataclass
@@ -125,7 +125,6 @@ class SquinToJeff:
             wired = SquinToWire().emit(method)
         except WireConversionError as error:
             raise ValidationErrorGroup(
-                f"SquinToJeff cannot convert '{method.sym_name}'.",
-                [ir.ValidationError(method.code, str(error))],
+                f"SquinToJeff cannot convert '{method.sym_name}'.", [error]
             ) from error
         return WireToJeff().emit(wired)

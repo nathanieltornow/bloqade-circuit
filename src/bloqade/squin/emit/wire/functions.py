@@ -19,7 +19,6 @@ from bloqade.squin.wire.types import (
 )
 from bloqade.squin.wire.errors import (
     WireConversionError,
-    UnsupportedCallContract,
 )
 from bloqade.squin.wire.signature import (
     Layout,
@@ -85,7 +84,7 @@ class Functions(interp.MethodTable):
 
         ordinary = ordinary_values(emit, frame, stmt, end, layout, returned)
         if any(contains_location(value) for value in ordinary):
-            raise UnsupportedCallContract(
+            raise WireConversionError(
                 "A function cannot return qubits. Allocate them in the caller and"
                 " pass them in.",
                 end,
@@ -264,7 +263,7 @@ def run_library(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
 def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
     """Call a converted function and continue the borrowed qubits with its results."""
     if any(is_subtype(value.type, types.Tuple) for value in stmt.inputs):
-        raise UnsupportedCallContract(
+        raise WireConversionError(
             "Wire calls require separate arguments for tuple fields.", stmt
         )
     callee = stmt.callee.code
@@ -304,7 +303,7 @@ def borrowed_operands(
     """
     operands = [arguments[i] for i in layout.borrowed_positions]
     if not all(isinstance(x, (Qubit, Register, Grid, Element)) for x in operands):
-        raise UnsupportedCallContract(
+        raise WireConversionError(
             "A call requires whole registers or individual qubits.", stmt
         )
     return cast(list[Qubit | Register | Grid | Element], operands)
@@ -326,12 +325,12 @@ def check_shapes(
         kind = parameters[position].type
         if quantum_type(kind) == WireType:
             if not is_qubit(operand):
-                raise UnsupportedCallContract(
+                raise WireConversionError(
                     "A qubit parameter requires one qubit argument.", stmt
                 )
             continue
         if not isinstance(operand, (Register, Grid)):
-            raise UnsupportedCallContract(
+            raise WireConversionError(
                 "A register parameter requires a whole register argument.", stmt
             )
         expected = register_shape(kind)
@@ -339,7 +338,7 @@ def check_shapes(
         if len(expected) != len(actual) or any(
             size is not None and size != given for size, given in zip(expected, actual)
         ):
-            raise UnsupportedCallContract(
+            raise WireConversionError(
                 "A register argument must provably have the shape that its"
                 " parameter declares.",
                 stmt,

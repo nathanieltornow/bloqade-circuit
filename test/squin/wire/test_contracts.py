@@ -13,7 +13,6 @@ from kirin.ir.exception import ValidationErrorGroup
 from bloqade import squin
 from bloqade.types import Qubit
 from bloqade.squin.wire import WireConversionError
-from bloqade.squin.wire.errors import UnsupportedCallContract
 from bloqade.squin.rewrite.wire.driver import CheckedFixpoint
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
@@ -86,7 +85,7 @@ def returned_parameter(q: Qubit) -> Qubit:
 )
 def test_a_function_cannot_return_qubits(kernel):
     before = kernel.code.print_str()
-    with pytest.raises(UnsupportedCallContract, match="cannot return qubits"):
+    with pytest.raises(WireConversionError, match="cannot return qubits"):
         SquinToWire().emit(kernel)
     assert kernel.code.print_str() == before
 
@@ -167,7 +166,7 @@ def tall(grid: ilist.IList[ilist.IList[Qubit, Literal[3]], Literal[2]]):
 
 @pytest.mark.parametrize("kernel", [runtime_register, four_qubits, tall])
 def test_a_register_argument_must_have_the_declared_shape(kernel):
-    with pytest.raises(UnsupportedCallContract, match="shape that its parameter"):
+    with pytest.raises(WireConversionError, match="shape that its parameter"):
         SquinToWire().emit(kernel)
 
 

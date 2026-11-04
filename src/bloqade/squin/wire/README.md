@@ -258,7 +258,7 @@ Quantum call operands must name separate scalar qubits or whole registers.
 Calls with register slices or quantum containers fail.
 A register argument must provably have the shape that its parameter type declares.
 A qubit parameter takes one qubit, and a register parameter takes a whole register.
-`UnsupportedCallContract` identifies unsupported argument layouts, argument shapes and returned qubits.
+The emitter reports unsupported argument layouts, argument shapes and returned qubits as `WireConversionError`.
 An operation that uses one qubit or register twice fails with a plain `WireConversionError`.
 Callee validation failures propagate directly to the caller.
 Each conversion error retains its operation, source location and failed condition.

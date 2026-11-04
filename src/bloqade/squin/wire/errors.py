@@ -1,20 +1,21 @@
-"""Report source locations and conditions that prevent conversion."""
+"""Report the source statement and condition that prevent a wire conversion."""
 
 from kirin import ir
 
 
-class WireConversionError(Exception):
-    """Report the source operation and condition that prevent wire conversion."""
+class WireConversionError(ir.ValidationError):
+    """Report the statement and the condition that prevent a wire conversion.
 
-    def __init__(self, condition: str, node: ir.Statement | None = None):
-        """Retain the failed condition and source location for callers and diagnostic tests."""
-        self.condition = condition
-        self.node = node
-        self.source = node.source if node is not None else None
-        super().__init__(
-            condition if self.source is None else f"{condition}\n{self.source!r}"
-        )
+    The error is a Kirin `ValidationError`, so it records `node` and its source
+    location. Its own class lets a caller tell a conversion failure from the other
+    validation errors of Kirin.
+    """
 
+    def __init__(self, condition: str, node: ir.IRNode) -> None:
+        """Record the failed condition at the statement `node`."""
+        super().__init__(node, condition)
 
-class UnsupportedCallContract(WireConversionError):
-    """Report an unsupported layout of call arguments or results."""
+    def __str__(self) -> str:
+        """Return the condition, followed by its source location if it is known."""
+        condition = super().__str__()
+        return condition if self.source is None else f"{condition}\n{self.source!r}"

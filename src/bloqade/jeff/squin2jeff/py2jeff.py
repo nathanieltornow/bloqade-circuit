@@ -17,7 +17,6 @@ from bloqade.jeff.dialects import stmts
 from bloqade.jeff.dialects.stmts.call import declared_outputs
 
 from .kinds import (
-    JeffEmissionError,
     put,
     fitted,
     replace,
@@ -88,7 +87,7 @@ def constant_value(
             return put(stmts.ConstInt(value=int(item)), before).result
         case float():
             return put(stmts.ConstFloat(value=item), before).result
-    raise JeffEmissionError(before, f"a constant of type {type(item).__name__}")
+    raise ir.ValidationError(before, f"a constant of type {type(item).__name__}")
 
 
 def is_float(value: ir.SSAValue) -> bool:
@@ -123,7 +122,9 @@ def as_float(value: ir.SSAValue, before: ir.Statement) -> ir.SSAValue:
         return value
     if isinstance(owner := value.owner, stmts.ConstInt):
         return put(stmts.ConstFloat(value=float(owner.value)), before).result
-    raise JeffEmissionError(before, "Jeff cannot convert a runtime integer to a float.")
+    raise ir.ValidationError(
+        before, "Jeff cannot convert a runtime integer to a float."
+    )
 
 
 def binary(node: ir.Statement) -> Values:
@@ -131,7 +132,7 @@ def binary(node: ir.Statement) -> Values:
     kind = type(node)
     lhs, rhs = node.args
     if not all(is_subtype(value.type, types.Int | types.Float) for value in node.args):
-        raise JeffEmissionError(
+        raise ir.ValidationError(
             node, f"'{node.name}' requires scalar numeric operands."
         )
     if kind in SWAPPED:
@@ -146,7 +147,7 @@ def binary(node: ir.Statement) -> Values:
         widest = node.results[0].type.join(lhs.type).join(rhs.type)
         operands = (fitted(lhs, widest, node), fitted(rhs, widest, node))
     if kind not in table:
-        raise JeffEmissionError(
+        raise ir.ValidationError(
             node,
             f"Jeff has no numeric form for '{node.name}' with these operand types.",
         )
@@ -164,7 +165,7 @@ def floored(node: ir.Statement) -> Values:
     and the remainder gains the divisor.
     """
     if not all(is_subtype(value.type, types.Int) for value in node.args):
-        raise JeffEmissionError(
+        raise ir.ValidationError(
             node, f"'{node.name}' requires integer operands in Jeff."
         )
     a, b = (fitted(value, types.Int, node) for value in node.args)
@@ -200,7 +201,7 @@ def boolop(node: ir.Statement) -> Values:
 def integer_only(node: ir.Statement, value: ir.SSAValue) -> None:
     """Reject a bool operand, for which Python gives an int result."""
     if is_subtype(value.type, types.Bool):
-        raise JeffEmissionError(
+        raise ir.ValidationError(
             node, f"'{node.name}' on a bool requires Python integer semantics."
         )
 
@@ -273,7 +274,7 @@ def item(node: py.indexing.GetItem) -> Values | None:
     container = node.obj
     if isinstance(container.owner, py.tuple.New):
         if (position := constant_int(node.index)) is None:
-            raise JeffEmissionError(
+            raise ir.ValidationError(
                 node, f"{container} is not a tuple read at a constant"
             )
         return (container.owner.args[position],)

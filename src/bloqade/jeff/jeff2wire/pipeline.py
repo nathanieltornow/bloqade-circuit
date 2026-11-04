@@ -49,7 +49,7 @@ def reachable(method: ir.Method) -> list[ir.Method]:
     def visit(method):
         if method in active:
             raise WireConversionError(
-                "Jeff wire conversion does not support recursive calls."
+                "Jeff wire conversion does not support recursive calls.", method.code
             )
         if method in done:
             return
@@ -108,7 +108,9 @@ class JeffToWire:
             ]
             if illegal := ConversionTarget.check(copy):
                 raise WireConversionError(
-                    f"Jeff conversion left unsupported operations: {', '.join(sorted(set(illegal)))}."
+                    "Jeff conversion left unsupported operations: "
+                    f"{', '.join(sorted(set(illegal)))}.",
+                    copy.code,
                 )
             WireValidation().check(copy)
         return self.methods[method]
