@@ -7,19 +7,17 @@ from kirin.passes import Fold, TypeInfer
 from kirin.rewrite import Walk
 from kirin.dialects import func
 from kirin.validation import ValidationSuite
-from kirin.rewrite.abc import RewriteRule, RewriteResult
 from kirin.dialects.scf.unroll import PickIfElse
 
 from bloqade.jeff.dialects import stmts, kernel as jeff_kernel
 from bloqade.squin.wire.group import kernel as wire_kernel
-from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.ownership import mark_owned
 from bloqade.jeff.analysis.validation import (
     LinearityValidation,
     StructureValidation,
     JeffToSquinValidation,
 )
-from bloqade.squin.rewrite.wire.driver import CheckedFixpoint
+from bloqade.squin.rewrite.wire.driver import CheckedFixpoint, reachable
 from bloqade.squin.analysis.validation.wire import WireValidation
 
 from .jeff2py import JeffToPy
@@ -27,41 +25,9 @@ from .rewrite import Retype, Quantum
 from .jeff2scf import JeffToScf
 
 
-@dataclass
-class Callees(RewriteRule):
-    """Collect direct Jeff callees through Kirin's walker."""
-
-    methods: list[ir.Method] = field(default_factory=list)
-
-    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
-        """Record a static callee without changing the call."""
-        if isinstance(node, stmts.Call):
-            self.methods.append(node.callee)
-        return RewriteResult()
-
-
-def reachable(method: ir.Method) -> list[ir.Method]:
-    """Order Jeff methods before their callers and reject recursive call graphs."""
-    done: dict[ir.Method, None] = {}
-    active: set[ir.Method] = set()
-
-    def visit(method):
-        if method in active:
-            raise WireConversionError(
-                "Jeff wire conversion does not support recursive calls.", method.code
-            )
-        if method in done:
-            return
-        active.add(method)
-        calls = Callees()
-        Walk(calls).rewrite(method.code)
-        for callee in calls.methods:
-            visit(callee)
-        active.remove(method)
-        done[method] = None
-
-    visit(method)
-    return list(done)
+def jeff_callee(node: ir.Statement) -> ir.Method | None:
+    """Return the callee of a Jeff `Call`, or None for any other statement."""
+    return node.callee if isinstance(node, stmts.Call) else None
 
 
 @dataclass
@@ -75,7 +41,7 @@ class JeffToWire:
         self.methods = {}
         if method.dialects is not jeff_kernel:
             raise ValueError("JeffToWire expects jeff.kernel dialects.")
-        functions = reachable(method)
+        functions = reachable(method, callee_of=jeff_callee)
         ValidationSuite(
             [StructureValidation, LinearityValidation, JeffToSquinValidation]
         ).validate(method).raise_if_invalid()

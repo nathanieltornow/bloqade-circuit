@@ -46,23 +46,35 @@ class CheckedFixpoint(Fixpoint):
         return result
 
 
+def invoked(node: ir.Statement) -> ir.Method | None:
+    """Return the callee of a `func.Invoke`, or None for any other statement."""
+    return node.callee if isinstance(node, func.Invoke) else None
+
+
 @dataclass
 class Calls(RewriteRule):
     """Collect static callees through Kirin's walker."""
 
+    callee_of: Callable[[ir.Statement], ir.Method | None] = invoked
+    """Return the static callee of a call statement, or None for any other one."""
     callees: dict[ir.Method, None] = field(default_factory=dict)
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Record each direct call without changing its statement."""
-        if isinstance(node, func.Invoke):
-            self.callees[node.callee] = None
+        if (callee := self.callee_of(node)) is not None:
+            self.callees[callee] = None
         return RewriteResult()
 
 
 def reachable(
-    method: ir.Method, skip: Callable[[ir.Method], bool] = lambda _: False
+    method: ir.Method,
+    skip: Callable[[ir.Method], bool] = lambda _: False,
+    callee_of: Callable[[ir.Statement], ir.Method | None] = invoked,
 ) -> list[ir.Method]:
-    """Return reachable methods and reject call cycles before conversion or validation."""
+    """Return the reachable methods, callees first, and reject call cycles.
+
+    `callee_of` names the callee of a call statement, such as a Jeff `Call`.
+    """
     done: dict[ir.Method, None] = {}
     active: set[ir.Method] = set()
 
@@ -75,7 +87,7 @@ def reachable(
         if current in done or skip(current):
             return
         active.add(current)
-        calls = Calls()
+        calls = Calls(callee_of)
         Walk(calls).rewrite(current.code)
         for callee in calls.callees:
             visit(callee)

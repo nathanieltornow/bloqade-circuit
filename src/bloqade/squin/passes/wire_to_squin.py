@@ -25,12 +25,11 @@ class WireToSquin:
         """Return a squin kernel that runs the same program as `method`."""
         for callee in reachable(method):
             WireValidation().check(callee)
-        rewrite = FromWire(wire_dialects=self.wire_dialects)
-        result = rewrite.convert(method)
-        for copy in reversed(list(rewrite.kernels.values())):
+        kernels = FromWire(wire_dialects=self.wire_dialects).convert(method)
+        for copy in kernels.values():
             TypeInfer(copy.dialects)(copy)
             Fold(copy.dialects).unsafe_run(copy)
             Walk(BoundListLengths()).rewrite(copy.code)
             copy.verify()
             copy.verify_type()
-        return result
+        return kernels[method]

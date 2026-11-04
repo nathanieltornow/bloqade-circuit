@@ -30,7 +30,7 @@ from bloqade.squin.wire import stmts
 from bloqade.analysis.indices import Sym, Slice, Indices, IndexExpr
 from bloqade.squin.wire.types import WireType, RegisterType, is_linear, register_length
 from bloqade.squin.wire.traits import Threads
-from bloqade.squin.wire.ownership import owns_inputs
+from bloqade.squin.wire.ownership import Owns, convention
 
 from .calls import CachedCalls
 
@@ -356,7 +356,11 @@ class RegisterAnalysis(CachedCalls[Place]):
         its loops and branches must keep each qubit in its position. Jeff import marks
         consuming functions as owned, and they skip these checks.
         """
-        return not owns_inputs(self.active_functions[-1])
+        function = self.active_functions[-1]
+        return not (
+            isinstance(function, func.Function)
+            and isinstance(convention(function), Owns)
+        )
 
     def frame_call(
         self,

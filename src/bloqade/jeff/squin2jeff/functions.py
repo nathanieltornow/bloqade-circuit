@@ -10,7 +10,7 @@ from kirin.rewrite.abc import RewriteRule, RewriteResult
 from bloqade.types import is_subtype
 from bloqade.jeff.types import QuregType, is_linear
 from bloqade.jeff.dialects import stmts
-from bloqade.squin.wire.ownership import owns_inputs
+from bloqade.squin.wire.ownership import InOut, convention
 from bloqade.jeff.dialects.stmts.call import declared_outputs
 
 from .kinds import put, fitted, replace, jeff_kind
@@ -48,14 +48,15 @@ class Functions(RewriteRule):
 
         A tuple result becomes nested `py.tuple.New` statements of the call results
         in the shape of the wire result, and later rewrites read their fields. The
-        arguments already hold Jeff values. A borrowing callee returns each register
+        arguments already hold Jeff values. An in-out callee returns each register
         argument as the same register, so that result keeps the static length of the
         argument.
         """
         callee = self.methods[node.callee]
         outputs = declared_outputs(callee.return_type)
         made = put(stmts.Call(callee, tuple(node.inputs), outputs), node)
-        if not owns_inputs(node.callee.code):
+        assert isinstance(node.callee.code, func.Function)
+        if isinstance(convention(node.callee.code), InOut):
             borrowed = [value for value in node.inputs if is_linear(value.type)]
             suffix = made.results[len(made.results) - len(borrowed) :]
             for argument, result in zip(borrowed, suffix, strict=True):
