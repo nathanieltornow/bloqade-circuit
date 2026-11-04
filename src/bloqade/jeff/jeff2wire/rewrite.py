@@ -68,6 +68,25 @@ class Retype(RewriteRule):
         return RewriteResult()
 
 
+DIRECT: dict[type[ir.Statement], Callable[..., ir.Statement]] = {
+    stmts.Alloc: wire.Alloc,
+    stmts.Free: wire.Free,
+    stmts.FreeZero: wire.Free,
+    stmts.RegAlloc: wire.AllocRegister,
+    stmts.RegFree: wire.DiscardRegister,
+    stmts.RegFreeZero: wire.DiscardRegister,
+    stmts.Extract: wire.Take,
+    stmts.Insert: wire.Put,
+    stmts.ExtractSlice: wire.TakeSlice,
+    stmts.InsertSlice: wire.PutSlice,
+    stmts.RegSplit: wire.SplitRegister,
+    stmts.RegJoin: wire.JoinRegister,
+    stmts.RegLength: wire.Length,
+    stmts.Reset: wire.Reset,
+}
+"""Map each Jeff statement to the wire statement with the same operands and results."""
+
+
 @dataclass
 class Quantum(RewriteRule):
     """Preserve explicit quantum ownership while replacing operations locally."""
@@ -76,66 +95,65 @@ class Quantum(RewriteRule):
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Replace a quantum operation, call or function return."""
-        direct: dict[type[ir.Statement], Callable[..., ir.Statement]] = {
-            stmts.Alloc: wire.Alloc,
-            stmts.Free: wire.Free,
-            stmts.FreeZero: wire.Free,
-            stmts.RegAlloc: wire.AllocRegister,
-            stmts.RegFree: wire.DiscardRegister,
-            stmts.RegFreeZero: wire.DiscardRegister,
-            stmts.Extract: wire.Take,
-            stmts.Insert: wire.Put,
-            stmts.ExtractSlice: wire.TakeSlice,
-            stmts.InsertSlice: wire.PutSlice,
-            stmts.RegSplit: wire.SplitRegister,
-            stmts.RegJoin: wire.JoinRegister,
-            stmts.RegLength: wire.Length,
-            stmts.Reset: wire.Reset,
-        }
-        if build := direct.get(type(node)):
+        if build := DIRECT.get(type(node)):
             made = put(build(*node.args), node)
             replace(node, *made.results)
-            return RewriteResult(has_done_something=True)
-        if isinstance(node, stmts.RegCreate):
-            made = put(wire.PackRegister(node.wires), node)
-            replace(node, made.result)
-            return RewriteResult(has_done_something=True)
-        if isinstance(node, (stmts.Measure, stmts.MeasureNd)):
-            measured = put(wire.Measure(node.wire), node)
-            if isinstance(node, stmts.MeasureNd):
-                replace(node, *measured.results)
-                return RewriteResult(has_done_something=True)
-            put(wire.Free(measured.results[0]), node)
-            replace(node, measured.results[1])
-            return RewriteResult(has_done_something=True)
-        if isinstance(node, stmts.Gate):
+        elif isinstance(node, stmts.RegCreate):
+            replace(node, put(wire.PackRegister(node.wires), node).result)
+        elif isinstance(node, (stmts.Measure, stmts.MeasureNd)):
+            self.measure(node)
+        elif isinstance(node, stmts.Gate):
             return self.gate(node)
-        if isinstance(node, stmts.Call):
-            callee = self.methods[node.callee]
-            call = put(func.Invoke(node.inputs, callee=callee), node)
-            kinds = tuple(wire_type(value.type) for value in node.results)
-            call.result.type = packed_type(kinds)
-            values = []
-            for i, kind in enumerate(kinds):
-                if len(kinds) == 1:
-                    values.append(call.result)
-                else:
-                    index = put(py.Constant(i), node).result
-                    item = put(py.GetItem(call.result, index), node)
-                    item.result.type = kind
-                    values.append(item.result)
-            replace(node, *values)
-            return RewriteResult(has_done_something=True)
-        if isinstance(node, stmts.Return):
-            if not node.values:
-                value = put(func.ConstantNone(), node).result
-            elif len(node.values) == 1:
-                value = node.values[0]
-            else:
-                value = put(py.tuple.New(node.values), node).result
-            node.replace_by(func.Return(value))
-            return RewriteResult(has_done_something=True)
-        return RewriteResult()
+        elif isinstance(node, stmts.Call):
+            self.call(node)
+        elif isinstance(node, stmts.Return):
+            self.returned(node)
+        else:
+            return RewriteResult()
+        return RewriteResult(has_done_something=True)
+
+    def measure(self, node: stmts.Measure | stmts.MeasureNd) -> None:
+        """Replace a Jeff measurement with a wire measurement.
+
+        `MeasureNd` keeps its qubit. `Measure` frees it after the measurement.
+        """
+        measured = put(wire.Measure(node.wire), node)
+        if isinstance(node, stmts.MeasureNd):
+            replace(node, *measured.results)
+            return
+        put(wire.Free(measured.results[0]), node)
+        replace(node, measured.results[1])
+
+    def call(self, node: stmts.Call) -> None:
+        """Replace a Jeff call with a call of the wire copy of its callee.
+
+        A wire method returns several outputs as one tuple, so each result reads its
+        position of that tuple.
+        """
+        callee = self.methods[node.callee]
+        made = put(func.Invoke(node.inputs, callee=callee), node)
+        kinds = tuple(wire_type(value.type) for value in node.results)
+        made.result.type = packed_type(kinds)
+        if len(kinds) == 1:
+            replace(node, made.result)
+            return
+        values = []
+        for i, kind in enumerate(kinds):
+            index = put(py.Constant(i), node).result
+            item = put(py.GetItem(made.result, index), node)
+            item.result.type = kind
+            values.append(item.result)
+        replace(node, *values)
+
+    def returned(self, node: stmts.Return) -> None:
+        """Replace a Jeff return with a return of None, one value or a tuple."""
+        if not node.values:
+            value = put(func.ConstantNone(), node).result
+        elif len(node.values) == 1:
+            value = node.values[0]
+        else:
+            value = put(py.tuple.New(node.values), node).result
+        node.replace_by(func.Return(value))
 
     def gate(self, node: stmts.Gate) -> RewriteResult:
         """Apply each gate power and map output wires to their declared operand positions."""

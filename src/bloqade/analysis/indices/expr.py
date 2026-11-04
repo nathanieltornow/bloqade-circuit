@@ -55,11 +55,6 @@ Sym = ir.SSAValue | Iter | Emitted
 """Name an integer value, the iteration variable of a loop or an emitted integer."""
 
 
-def _symbol_name(sym: Sym) -> str:
-    """Return the printed name of a symbol, such as `%n`, `%i` or `%i'`."""
-    return _name(sym) if isinstance(sym, ir.SSAValue) else repr(sym)
-
-
 def _values(sym: Sym) -> range | None:
     """Return the constant range of the symbol `sym`, or None if it has none."""
     return sym.values if isinstance(sym, Iter) else None
@@ -78,7 +73,10 @@ class IndexExpr:
 
     def __repr__(self) -> str:
         """Return the index as a sum, such as `2*%i + 1` or `%n - 1`."""
-        named = sorted((_symbol_name(s), a) for s, a in self.terms)
+        named = sorted(
+            (_name(s) if isinstance(s, ir.SSAValue) else repr(s), a)
+            for s, a in self.terms
+        )
         parts: list[str] = []
         for name, a in named:
             factor = "" if abs(a) == 1 else f"{abs(a)}*"

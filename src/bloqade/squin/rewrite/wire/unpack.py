@@ -11,6 +11,7 @@ first.
 """
 
 import itertools
+from typing import TypeAlias
 from dataclasses import dataclass
 
 from kirin import ir
@@ -21,6 +22,7 @@ from bloqade.types import item_type
 from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
 from bloqade.squin.wire.types import register_length
+from bloqade.squin.rewrite.wire.driver import put
 
 
 class ExpandBroadcast(RewriteRule):
@@ -101,16 +103,45 @@ class View:
 
 
 @dataclass(frozen=True)
-class Step:
-    """Record one statement that uses a register of the root and what it reads.
+class BorrowStep:
+    """Record a `Borrow` of the root `position`."""
 
-    `position` is the root position of a `Borrow` or a `Release`. `size` is the size
-    of the view that a `Length` reads.
-    """
+    stmt: stmts.Borrow
+    position: int
 
-    stmt: ir.Statement
-    position: int | None = None
-    size: int | None = None
+
+@dataclass(frozen=True)
+class ReleaseStep:
+    """Record a `Release` into the root `position`."""
+
+    stmt: stmts.Release
+    position: int
+
+
+@dataclass(frozen=True)
+class LengthStep:
+    """Record a `Length` of a view that holds `size` positions."""
+
+    stmt: stmts.Length
+    size: int
+
+
+@dataclass(frozen=True)
+class MoveStep:
+    """Record a `TakeSlice` or a `PutSlice`, which moves positions between views."""
+
+    stmt: stmts.TakeSlice | stmts.PutSlice
+
+
+@dataclass(frozen=True)
+class FreeStep:
+    """Record the free of the root register."""
+
+    stmt: stmts.FreeRegister | stmts.DiscardRegister
+
+
+Step: TypeAlias = BorrowStep | ReleaseStep | LengthStep | MoveStep | FreeStep
+"""Record one statement that uses a register of the root, and what it reads."""
 
 
 class UnpackRegister(RewriteRule):
@@ -144,20 +175,20 @@ class UnpackRegister(RewriteRule):
                 alloc.insert_before(node)
                 slots.append(alloc.result)
         for step in steps:
-            stmt = step.stmt
-            if isinstance(stmt, stmts.Borrow):
-                assert step.position is not None
-                stmt.wire.replace_by(slots[step.position])
-            elif isinstance(stmt, stmts.Release):
-                assert step.position is not None
-                slots[step.position] = stmt.wire
-            elif isinstance(stmt, stmts.Length):
-                count = py.Constant(step.size)
-                count.insert_before(stmt)
-                stmt.result.replace_by(count.result)
-            elif isinstance(stmt, (stmts.FreeRegister, stmts.DiscardRegister)):
-                for wire in slots:
-                    stmts.Free(wire).insert_before(stmt)
+            match step:
+                case BorrowStep(stmt, position):
+                    stmt.wire.replace_by(slots[position])
+                case ReleaseStep(stmt, position):
+                    slots[position] = stmt.wire
+                case LengthStep(stmt, count):
+                    stmt.result.replace_by(put(py.Constant(count), stmt).result)
+                case FreeStep(stmt):
+                    for wire in slots:
+                        put(stmts.Free(wire), stmt)
+                case MoveStep():
+                    # The slots follow the qubits through the move, so the move
+                    # needs no replacement.
+                    pass
         # Each register value has one use, and that use comes later in the block.
         # Deleting from the end keeps every deleted result unused.
         for step in reversed(steps):
@@ -220,12 +251,16 @@ def plan(node: ir.Statement, size: int) -> list[Step] | None:
             if at is None or owner[at] != view.key or full[at] != borrow:
                 return None
             full[at] = not borrow
-            steps.append(Step(stmt, position=at))
+            steps.append(
+                BorrowStep(stmt, at)
+                if isinstance(stmt, stmts.Borrow)
+                else ReleaseStep(stmt, at)
+            )
             if not track(stmt.register_out, view):
                 return None
         elif isinstance(stmt, stmts.Length):
             view = views.pop(stmt.register)
-            steps.append(Step(stmt, size=view.size))
+            steps.append(LengthStep(stmt, view.size))
             if not track(stmt.register_out, view):
                 return None
         elif isinstance(stmt, stmts.TakeSlice):
@@ -238,7 +273,7 @@ def plan(node: ir.Statement, size: int) -> list[Step] | None:
                 return None
             for p in range(part.offset, part.offset + count):
                 owner[p] = part.key
-            steps.append(Step(stmt))
+            steps.append(MoveStep(stmt))
             if not track(stmt.register_out, view) or not track(
                 stmt.slice_register, part
             ):
@@ -253,14 +288,14 @@ def plan(node: ir.Statement, size: int) -> list[Step] | None:
                 return None
             for p in range(part.offset, part.offset + part.size):
                 owner[p] = view.key
-            steps.append(Step(stmt))
+            steps.append(MoveStep(stmt))
             if not track(stmt.register_out, view):
                 return None
         elif isinstance(stmt, (stmts.FreeRegister, stmts.DiscardRegister)):
             view = views.pop(stmt.register)
             if view != root or views or not holds(root, 0, size):
                 return None
-            steps.append(Step(stmt))
+            steps.append(FreeStep(stmt))
             return steps
         else:
             return None

@@ -313,15 +313,6 @@ MEASURE = MeasureEntry(qubit_stmts.Measure, ONE, results=("result",))
 RESET = ResetEntry(qubit_stmts.Reset, ONE)
 
 
-def flat_qubits(kind: types.TypeAttribute) -> bool:
-    """Check whether `kind` is a flat list of qubits, such as `IList[Qubit, N]`."""
-    return (
-        isinstance(kind, types.Generic)
-        and is_subtype(kind, ilist.IListType)
-        and is_subtype(kind.vars[0], QubitType)
-    )
-
-
 def check(entry: Source) -> Source:
     """Return `entry` after a check against the schema of its squin statement.
 
@@ -336,7 +327,13 @@ def check(entry: Source) -> Source:
     name = entry.source.__name__
     if quantum != entry.qubits or classical != entry.params:
         raise ValueError(f"The wire entry of {name} must list its fields in order.")
-    if not all(flat_qubits(arguments[field].type) for field in quantum):
+    lists = [arguments[field].type for field in quantum]
+    if not all(
+        isinstance(kind, types.Generic)
+        and is_subtype(kind, ilist.IListType)
+        and is_subtype(kind.vars[0], QubitType)
+        for kind in lists
+    ):
         raise ValueError(f"The wire entry of {name} must take flat qubit lists.")
     if tuple(fields.results) != entry.results:
         raise ValueError(f"The wire entry of {name} must list its results in order.")

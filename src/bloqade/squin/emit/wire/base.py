@@ -41,7 +41,10 @@ class WireFrame(EmitFrame[Value]):
     """Hold the emission state of one source region.
 
     The inherited `entries` map each source value to its meaning: an emitted
-    classical value, a quantum `Location` or a tuple of meanings.
+    classical value, a quantum `Location` or a tuple of meanings. Kirin's
+    `EmitFrame` has no place for the wire state, so this frame adds it: the block it
+    emits, the latest wire of each qubit, and the allocations to free at its end.
+    Each loop or branch body gets its own frame, so each body has its own wire state.
     """
 
     output: ir.Block = field(default_factory=ir.Block)

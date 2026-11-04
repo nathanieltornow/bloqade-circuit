@@ -237,7 +237,11 @@ def allocate_register(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Re
     root = frame.push(stmts.AllocRegister(size)).results[0]
     frame.latest[root] = root
     frame.local_roots.append(root)
-    return Register(root, clamped(emit.index(stmt.inputs[0])))
+    length = emit.index(stmt.inputs[0])
+    # A negative constant size gives an empty register, like `range(n)`.
+    if (count := length.constant) is not None:
+        length = IndexExpr(max(0, count))
+    return Register(root, length)
 
 
 def run_library(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
@@ -363,13 +367,6 @@ def call_results(
     if len(kinds) == 1:
         return (result,)
     return unpack(frame, result, kinds)
-
-
-def clamped(length: IndexExpr) -> IndexExpr:
-    """Return a negative constant length as zero, like the length of `range(n)`."""
-    if (count := length.constant) is not None:
-        return IndexExpr(max(0, count))
-    return length
 
 
 def unpack(

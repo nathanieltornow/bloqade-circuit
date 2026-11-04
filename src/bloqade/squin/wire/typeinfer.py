@@ -16,14 +16,6 @@ from ._dialect import dialect
 Frame = ForwardFrame[types.TypeAttribute]
 
 
-def known_sum(
-    left: types.TypeAttribute, right: types.TypeAttribute
-) -> types.TypeAttribute:
-    """Return the register type whose length is the sum of 2 known lengths."""
-    a, b = register_length(left), register_length(right)
-    return register_type(None if a is None or b is None else a + b)
-
-
 @dialect.register(key="typeinfer")
 class TypeInfer(interp.MethodTable):
     """Give each register result the static length that its operands imply."""
@@ -80,7 +72,9 @@ class TypeInfer(interp.MethodTable):
     @interp.impl(stmts.JoinRegister)
     def join(self, infer: TypeInference, frame: Frame, stmt: stmts.JoinRegister):
         """Type the joined register with the sum of both known lengths."""
-        return (known_sum(frame.get(stmt.first), frame.get(stmt.second)),)
+        a = register_length(frame.get(stmt.first))
+        b = register_length(frame.get(stmt.second))
+        return (register_type(None if a is None or b is None else a + b),)
 
     @interp.impl(stmts.RegisterGate)
     @interp.impl(stmts.RegisterNoise)
