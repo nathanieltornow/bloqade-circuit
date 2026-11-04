@@ -35,6 +35,11 @@ We welcome contributions! Please check the [contribution guidelines](https://blo
 >
 > We welcome contributions that use AI assistance. However, **we ask that first-time contributors do not submit AI-generated PRs**.
 
+## Rust development
+
+The Cargo workspace contains the [`squin` crate](crates/squin/README.md).
+Its README gives the build commands and the required Rust version.
+
 ## License
 
 Apache License 2.0 with LLVM Exceptions
