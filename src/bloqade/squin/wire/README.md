@@ -274,10 +274,9 @@ Repeated public conversions clear the cache of converted methods.
 | --- | --- |
 | `StructureValidation` | Kirin verifies method structure and types. |
 | `LinearityValidation` | Each wire, register and quantum tuple field has one use on each execution path. |
-| `BorrowValidation` | Releases match borrowed indices and registers restore every element before crossing a boundary. |
-| `PositionValidation` | Releases, loop yields, branches and call return suffixes continue the correct qubits in order. |
+| `RegisterValidation` | Releases match borrowed indices, registers restore every element before crossing a boundary, and releases, loop yields, branches and call return suffixes continue the correct qubits in order. |
 
-Linearity and borrow validation use Kirin forward analyses with operation method tables.
+Linearity and register validation use Kirin forward analyses with operation method tables.
 The use of a value must sit in the region that defines it.
 A branch may use an outer wire, once on each path, because `scf.IfElse` carries no block arguments.
 A loop body must take every wire as a block argument, because the body runs more than once.

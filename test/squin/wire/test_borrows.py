@@ -8,8 +8,7 @@ from test_validation import errors
 from bloqade.squin.wire import RegisterType, stmts, kernel
 from bloqade.squin.analysis.validation.wire import (
     WireValidation,
-    BorrowValidation,
-    PositionValidation,
+    RegisterValidation,
     LinearityValidation,
     StructureValidation,
 )
@@ -60,10 +59,12 @@ def test_equivalent_indices_restore_the_register(packed):
 @pytest.mark.parametrize("packed", [False, True])
 def test_a_later_borrow_cannot_escape_after_an_equivalent_index_release(packed):
     method = register_method(leak=True, packed=packed)
-    for check in (StructureValidation(), LinearityValidation(), PositionValidation()):
+    for check in (StructureValidation(), LinearityValidation()):
         assert errors(check, method) == []
-    assert errors(BorrowValidation(), method)
+    assert any(
+        "borrowed slots" in error for error in errors(RegisterValidation(), method)
+    )
 
 
 def test_a_symbolic_release_requires_a_matching_borrow():
-    assert errors(BorrowValidation(), register_method(mismatched=True))
+    assert errors(RegisterValidation(), register_method(mismatched=True))

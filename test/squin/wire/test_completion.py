@@ -8,7 +8,7 @@ from bloqade.squin.emit.wire import EmitWire
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.passes.squin_to_wire import SquinToWire
-from bloqade.squin.analysis.validation.wire import WireValidation, BorrowValidation
+from bloqade.squin.analysis.validation.wire import WireValidation, RegisterValidation
 
 
 @squin.kernel
@@ -31,7 +31,7 @@ def test_conversion_builds_wire_operations_and_validation_rejects_invalid_borrow
     assert not ConversionTarget.check(method)
     method.verify()
     method.verify_type()
-    assert any(reason in str(error) for error in BorrowValidation().run(method)[1])
+    assert any(reason in str(error) for error in RegisterValidation().run(method)[1])
     with pytest.raises(ValidationErrorGroup, match=reason):
         WireValidation().check(method)
     with pytest.raises(ValidationErrorGroup, match=reason):

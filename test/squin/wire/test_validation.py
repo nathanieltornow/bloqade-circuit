@@ -13,7 +13,7 @@ from bloqade.squin.wire import Gate, GateKind, stmts as wire_stmts
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.analysis.validation.wire import (
     WireValidation,
-    BorrowValidation,
+    RegisterValidation,
     LinearityValidation,
     StructureValidation,
 )
@@ -58,16 +58,16 @@ def test_a_loop_body_that_reads_an_outer_wire_breaks_linearity():
     assert any("crosses into the body" in message for message in found)
 
 
-def test_a_slot_borrowed_twice_breaks_the_borrow_rule():
+def test_a_slot_borrowed_twice_breaks_the_register_rule():
     wired = SquinToWire().emit(ladder)
     borrow = first(wired, wire_stmts.Borrow)
     again = wire_stmts.Borrow(borrow.register_out, borrow.index)
     again.insert_after(borrow)
-    found = errors(BorrowValidation(), wired)
+    found = errors(RegisterValidation(), wired)
     assert any("already borrowed" in message for message in found)
 
 
-def test_a_release_without_a_borrow_breaks_the_borrow_rule():
+def test_a_release_without_a_borrow_breaks_the_register_rule():
     wired = SquinToWire().emit(ladder)
     alloc = first(wired, wire_stmts.AllocRegister)
     zero = py.Constant(0)
@@ -76,11 +76,11 @@ def test_a_release_without_a_borrow_breaks_the_borrow_rule():
     fresh.insert_after(zero)
     release = wire_stmts.Release(alloc.result, zero.result, fresh.result)
     release.insert_after(fresh)
-    found = errors(BorrowValidation(), wired)
+    found = errors(RegisterValidation(), wired)
     assert any("matching borrowed index" in message for message in found)
 
 
-def test_a_register_that_leaves_with_a_borrowed_slot_breaks_the_borrow_rule():
+def test_a_register_that_leaves_with_a_borrowed_slot_breaks_the_register_rule():
     wired = SquinToWire().emit(ladder)
     alloc = first(wired, wire_stmts.AllocRegister)
     zero = py.Constant(0)
@@ -90,7 +90,7 @@ def test_a_register_that_leaves_with_a_borrowed_slot_breaks_the_borrow_rule():
     wire_stmts.Free(borrow.wire).insert_after(borrow)
     loop = first(wired, scf.For)
     loop.initializers = (borrow.register_out,)
-    found = errors(BorrowValidation(), wired)
+    found = errors(RegisterValidation(), wired)
     assert any("borrowed slots" in message for message in found)
 
 

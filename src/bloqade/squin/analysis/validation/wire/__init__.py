@@ -1,14 +1,11 @@
-"""Check wire structure, types, uses, borrows and positions."""
+"""Check wire structure, types, uses and the places of register elements."""
 
-from .borrows import (
-    Slots as Slots,
-    KnownSlots as KnownSlots,
-    BorrowCheck as BorrowCheck,
-    UnknownSlots as UnknownSlots,
-    BorrowValidation as BorrowValidation,
-    UnreachableSlots as UnreachableSlots,
+from .registers import (
+    Place as Place,
+    Register as Register,
+    RegisterAnalysis as RegisterAnalysis,
+    RegisterValidation as RegisterValidation,
 )
-from .position import PositionValidation as PositionValidation
 from .linearity import LinearityValidation as LinearityValidation
 from .validation import (
     WireValidation as WireValidation,

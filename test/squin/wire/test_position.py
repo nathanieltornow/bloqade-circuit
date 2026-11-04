@@ -14,8 +14,7 @@ from bloqade.squin.wire import stmts, is_linear
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.analysis.validation.wire import (
     WireValidation,
-    BorrowValidation,
-    PositionValidation,
+    RegisterValidation,
     LinearityValidation,
     StructureValidation,
 )
@@ -71,15 +70,14 @@ def swap_suffix(method: ir.Method):
 
 
 def assert_only_positions_fail(method: ir.Method, match: str):
-    """Require a positional error while structure, use counts and borrows remain valid."""
-    for validation in (
-        StructureValidation(),
-        LinearityValidation(),
-        BorrowValidation(),
-    ):
+    """Require a positional error while structure, use counts and holes remain valid."""
+    for validation in (StructureValidation(), LinearityValidation()):
         assert errors(validation, method) == []
-    assert any(match in error for error in errors(PositionValidation(), method))
-    with pytest.raises(ValidationErrorGroup, match="positions"):
+    found = errors(RegisterValidation(), method)
+    assert found and all("position" in error or "slot" in error for error in found)
+    assert any(match in error for error in found)
+    assert not any("borrowed slots" in error for error in found)
+    with pytest.raises(ValidationErrorGroup, match=match):
         WireValidation().check(method)
 
 
@@ -145,7 +143,7 @@ def test_a_function_must_return_every_borrowed_parameter():
     returned.value = packed.args[0]
     assert any(
         "every borrowed parameter" in error
-        for error in errors(PositionValidation(), wired)
+        for error in errors(RegisterValidation(), wired)
     )
 
 

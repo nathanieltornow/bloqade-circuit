@@ -119,24 +119,3 @@ def test_owned_loop_can_exchange_its_state_positions(n, expected):
     )
     restored = WireToSquin().emit(JeffToWire().emit(source))
     assert tuple(int(value) for value in simulate(restored)) == expected
-
-
-def test_register_validation_states_obey_lattice_bounds():
-    import itertools
-
-    from bloqade.analysis.indices import IndexExpr
-    from bloqade.squin.analysis.validation.wire.borrows import Moved, Slots, KnownSlots
-
-    states = [Slots.bottom(), Slots.top(), KnownSlots()]
-    for length in (None, IndexExpr(2), IndexExpr(3)):
-        states.extend(
-            KnownSlots(frozenset(held), length)
-            for held in ((), (IndexExpr(0),), (Moved(IndexExpr(1)),))
-        )
-    for left, right in itertools.product(states, repeat=2):
-        assert Slots.bottom().is_subseteq(left)
-        assert left.is_subseteq(Slots.top())
-        assert left.is_subseteq(left.join(right))
-        assert right.is_subseteq(left.join(right))
-        assert left.meet(right).is_subseteq(left)
-        assert left.meet(right).is_subseteq(right)
