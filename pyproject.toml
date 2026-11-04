@@ -154,6 +154,6 @@ filterwarnings = [
 override-dependencies = ["kirin-toolchain>=0.22.11"]
 
 [tool.uv.sources]
-# Kirin PR #810 on top of Kirin main: it carries #760, which keeps constant facts of
-# loop bodies, and the slice type rule. Drop this pin once a Kirin release has both.
-kirin-toolchain = { git = "https://github.com/nathanieltornow/kirin", rev = "9b8d2663a4196a8263b36113574f284781c072b4" }
+# Kirin main, which has #760 for the constant facts of loop bodies and #810 for the
+# slice type rule. Drop this pin once a Kirin release has both.
+kirin-toolchain = { git = "https://github.com/QuEraComputing/kirin", rev = "37315982c8271664bf1a1dea51984f545d0bfbdf" }
