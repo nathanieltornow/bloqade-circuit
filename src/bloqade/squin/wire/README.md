@@ -320,6 +320,18 @@ FreeRegister(r2)                 Free(b)
 
 After unpacking, 2 gates on one qubit are neighbours on one wire, so a peephole rule can match them.
 
+## Merging native rotations
+
+`merge_native_rotations` in `squin/passes/wire_rotations.py` merges each run of native `R` and `Rz` gates into at most one `R` and one `Rz`.
+Nothing calls it by default.
+It converts a kernel to wire squin, runs `MergeNativeRotations` on each wire method, and converts the result back.
+That pass folds constants, joins borrows, and then runs the rule `MergeRotations` in `squin/rewrite/wire/rotations.py`.
+
+A run is a chain of rotations with constant angles in which each statement consumes exactly the outputs of the statement before it.
+So every statement of a run acts on the same qubits, and the merge never splits a broadcast.
+The rule rewrites a run only if the result has fewer `R` statements, or as many `R` statements and fewer statements in total.
+The method follows bloqade-lanes PR 1118. A CX written twice keeps 2 of its 4 `R` pulses.
+
 ## Jeff emission through rewrite rules
 
 ```python
