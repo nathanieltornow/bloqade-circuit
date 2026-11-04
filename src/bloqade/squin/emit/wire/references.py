@@ -207,5 +207,5 @@ def is_none(value: ir.SSAValue) -> bool:
         return True
     if isinstance(owner, py.Constant):
         return owner.value.unwrap() is None
-    kind = value.type
-    return is_subtype(kind, types.NoneType)
+    typ = value.type
+    return is_subtype(typ, types.NoneType)

@@ -80,7 +80,7 @@ def switch(node: scf.IfElse) -> None:
     each body when it is built, so this rewrite also replaces each body yield.
     """
     separate(node, tuple(node.results))
-    kinds = tuple(jeff_kind(result.type) for result in node.results)
+    outputs = tuple(jeff_kind(result.type) for result in node.results)
     regions: list[ir.Region] = []
     for body in (node.else_body, node.then_body):
         block = body.blocks[0]
@@ -89,25 +89,25 @@ def switch(node: scf.IfElse) -> None:
             argument.delete()
         end = block.last_stmt
         assert isinstance(end, scf.Yield)
-        yielded(end, kinds)
+        yielded(end, outputs)
         body.detach()
         regions.append(body)
     made = put(stmts.Switch(node.cond, (), regions[:1], regions[1]), node)
-    for result, kind in zip(made.results, kinds, strict=True):
-        result.type = kind
+    for result, typ in zip(made.results, outputs, strict=True):
+        result.type = typ
     replace(node, *made.results)
 
 
-def yielded(node: scf.Yield, kinds: tuple[types.TypeAttribute, ...]) -> None:
-    """Replace the region yield `node` with a Jeff yield of values of the types `kinds`."""
-    if len(node.values) != len(kinds):
+def yielded(node: scf.Yield, outputs: tuple[types.TypeAttribute, ...]) -> None:
+    """Replace the region yield `node` with a Jeff yield of values of the types `outputs`."""
+    if len(node.values) != len(outputs):
         raise ir.ValidationError(
             node, "The region yield must match its declared result count."
         )
     separate(node, tuple(node.values))
     values = tuple(
-        fitted(value, kind, node)
-        for value, kind in zip(node.values, kinds, strict=True)
+        fitted(value, typ, node)
+        for value, typ in zip(node.values, outputs, strict=True)
     )
     put(stmts.Yield(*values), node)
     node.delete()

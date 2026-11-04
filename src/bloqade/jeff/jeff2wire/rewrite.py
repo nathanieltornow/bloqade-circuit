@@ -23,7 +23,7 @@ from bloqade.jeff.dialects import stmts
 from bloqade.squin.wire.types import WireType, register_type
 from bloqade.squin.wire.signature import packed_type
 from bloqade.squin.rewrite.wire.driver import put, replace
-from bloqade.squin.rewrite.wire.sources import SOURCES
+from bloqade.squin.rewrite.wire.sources import ENTRIES
 from bloqade.jeff.analysis.validation.to_squin.gates import (
     SINGLE,
     ROTATION,
@@ -33,19 +33,19 @@ from bloqade.jeff.analysis.validation.to_squin.gates import (
 )
 
 
-def wire_type(kind: types.TypeAttribute) -> types.TypeAttribute:
+def wire_type(typ: types.TypeAttribute) -> types.TypeAttribute:
     """Translate quantum and array types while retaining classical scalar types."""
-    if is_subtype(kind, JeffWireType):
+    if is_subtype(typ, JeffWireType):
         return WireType
-    if is_subtype(kind, QuregType):
-        return register_type(qureg_length(kind))
-    if is_subtype(kind, IntArrayType):
+    if is_subtype(typ, QuregType):
+        return register_type(qureg_length(typ))
+    if is_subtype(typ, IntArrayType):
         return ilist.IListType[types.Int, types.Any]
-    if is_subtype(kind, FloatArrayType):
+    if is_subtype(typ, FloatArrayType):
         return ilist.IListType[types.Float, types.Any]
-    if isinstance(kind, types.Generic) and is_subtype(kind, types.Tuple):
-        return types.Generic(tuple, *(wire_type(member) for member in kind.vars))
-    return kind
+    if isinstance(typ, types.Generic) and is_subtype(typ, types.Tuple):
+        return types.Generic(tuple, *(wire_type(member) for member in typ.vars))
+    return typ
 
 
 class Retype(RewriteRule):
@@ -62,7 +62,7 @@ class Retype(RewriteRule):
         for value in node.results:
             value.type = wire_type(value.type)
         if isinstance(node, func.Function):
-            inputs = tuple(wire_type(kind) for kind in node.signature.inputs)
+            inputs = tuple(wire_type(typ) for typ in node.signature.inputs)
             node.signature = func.Signature(inputs=inputs, output=types.Any)
             node.body.blocks[0].args[0].type = types.MethodType[list(inputs), types.Any]
         return RewriteResult()
@@ -132,16 +132,16 @@ class Quantum(RewriteRule):
         """
         callee = self.methods[node.callee]
         made = put(func.Invoke(node.inputs, callee=callee), node)
-        kinds = tuple(wire_type(value.type) for value in node.results)
-        made.result.type = packed_type(kinds)
-        if len(kinds) == 1:
+        outputs = tuple(wire_type(value.type) for value in node.results)
+        made.result.type = packed_type(outputs)
+        if len(outputs) == 1:
             replace(node, made.result)
             return
         values = []
-        for i, kind in enumerate(kinds):
+        for i, typ in enumerate(outputs):
             index = put(py.Constant(i), node).result
             item = put(py.GetItem(made.result, index), node)
-            item.result.type = kind
+            item.result.type = typ
             values.append(item.result)
         replace(node, *values)
 
@@ -164,7 +164,7 @@ class Quantum(RewriteRule):
 
         def apply(source, operands, angles=(), adjoint=False):
             wires = tuple(current[value] for value in operands)
-            made = put(SOURCES[source].scalar(wires, angles, adjoint), node)
+            made = put(ENTRIES[source].scalar(wires, angles, adjoint), node)
             current.update(zip(operands, made.outputs, strict=True))
 
         def turns(value):

@@ -245,22 +245,22 @@ def chunks(
 class MatchesKind(ir.StmtTrait):
     """Check that a gate or a noise channel has the operand counts of its kind.
 
-    If `groups` is True, the statement can act on any positive number of groups, each
-    with the qubit count of the kind. Kirin's generated `check` of each statement runs
+    If `broadcast` is True, the statement can act on any positive number of groups,
+    each with the qubit count of the kind. Kirin's generated `check` of each statement runs
     this trait.
     """
 
-    groups: bool = False
+    broadcast: bool = False
 
     def verify(self, node: ir.Statement) -> None:
         """Raise a validation error if `node` has other operand counts than its kind."""
         assert isinstance(node, (Gate, Noise, RegisterGate, RegisterNoise))
         kind = node.kind
         wires, params = len(node.linear), len(node.params)
-        if self.groups and wires > 0 and wires % kind.wires == 0:
+        if self.broadcast and wires > 0 and wires % kind.wires == 0:
             wires = kind.wires
         if (wires, params) != (kind.wires, kind.params):
-            per = " per group" if self.groups else ""
+            per = " per group" if self.broadcast else ""
             raise ir.ValidationError(
                 node,
                 f"'{kind.label}' needs {kind.wires} qubits{per} and {kind.params}"
@@ -277,7 +277,7 @@ class Gate(Operation):
     """
 
     name = "gate"
-    traits = frozenset({Threads("wires"), MatchesKind(groups=True)})
+    traits = frozenset({Threads("wires"), MatchesKind(broadcast=True)})
     wires: tuple[ir.SSAValue, ...] = info.argument(WireType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: GateKind = info.attribute()
@@ -322,7 +322,7 @@ class Noise(Operation):
     """
 
     name = "noise"
-    traits = frozenset({Threads("wires"), MatchesKind(groups=True)})
+    traits = frozenset({Threads("wires"), MatchesKind(broadcast=True)})
     wires: tuple[ir.SSAValue, ...] = info.argument(WireType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: NoiseKind = info.attribute()

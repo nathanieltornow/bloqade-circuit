@@ -19,13 +19,13 @@ from bloqade.squin.rewrite.wire.driver import put as insert, replace as replace
 StatementT = TypeVar("StatementT", bound=ir.Statement)
 
 
-def jeff_kind(kind: types.TypeAttribute) -> types.TypeAttribute:
-    """Return the Jeff type of a value of the squin type `kind`.
+def jeff_kind(typ: types.TypeAttribute) -> types.TypeAttribute:
+    """Return the Jeff type of a value of the squin type `typ`.
 
     A register keeps its static length, so `Register[3]` becomes `qureg(3)`.
     """
-    if isinstance(kind, types.Literal):
-        match kind.data:
+    if isinstance(typ, types.Literal):
+        match typ.data:
             case bool():
                 return types.Bool
             case int():
@@ -38,18 +38,18 @@ def jeff_kind(kind: types.TypeAttribute) -> types.TypeAttribute:
                 return FloatArrayType
             case ilist.IList():
                 return IntArrayType
-    if is_subtype(kind, SquinWireType):
+    if is_subtype(typ, SquinWireType):
         return WireType
-    if is_subtype(kind, MeasurementResultType):
+    if is_subtype(typ, MeasurementResultType):
         # Jeff measures to one bit, so the conversion assumes that no qubit is lost.
         return types.Bool
-    if is_subtype(kind, RegisterType):
-        return qureg(register_length(kind))
-    if is_subtype(kind, ilist.IListType[types.Float, types.Any]):
+    if is_subtype(typ, RegisterType):
+        return qureg(register_length(typ))
+    if is_subtype(typ, ilist.IListType[types.Float, types.Any]):
         return FloatArrayType
-    if is_subtype(kind, ilist.IListType):
+    if is_subtype(typ, ilist.IListType):
         return IntArrayType
-    return kind
+    return typ
 
 
 def bitwidth(elements: types.TypeAttribute) -> int:
@@ -73,15 +73,15 @@ def put(stmt: StatementT, before: ir.Statement) -> StatementT:
 
 
 def fitted(
-    value: ir.SSAValue, kind: types.TypeAttribute, before: ir.Statement
+    value: ir.SSAValue, typ: types.TypeAttribute, before: ir.Statement
 ) -> ir.SSAValue:
-    """Return the Jeff `value` as the squin type `kind` expects it.
+    """Return the Jeff `value` as the squin type `typ` expects it.
 
     Squin joins a bit and an integer to an integer. Jeff has no conversion, so a bit
     in an integer position becomes `int_select(bit, 1, 0)`. The value can still be a
     wire value, such as a measurement result, so the check reads its Jeff type.
     """
-    if jeff_kind(value.type) == types.Bool and jeff_kind(kind) == types.Int:
+    if jeff_kind(value.type) == types.Bool and jeff_kind(typ) == types.Int:
         one = put(stmts.ConstInt(value=1), before).result
         zero = put(stmts.ConstInt(value=0), before).result
         return put(stmts.IntSelect(value, one, zero), before).result

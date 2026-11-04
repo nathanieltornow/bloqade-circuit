@@ -64,8 +64,7 @@ class ConversionTarget(RewriteRule):
             not isinstance(node, func.Invoke) or is_wire(node.callee)
         )
         legal_signature = not isinstance(node, func.Function) or not any(
-            holds_qubits(kind)
-            for kind in (*node.signature.inputs, node.signature.output)
+            holds_qubits(typ) for typ in (*node.signature.inputs, node.signature.output)
         )
         if not (legal_dialect and legal_values and legal_call and legal_signature):
             self.violations.append(node.name)

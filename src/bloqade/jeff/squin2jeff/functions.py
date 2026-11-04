@@ -66,16 +66,16 @@ class Functions(RewriteRule):
 
 def retype(node: func.Function) -> None:
     """Give the function `node` the Jeff types of its parameters and outputs."""
-    inputs = tuple(jeff_kind(kind) for kind in node.signature.inputs)
-    outputs = tuple(jeff_kind(kind) for kind in flat_kinds(node.signature.output))
+    inputs = tuple(jeff_kind(typ) for typ in node.signature.inputs)
+    outputs = tuple(jeff_kind(typ) for typ in flat_kinds(node.signature.output))
     output = (
         types.NoneType
         if not outputs
         else outputs[0] if len(outputs) == 1 else types.Generic(tuple, *outputs)
     )
     block = node.body.blocks[0]
-    for argument, kind in zip(block.args[1:], inputs, strict=True):
-        argument.type = kind
+    for argument, typ in zip(block.args[1:], inputs, strict=True):
+        argument.type = typ
     block.args[0].type = types.MethodType[list(inputs), output]
     node.signature = func.Signature(inputs=inputs, output=output)
 
@@ -86,8 +86,8 @@ def returned(node: func.Return) -> None:
     if not isinstance(function, func.Function):
         raise ir.ValidationError(node, "Jeff requires returns at function scope.")
     values = flat_values(node.value)
-    kinds = declared_outputs(function.signature.output)
-    if len(values) != len(kinds):
+    expected = declared_outputs(function.signature.output)
+    if len(values) != len(expected):
         raise ir.ValidationError(
             node, "The return values must match the declared function outputs."
         )
@@ -95,19 +95,19 @@ def returned(node: func.Return) -> None:
         raise ir.ValidationError(
             node, "Jeff returns require flat scalar or array values."
         )
-    outputs = (fitted(v, k, node) for v, k in zip(values, kinds, strict=True))
+    outputs = (fitted(v, k, node) for v, k in zip(values, expected, strict=True))
     put(stmts.Return(*outputs), node)
     node.delete()
 
 
-def flat_kinds(kind: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:
-    """Return the type of each Jeff output of a wire value of type `kind`.
+def flat_kinds(typ: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:
+    """Return the type of each Jeff output of a wire value of type `typ`.
 
     Jeff has no tuples, so a nested tuple gives its leaf types in order, and None
     gives no output.
     """
-    members = declared_outputs(kind)
-    if members == (kind,):
+    members = declared_outputs(typ)
+    if members == (typ,):
         return members
     return tuple(leaf for member in members for leaf in flat_kinds(member))
 
@@ -126,14 +126,14 @@ def flat_values(value: ir.SSAValue) -> tuple[ir.SSAValue, ...]:
 
 
 def nested(
-    kind: types.TypeAttribute, results: Iterator[ir.SSAValue], before: ir.Statement
+    typ: types.TypeAttribute, results: Iterator[ir.SSAValue], before: ir.Statement
 ) -> ir.SSAValue:
-    """Build a value of the wire type `kind` from the next flat Jeff call results.
+    """Build a value of the wire type `typ` from the next flat Jeff call results.
 
     This is the inverse of `flat_kinds`.
     """
-    members = declared_outputs(kind)
-    if members == (kind,):
+    members = declared_outputs(typ)
+    if members == (typ,):
         return next(results)
     if not members:
         return put(func.ConstantNone(), before).result

@@ -36,18 +36,18 @@ from bloqade.squin.wire.traits import Threads, ReferenceForm
 from bloqade.squin.wire.ownership import KEY as OWNED, owns_inputs
 from bloqade.squin.wire.signature import packed_type, output_types
 from bloqade.squin.rewrite.wire.driver import CheckedFixpoint, put
-from bloqade.squin.rewrite.wire.sources import source_of
+from bloqade.squin.rewrite.wire.sources import entry_of
 
 
-def squin_type(kind: types.TypeAttribute) -> types.TypeAttribute:
-    """Return the reference squin type of the wire squin type `kind`."""
-    if is_subtype(kind, RegisterType):
+def squin_type(typ: types.TypeAttribute) -> types.TypeAttribute:
+    """Return the reference squin type of the wire squin type `typ`."""
+    if is_subtype(typ, RegisterType):
         return ilist.IListType[QubitType, types.Any]
-    if is_linear(kind):
+    if is_linear(typ):
         return QubitType
-    if isinstance(kind, types.Generic) and is_subtype(kind, types.Tuple):
-        return types.Generic(tuple, *(squin_type(member) for member in kind.vars))
-    return kind
+    if isinstance(typ, types.Generic) and is_subtype(typ, types.Tuple):
+        return types.Generic(tuple, *(squin_type(member) for member in typ.vars))
+    return typ
 
 
 def _kept_outputs(
@@ -59,12 +59,12 @@ def _kept_outputs(
     function without such wires returns its source result whole, which keeps the
     shape of a tuple of one item.
     """
-    borrowed = 0 if owned else sum(is_linear(kind) for kind in signature.inputs)
+    borrowed = 0 if owned else sum(is_linear(typ) for typ in signature.inputs)
     if not borrowed:
         none = is_subtype(signature.output, types.NoneType)
         return () if none else (squin_type(signature.output),)
     outputs = output_types(signature.output)
-    return tuple(squin_type(kind) for kind in outputs[: len(outputs) - borrowed])
+    return tuple(squin_type(typ) for typ in outputs[: len(outputs) - borrowed])
 
 
 @dataclass
@@ -127,7 +127,7 @@ class FromWireStatements(RewriteRule):
         register operation, each register becomes the list of qubits that it holds,
         and each list result stays a list.
         """
-        entry = source_of(node)
+        entry = entry_of(node)
         scalar = not isinstance(node, stmts.RegisterOperation)
         if scalar:
             qubits = tuple(
@@ -416,7 +416,7 @@ class FromWireSignature(RewriteRule):
         returned = block.last_stmt
         assert isinstance(returned, func.Return)
         # Without borrowed wires, the function returns its source result whole.
-        if not owned and any(is_linear(kind) for kind in signature.inputs):
+        if not owned and any(is_linear(typ) for typ in signature.inputs):
             if len(outputs) == 1:
                 values = [returned.value]
             elif isinstance(made := returned.value.owner, py.tuple.New):
@@ -556,22 +556,22 @@ class ReferenceTypes(RewriteRule):
         return RewriteResult()
 
 
-def bounded_list_lengths(kind: types.TypeAttribute) -> types.TypeAttribute:
+def bounded_list_lengths(typ: types.TypeAttribute) -> types.TypeAttribute:
     """Constrain unknown list lengths to integers without assuming a concrete size."""
-    if isinstance(kind, types.Generic) and is_subtype(kind, ilist.IListType):
-        element, length = kind.vars
+    if isinstance(typ, types.Generic) and is_subtype(typ, ilist.IListType):
+        element, length = typ.vars
         return ilist.IListType[
             bounded_list_lengths(element), types.Int if length == types.Any else length
         ]
     if (
-        isinstance(kind, types.Generic)
-        and is_subtype(kind, types.Tuple)
-        and kind.vararg is None
+        isinstance(typ, types.Generic)
+        and is_subtype(typ, types.Tuple)
+        and typ.vararg is None
     ):
         return types.Generic(
-            tuple, *(bounded_list_lengths(member) for member in kind.vars)
+            tuple, *(bounded_list_lengths(member) for member in typ.vars)
         )
-    return kind
+    return typ
 
 
 class BoundListLengths(RewriteRule):
@@ -581,12 +581,12 @@ class BoundListLengths(RewriteRule):
         """Refine result types and the declared function signature."""
         changed = False
         for value in node.results:
-            kind = bounded_list_lengths(value.type)
-            changed |= value.type != kind
-            value.type = kind
+            typ = bounded_list_lengths(value.type)
+            changed |= value.type != typ
+            value.type = typ
         if isinstance(node, func.Function):
             signature = node.signature
-            inputs = tuple(bounded_list_lengths(kind) for kind in signature.inputs)
+            inputs = tuple(bounded_list_lengths(typ) for typ in signature.inputs)
             output = bounded_list_lengths(signature.output)
             changed |= inputs != signature.inputs or output != signature.output
             node.signature = func.Signature(inputs=inputs, output=output)
@@ -597,7 +597,7 @@ class BoundListLengths(RewriteRule):
         """Refine list lengths in block arguments."""
         changed = False
         for value in node.args:
-            kind = bounded_list_lengths(value.type)
-            changed |= value.type != kind
-            value.type = kind
+            typ = bounded_list_lengths(value.type)
+            changed |= value.type != typ
+            value.type = typ
         return RewriteResult(has_done_something=changed)

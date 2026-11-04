@@ -209,12 +209,12 @@ class EmitWire(EmitABC[WireFrame, Value]):
     def _int_op(
         self,
         frame: WireFrame,
-        kind: type[py.Add] | type[py.Mult] | type[py.FloorDiv],
+        op: type[py.Add] | type[py.Mult] | type[py.FloorDiv],
         left: ir.SSAValue,
         right: ir.SSAValue,
     ) -> ir.SSAValue:
         """Emit one integer operation and give its result the type `int`."""
-        node = frame.push(kind(left, right))
+        node = frame.push(op(left, right))
         node.results[0].type = types.Int
         return node.results[0]
 

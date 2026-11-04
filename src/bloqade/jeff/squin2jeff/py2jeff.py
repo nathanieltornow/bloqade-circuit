@@ -54,34 +54,34 @@ def constant(node: py.Constant) -> Values | None:
 
 
 def constant_value(
-    before: ir.Statement, item: object, kind: types.TypeAttribute
+    before: ir.Statement, item: object, typ: types.TypeAttribute
 ) -> ir.SSAValue:
-    """Insert the Jeff constant for the Python value `item` of the squin type `kind`.
+    """Insert the Jeff constant for the Python value `item` of the squin type `typ`.
 
     The type decides between a bit and an integer, since squin may hold a boolean as
     the integer 1. A tuple becomes a `py.tuple.New` of its members.
     """
     match item:
         case tuple(members):
-            kinds = declared_outputs(kind)
-            if len(kinds) != len(members):
-                kinds = tuple(types.Literal(member) for member in members)
+            outputs = declared_outputs(typ)
+            if len(outputs) != len(members):
+                outputs = tuple(types.Literal(member) for member in members)
             fields = tuple(
-                constant_value(before, member, k) for member, k in zip(members, kinds)
+                constant_value(before, member, k) for member, k in zip(members, outputs)
             )
             return put(py.tuple.New(fields), before).result
-        case ilist.IList(data=list(members)) if jeff_kind(
-            kind
-        ) == FloatArrayType or any(isinstance(member, float) for member in members):
+        case ilist.IList(data=list(members)) if jeff_kind(typ) == FloatArrayType or any(
+            isinstance(member, float) for member in members
+        ):
             floats = tuple(float(member) for member in members)
             return put(stmts.FloatArrayConst(values=floats), before).result
         case ilist.IList(data=list(members)):
-            width = bitwidth(item_type(kind))
+            width = bitwidth(item_type(typ))
             ints = tuple(int(member) for member in members)
             return put(stmts.IntArrayConst(values=ints, bitwidth=width), before).result
-        case bool() | int() | float() if jeff_kind(kind) == types.Bool:
+        case bool() | int() | float() if jeff_kind(typ) == types.Bool:
             return put(stmts.ConstInt(value=int(item), bitwidth=1), before).result
-        case bool() | int() | float() if jeff_kind(kind) == types.Float:
+        case bool() | int() | float() if jeff_kind(typ) == types.Float:
             return put(stmts.ConstFloat(value=float(item)), before).result
         case bool() | int():
             return put(stmts.ConstInt(value=int(item)), before).result
@@ -129,14 +129,14 @@ def as_float(value: ir.SSAValue, before: ir.Statement) -> ir.SSAValue:
 
 def binary(node: ir.Statement) -> Values:
     """Return the Jeff form of a binary operation or a comparison on two numbers."""
-    kind = type(node)
+    op = type(node)
     lhs, rhs = node.args
     if not all(is_subtype(value.type, types.Int | types.Float) for value in node.args):
         raise ir.ValidationError(
             node, f"'{node.name}' requires scalar numeric operands."
         )
-    if kind in SWAPPED:
-        kind, lhs, rhs = SWAPPED[kind], rhs, lhs
+    if op in SWAPPED:
+        op, lhs, rhs = SWAPPED[op], rhs, lhs
     if is_float(lhs) or is_float(rhs):
         table = FLOAT_BINARY
         operands = (as_float(lhs, node), as_float(rhs, node))
@@ -146,13 +146,13 @@ def binary(node: ir.Statement) -> Values:
         table = INT_BINARY
         widest = node.results[0].type.join(lhs.type).join(rhs.type)
         operands = (fitted(lhs, widest, node), fitted(rhs, widest, node))
-    if kind not in table:
+    if op not in table:
         raise ir.ValidationError(
             node,
             f"Jeff has no numeric form for '{node.name}' with these operand types.",
         )
-    made = put(table[kind](*operands), node).results[0]
-    if kind is py.cmp.NotEq:
+    made = put(table[op](*operands), node).results[0]
+    if op is py.cmp.NotEq:
         return (put(stmts.IntNot(made), node).result,)
     return (made,)
 
@@ -324,10 +324,8 @@ RULES: dict[type[ir.Statement], Callable[..., Values | None]] = {
     py.indexing.GetItem: item,
     py.assign.Alias: lambda node: (node.value,),
     **{
-        kind: lambda node: (
-            put(FLOAT_UNARY[type(node)](node.args[0]), node).results[0],
-        )
-        for kind in FLOAT_UNARY
+        op: lambda node: (put(FLOAT_UNARY[type(node)](node.args[0]), node).results[0],)
+        for op in FLOAT_UNARY
     },
 }
 """Map each classical statement class to the function that gives its Jeff values."""

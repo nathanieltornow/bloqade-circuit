@@ -11,7 +11,7 @@ from bloqade.squin.noise import stmts as noise_stmts
 from bloqade.squin.wire.stmts import Operation
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.native.dialects.gate import stmts as native_stmts
-from bloqade.squin.rewrite.wire.sources import SOURCES, Source
+from bloqade.squin.rewrite.wire.sources import ENTRIES, Entry
 
 from .base import EmitWire, WireFrame
 from .values import View, Value, Element, Location, Register, is_qubit
@@ -29,7 +29,7 @@ def apply(
     If `register` is True, each location is a register part and the statement acts on
     whole registers. Otherwise each location is one qubit.
     """
-    entry = SOURCES[type(source)]
+    entry = ENTRIES[type(source)]
     build = entry.register if register else entry.scalar
 
     def made(inputs: tuple[ir.SSAValue, ...]) -> Operation:
@@ -55,7 +55,7 @@ def register_gate(
     Operands of different known lengths fail, unless the statement stops at the
     shortest register.
     """
-    truncate = SOURCES[type(source)].truncates
+    truncate = ENTRIES[type(source)].truncates
     counts = [None if part.length is None else part.length.constant for part in parts]
     known = {count for count in counts if count is not None}
     if not truncate and len(known) > 1:
@@ -86,7 +86,7 @@ def emit_gate(
     `cx(qs[0:2], qs[1:3])`, get one scalar operation per group in the order of the
     source broadcast. Scalar operations need operands whose qubits are all known.
     """
-    entry: Source = SOURCES[type(source)]
+    entry: Entry = ENTRIES[type(source)]
     operands = tuple(frame.get(value) for value in entry.qubit_operands(source))
     if all(
         isinstance(value, Register)
@@ -127,7 +127,7 @@ def emit_gate(
             f"A qubit of '{source.name}' has no place in a known allocation.",
             source,
         )
-    if entry.groups and len(groups) > 1 and disjoint(groups):
+    if entry.broadcast and len(groups) > 1 and disjoint(groups):
         flat = tuple(location for group in groups for location in group)
         apply(emit, frame, source, flat, register=False)
         return ()
@@ -195,9 +195,9 @@ def operation(
 
 
 def every_source(dialect: ir.Dialect) -> Any:
-    """Return `operation` as the method of every statement of `dialect` in `SOURCES`."""
+    """Return `operation` as the method of every statement of `dialect` in `ENTRIES`."""
     rule: Any = operation
-    for source in SOURCES:
+    for source in ENTRIES:
         if source.dialect is dialect:
             rule = interp.impl(source)(rule)
     return rule

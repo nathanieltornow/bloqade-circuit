@@ -59,9 +59,7 @@ class Layout:
         """Read the layout from the signature of a source function."""
         ordinary_count = len(output_types(signature.output))
         borrowed_positions = tuple(
-            i
-            for i, kind in enumerate(signature.inputs)
-            if quantum_type(kind) is not None
+            i for i, typ in enumerate(signature.inputs) if quantum_type(typ) is not None
         )
         packed = (
             ordinary_count > 1
@@ -78,9 +76,9 @@ class Layout:
         A single wire result keeps its own type, even if that type is a tuple.
         """
         count = self.ordinary_count + len(self.borrowed_positions)
-        kinds = (output,) if count == 1 else output_types(output)
-        if len(kinds) != count:
+        outputs = (output,) if count == 1 else output_types(output)
+        if len(outputs) != count:
             raise ValueError(
                 f"The wire output type {output} must have {count} results."
             )
-        return kinds
+        return outputs

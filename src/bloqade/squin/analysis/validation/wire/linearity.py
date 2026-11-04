@@ -226,8 +226,8 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
                     output, types.Tuple
                 ):
                     if any(
-                        contains_linear(kind) and not is_linear(kind)
-                        for kind in output.vars
+                        contains_linear(typ) and not is_linear(typ)
+                        for typ in output.vars
                     ):
                         self.error(
                             node,

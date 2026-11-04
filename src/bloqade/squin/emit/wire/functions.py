@@ -70,13 +70,13 @@ class Functions(interp.MethodTable):
             )
         layout = Layout.of(stmt.signature)
         block = body_of(stmt.body, stmt, len(stmt.signature.inputs) + 1)
-        input_types = tuple(parameter_type(kind) for kind in stmt.signature.inputs)
+        input_types = tuple(parameter_type(typ) for typ in stmt.signature.inputs)
         # The emitted body decides the output type, so the self argument gets its
         # final type after the body.
         self_arg = frame.output.args.append_from(types.Any, block.args[0].name)
         parameter_values = [
-            add_parameter(frame, source, kind)
-            for source, kind in zip(block.args[1:], input_types, strict=True)
+            add_parameter(frame, source, typ)
+            for source, typ in zip(block.args[1:], input_types, strict=True)
         ]
         returned = emit.frame_call(frame, stmt, self_arg, *parameter_values)
         end = block.last_stmt
@@ -143,18 +143,18 @@ class Functions(interp.MethodTable):
 
 
 def add_parameter(
-    frame: WireFrame, source: ir.BlockArgument, kind: types.TypeAttribute
+    frame: WireFrame, source: ir.BlockArgument, typ: types.TypeAttribute
 ) -> Value:
     """Add the wire parameter of a source parameter and return the source meaning.
 
     A quantum parameter becomes a whole `Qubit` or `Register`. A register knows its
     dimensions if the source type gives them.
     """
-    argument = frame.output.args.append_from(kind, source.name)
+    argument = frame.output.args.append_from(typ, source.name)
     if quantum_type(source.type) is None:
         return argument
     frame.latest[argument] = argument
-    if kind == WireType:
+    if typ == WireType:
         return Qubit(argument)
     shape = register_shape(source.type)
     outer = shape[0] if shape else None
@@ -178,8 +178,8 @@ def ordinary_values(
     if not layout.packed:
         return (value,)
     if not isinstance(value, tuple):
-        kinds = output_types(function.signature.output)
-        return unpack(frame, emit.classical_value(frame, value), kinds)
+        outputs = output_types(function.signature.output)
+        return unpack(frame, emit.classical_value(frame, value), outputs)
     if len(value) != layout.ordinary_count:
         raise WireConversionError(
             "The returned tuple must match the declared result count.", end
@@ -326,8 +326,8 @@ def check_shapes(
     """
     parameters = callee.body.blocks[0].args[1:]
     for position, operand in zip(layout.borrowed_positions, borrowed, strict=True):
-        kind = parameters[position].type
-        if quantum_type(kind) == WireType:
+        typ = parameters[position].type
+        if quantum_type(typ) == WireType:
             if not is_qubit(operand):
                 raise WireConversionError(
                     "A qubit parameter requires one qubit argument.", stmt
@@ -337,7 +337,7 @@ def check_shapes(
             raise WireConversionError(
                 "A register parameter requires a whole register argument.", stmt
             )
-        expected = register_shape(kind)
+        expected = register_shape(typ)
         actual = shape_of(operand)
         if len(expected) != len(actual) or any(
             size is not None and size != given for size, given in zip(expected, actual)
@@ -361,22 +361,22 @@ def call_results(
     frame: WireFrame, result: ir.SSAValue, layout: Layout
 ) -> tuple[ir.SSAValue, ...]:
     """Split the result of a wire call into one value for each wire result."""
-    kinds = layout.result_types(result.type)
-    if not kinds:
+    outputs = layout.result_types(result.type)
+    if not outputs:
         return ()
-    if len(kinds) == 1:
+    if len(outputs) == 1:
         return (result,)
-    return unpack(frame, result, kinds)
+    return unpack(frame, result, outputs)
 
 
 def unpack(
-    frame: WireFrame, packed: ir.SSAValue, kinds: tuple[types.TypeAttribute, ...]
+    frame: WireFrame, packed: ir.SSAValue, outputs: tuple[types.TypeAttribute, ...]
 ) -> tuple[ir.SSAValue, ...]:
-    """Read each field of the tuple value `packed` and give it the type in `kinds`."""
+    """Read each field of the tuple value `packed` and give it the type in `outputs`."""
     fields: list[ir.SSAValue] = []
-    for i, kind in enumerate(kinds):
+    for i, typ in enumerate(outputs):
         index = frame.push(py.Constant(i)).results[0]
         item = frame.push(py.GetItem(packed, index))
-        item.results[0].type = kind
+        item.results[0].type = typ
         fields.append(item.results[0])
     return tuple(fields)

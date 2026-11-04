@@ -17,7 +17,7 @@ from bloqade.native.dialects.gate import stmts as native_stmts
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
-from bloqade.squin.rewrite.wire.sources import source_of
+from bloqade.squin.rewrite.wire.sources import entry_of
 from bloqade.squin.analysis.validation.wire import WireValidation
 
 
@@ -157,7 +157,7 @@ def test_paired_broadcasts_of_unequal_lengths_fail_like_the_source(sizes):
 def test_native_broadcasts_preserve_their_gates_and_results(n):
     wired = SquinToWire().emit(native_broadcast)
     sources = {
-        source_of(node).source
+        entry_of(node).source
         for node in wired.callable_region.walk()
         if isinstance(node, Operation)
     }

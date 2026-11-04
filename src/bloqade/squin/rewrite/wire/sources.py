@@ -38,7 +38,7 @@ from bloqade.native.dialects.gate import stmts as native_stmts
 
 
 @dataclass(frozen=True)
-class Entry:
+class BaseEntry:
     """Name the fields of one squin statement on qubits, in operand order."""
 
     source: type[ir.Statement]
@@ -56,9 +56,7 @@ class Entry:
     @cached_property
     def qubits(self) -> tuple[str, ...]:
         """Return the qubit-list fields of the squin statement."""
-        return tuple(
-            name for name, kind in self.arguments.items() if holds_qubits(kind)
-        )
+        return tuple(name for name, typ in self.arguments.items() if holds_qubits(typ))
 
     @cached_property
     def params(self) -> tuple[str, ...]:
@@ -81,7 +79,7 @@ class Entry:
         return False
 
     @property
-    def groups(self) -> bool:
+    def broadcast(self) -> bool:
         """Check whether one scalar statement can act on several groups of wires."""
         return False
 
@@ -118,7 +116,7 @@ class Entry:
 
 
 @dataclass(frozen=True)
-class GateEntry(Entry):
+class GateEntry(BaseEntry):
     """Map a squin gate to the wire gate of the kind `kind`."""
 
     kind: GateKind
@@ -129,7 +127,7 @@ class GateEntry(Entry):
         return self.kind.wires, self.kind.params
 
     @property
-    def groups(self) -> bool:
+    def broadcast(self) -> bool:
         """Return True, because `Gate` and `Noise` act on several groups at once."""
         return True
 
@@ -158,7 +156,7 @@ class GateEntry(Entry):
 
 
 @dataclass(frozen=True)
-class NoiseEntry(Entry):
+class NoiseEntry(BaseEntry):
     """Map a squin noise channel to the wire channel of the kind `kind`."""
 
     kind: NoiseKind
@@ -169,7 +167,7 @@ class NoiseEntry(Entry):
         return self.kind.wires, self.kind.params
 
     @property
-    def groups(self) -> bool:
+    def broadcast(self) -> bool:
         """Return True, because `Gate` and `Noise` act on several groups at once."""
         return True
 
@@ -198,7 +196,7 @@ class NoiseEntry(Entry):
 
 
 @dataclass(frozen=True)
-class MeasureEntry(Entry):
+class MeasureEntry(BaseEntry):
     """Map the squin measurement to `Measure` and `RegisterMeasure`."""
 
     @property
@@ -228,7 +226,7 @@ class MeasureEntry(Entry):
 
 
 @dataclass(frozen=True)
-class ResetEntry(Entry):
+class ResetEntry(BaseEntry):
     """Map the squin reset to `Reset` and `RegisterReset`."""
 
     @property
@@ -257,7 +255,7 @@ class ResetEntry(Entry):
         return RegisterReset(register)
 
 
-Source: TypeAlias = GateEntry | NoiseEntry | MeasureEntry | ResetEntry
+Entry: TypeAlias = GateEntry | NoiseEntry | MeasureEntry | ResetEntry
 """Map one squin statement on qubits to its wire statements."""
 
 GATES = (
@@ -304,7 +302,7 @@ MEASURE = MeasureEntry(qubit_stmts.Measure)
 RESET = ResetEntry(qubit_stmts.Reset)
 
 
-def check(entry: Source) -> Source:
+def check(entry: Entry) -> Entry:
     """Return `entry` after a check against the schema of its squin statement.
 
     Each qubit-list field must hold a flat list of qubits. The number of qubit-list
@@ -312,10 +310,10 @@ def check(entry: Source) -> Source:
     """
     name = entry.source.__name__
     if not all(
-        isinstance(kind, types.Generic)
-        and is_subtype(kind, ilist.IListType)
-        and is_subtype(kind.vars[0], QubitType)
-        for kind in (entry.arguments[field] for field in entry.qubits)
+        isinstance(typ, types.Generic)
+        and is_subtype(typ, ilist.IListType)
+        and is_subtype(typ.vars[0], QubitType)
+        for typ in (entry.arguments[field] for field in entry.qubits)
     ):
         raise ValueError(f"The wire entry of {name} must take flat qubit lists.")
     if (len(entry.qubits), len(entry.params)) != entry.counts:
@@ -323,24 +321,24 @@ def check(entry: Source) -> Source:
     return entry
 
 
-SOURCES: dict[type[ir.Statement], Source] = {
+ENTRIES: dict[type[ir.Statement], Entry] = {
     entry.source: check(entry) for entry in (*GATES, *NOISES, MEASURE, RESET)
 }
 """Map each squin statement class to its entry."""
 
-GATE_SOURCES: dict[GateKind, GateEntry] = {entry.kind: entry for entry in GATES}
+GATE_ENTRIES: dict[GateKind, GateEntry] = {entry.kind: entry for entry in GATES}
 """Map each gate kind back to the squin statement that it copies."""
 
-NOISE_SOURCES: dict[NoiseKind, NoiseEntry] = {entry.kind: entry for entry in NOISES}
+NOISE_ENTRIES: dict[NoiseKind, NoiseEntry] = {entry.kind: entry for entry in NOISES}
 """Map each noise kind back to the squin statement that it copies."""
 
 
-def source_of(stmt: Operation) -> Source:
+def entry_of(stmt: Operation) -> Entry:
     """Return the entry of the squin statement that the wire statement `stmt` copies."""
     if isinstance(stmt, (Gate, RegisterGate)):
-        return GATE_SOURCES[stmt.kind]
+        return GATE_ENTRIES[stmt.kind]
     if isinstance(stmt, (Noise, RegisterNoise)):
-        return NOISE_SOURCES[stmt.kind]
+        return NOISE_ENTRIES[stmt.kind]
     if isinstance(stmt, (Measure, RegisterMeasure)):
         return MEASURE
     return RESET
