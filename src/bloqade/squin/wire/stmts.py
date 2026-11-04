@@ -34,7 +34,7 @@ from .kinds import (
     NoiseKind,
 )
 from .types import WireType, RegisterType
-from .traits import Threads, ThreadsPairs, ThreadsInOrder
+from .traits import Threads
 from ._dialect import dialect
 
 
@@ -79,7 +79,7 @@ class Borrow(ir.Statement):
     """
 
     name = "borrow"
-    traits = frozenset({ThreadsPairs((("register", "register_out"),))})
+    traits = frozenset({Threads("register")})
     register: ir.SSAValue = info.argument(RegisterType)
     index: ir.SSAValue = info.argument(types.Int)
     register_out: ir.ResultValue = info.result(RegisterType)
@@ -91,7 +91,7 @@ class Release(ir.Statement):
     """Put the qubit that `wire` carries back into `register` at `index`."""
 
     name = "release"
-    traits = frozenset({ThreadsPairs((("register", "register_out"),))})
+    traits = frozenset({Threads("register")})
     register: ir.SSAValue = info.argument(RegisterType)
     index: ir.SSAValue = info.argument(types.Int)
     wire: ir.SSAValue = info.argument(WireType)
@@ -103,7 +103,7 @@ class Length(ir.Statement):
     """Return `register` and the count of qubits that it holds."""
 
     name = "length"
-    traits = frozenset({ThreadsPairs((("register", "register_out"),))})
+    traits = frozenset({Threads("register")})
     register: ir.SSAValue = info.argument(RegisterType)
     register_out: ir.ResultValue = info.result(RegisterType)
     result: ir.ResultValue = info.result(types.Int)
@@ -114,7 +114,7 @@ class Take(ir.Statement):
     """Move one qubit out of a register and leave its element empty."""
 
     name = "take"
-    traits = frozenset({ThreadsPairs((("register", "register_out"),))})
+    traits = frozenset({Threads("register")})
     register: ir.SSAValue = info.argument(RegisterType)
     index: ir.SSAValue = info.argument(types.Int)
     register_out: ir.ResultValue = info.result(RegisterType)
@@ -126,7 +126,7 @@ class Put(ir.Statement):
     """Fill an empty register element with an owned qubit."""
 
     name = "put"
-    traits = frozenset({ThreadsPairs((("register", "register_out"),))})
+    traits = frozenset({Threads("register")})
     register: ir.SSAValue = info.argument(RegisterType)
     index: ir.SSAValue = info.argument(types.Int)
     wire: ir.SSAValue = info.argument(WireType)
@@ -168,7 +168,7 @@ class TakeSlice(ir.Statement):
     """Move a contiguous range into an owned register and leave its source elements empty."""
 
     name = "take_slice"
-    traits = frozenset({ThreadsPairs((("register", "register_out"),))})
+    traits = frozenset({Threads("register")})
     register: ir.SSAValue = info.argument(RegisterType)
     start: ir.SSAValue = info.argument(types.Int)
     length: ir.SSAValue = info.argument(types.Int)
@@ -181,7 +181,7 @@ class PutSlice(ir.Statement):
     """Fill an empty contiguous range with the qubits of an owned register."""
 
     name = "put_slice"
-    traits = frozenset({ThreadsPairs((("register", "register_out"),))})
+    traits = frozenset({Threads("register")})
     register: ir.SSAValue = info.argument(RegisterType)
     start: ir.SSAValue = info.argument(types.Int)
     slice_register: ir.SSAValue = info.argument(RegisterType)
@@ -288,7 +288,7 @@ class Gate(Operation):
     """
 
     name = "gate"
-    traits = frozenset({ThreadsInOrder("wires"), HasArity(groups=True)})
+    traits = frozenset({Threads("wires"), HasArity(groups=True)})
     wires: tuple[ir.SSAValue, ...] = info.argument(WireType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: GateKind = info.attribute()
@@ -333,7 +333,7 @@ class Noise(Operation):
     """
 
     name = "noise"
-    traits = frozenset({ThreadsInOrder("wires"), HasArity(groups=True)})
+    traits = frozenset({Threads("wires"), HasArity(groups=True)})
     wires: tuple[ir.SSAValue, ...] = info.argument(WireType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: NoiseKind = info.attribute()
@@ -371,7 +371,7 @@ class Measure(Operation):
     """Measure the qubit of `wire`, keep it, and return its measurement result."""
 
     name = "measure"
-    traits = frozenset({ThreadsPairs((("wire", "wire_out"),)), HasArity()})
+    traits = frozenset({Threads("wire"), HasArity()})
     wire: ir.SSAValue = info.argument(WireType)
     wire_out: ir.ResultValue = info.result(WireType)
     bit: ir.ResultValue = info.result(MeasurementResultType)
@@ -387,7 +387,7 @@ class Reset(Operation):
     """Reset the qubit of `wire` to the zero state."""
 
     name = "reset"
-    traits = frozenset({ThreadsPairs((("wire", "wire_out"),)), HasArity()})
+    traits = frozenset({Threads("wire"), HasArity()})
     wire: ir.SSAValue = info.argument(WireType)
     wire_out: ir.ResultValue = info.result(WireType)
 
@@ -419,7 +419,7 @@ class RegisterGate(RegisterOperation):
     """Apply the gate `kind` at every position of one register per qubit of the gate."""
 
     name = "register_gate"
-    traits = frozenset({ThreadsInOrder("registers"), HasArity()})
+    traits = frozenset({Threads("registers"), HasArity()})
     registers: tuple[ir.SSAValue, ...] = info.argument(RegisterType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: GateKind = info.attribute()
@@ -469,7 +469,7 @@ class RegisterNoise(RegisterOperation):
     """Apply the noise channel `kind` at every position of whole registers."""
 
     name = "register_noise"
-    traits = frozenset({ThreadsInOrder("registers"), HasArity()})
+    traits = frozenset({Threads("registers"), HasArity()})
     registers: tuple[ir.SSAValue, ...] = info.argument(RegisterType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: NoiseKind = info.attribute()
@@ -516,7 +516,7 @@ class RegisterMeasure(RegisterOperation):
     """Measure every qubit of `register` and return the results in order."""
 
     name = "register_measure"
-    traits = frozenset({ThreadsPairs((("register", "register_out"),)), HasArity()})
+    traits = frozenset({Threads("register"), HasArity()})
     register: ir.SSAValue = info.argument(RegisterType)
     register_out: ir.ResultValue = info.result(RegisterType)
     bits: ir.ResultValue = info.result(
@@ -539,7 +539,7 @@ class RegisterReset(RegisterOperation):
     """Reset every qubit of `register` to the zero state."""
 
     name = "register_reset"
-    traits = frozenset({ThreadsPairs((("register", "register_out"),)), HasArity()})
+    traits = frozenset({Threads("register"), HasArity()})
     register: ir.SSAValue = info.argument(RegisterType)
     register_out: ir.ResultValue = info.result(RegisterType)
 

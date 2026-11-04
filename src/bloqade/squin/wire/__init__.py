@@ -41,8 +41,6 @@ from .types import (
 from .errors import WireConversionError as WireConversionError
 from .traits import (
     Threads as Threads,
-    ThreadsPairs as ThreadsPairs,
     ReferenceForm as ReferenceForm,
-    ThreadsInOrder as ThreadsInOrder,
 )
 from ._dialect import dialect as dialect

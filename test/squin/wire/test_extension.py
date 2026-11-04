@@ -21,7 +21,6 @@ from bloqade.squin.wire import (
     Threads,
     WireType,
     ReferenceForm,
-    ThreadsInOrder,
     stmts as wire,
 )
 from bloqade.squin.emit.wire import EmitWire, WireFrame
@@ -95,7 +94,7 @@ class WireMark(ir.Statement):
     """Read the qubits of `wires`, keep them, and return an integer."""
 
     name = "wire_mark"
-    traits = frozenset({ThreadsInOrder("wires"), MarkReference()})
+    traits = frozenset({Threads("wires"), MarkReference()})
     wires: tuple[ir.SSAValue, ...] = info.argument(WireType)
     tag: int = info.attribute()
 
@@ -124,7 +123,7 @@ class Opaque(ir.Statement):
     """Keep the qubits of `wires`, with no way back to reference squin."""
 
     name = "opaque"
-    traits = frozenset({ThreadsInOrder("wires")})
+    traits = frozenset({Threads("wires")})
     wires: tuple[ir.SSAValue, ...] = info.argument(WireType)
 
     def __init__(self, wires: tuple[ir.SSAValue, ...]) -> None:
