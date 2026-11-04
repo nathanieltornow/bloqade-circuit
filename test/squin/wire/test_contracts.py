@@ -1,6 +1,6 @@
 """Check conversion boundaries, failure isolation and bounded rewrite execution."""
 
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 from kirin import ir
@@ -172,3 +172,53 @@ def test_a_register_argument_must_have_the_declared_shape(kernel):
 
 def test_a_register_argument_of_the_declared_length_converts():
     assert simulate(WireToSquin().emit(SquinToWire().emit(three_qubits))) == [1, 1, 1]
+
+
+@squin.kernel
+def flip_second(register: ilist.IList[Qubit, Any], qubit: Qubit):
+    squin.x(qubit)
+
+
+@squin.kernel
+def register_and_its_element():
+    qs = squin.qalloc(2)
+    flip_second(qs, qs[0])
+
+
+@squin.kernel
+def flip_both(first: ilist.IList[Qubit, Any], second: ilist.IList[Qubit, Any]):
+    squin.broadcast.x(first)
+    squin.broadcast.z(second)
+
+
+@squin.kernel
+def overlapping_slices():
+    qs = squin.qalloc(3)
+    flip_both(qs[0:2], qs[1:3])
+
+
+@squin.kernel
+def one_qubit_twice():
+    qs = squin.qalloc(1)
+    return (qs[0], qs[0])
+
+
+@squin.kernel
+def nested_qubits():
+    qs = squin.qalloc(1)
+    return ((qs[0], qs[0]), 1)
+
+
+@pytest.mark.parametrize(
+    "kernel, reason",
+    [
+        (register_and_its_element, "cannot use one qubit or register twice"),
+        (overlapping_slices, "requires whole registers or individual qubits"),
+        (one_qubit_twice, "cannot return qubits"),
+        (nested_qubits, "cannot return qubits"),
+    ],
+    ids=lambda x: x if isinstance(x, str) else x.sym_name,
+)
+def test_a_call_or_return_that_aliases_qubits_has_no_wire_form(kernel, reason):
+    with pytest.raises(WireConversionError, match=reason):
+        SquinToWire().emit(kernel)
