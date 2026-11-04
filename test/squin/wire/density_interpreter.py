@@ -140,11 +140,10 @@ class WireSemantics(interp.MethodTable):
 
     @interp.impl(stmts.Gate)
     def gate(self, sim, frame, stmt):
-        wires = frame.get_values(stmt.wires)
-        sim.apply(
-            gate_matrix(stmt.kind, frame.get_values(stmt.params), stmt.adjoint), wires
-        )
-        return wires
+        matrix = gate_matrix(stmt.kind, frame.get_values(stmt.params), stmt.adjoint)
+        for group in stmt.groups:
+            sim.apply(matrix, frame.get_values(group))
+        return frame.get_values(stmt.wires)
 
     @interp.impl(stmts.Measure)
     def measure(self, sim, frame, stmt):
@@ -167,9 +166,10 @@ class WireSemantics(interp.MethodTable):
 
     @interp.impl(stmts.Noise)
     def noise(self, sim, frame, stmt):
-        wires = frame.get_values(stmt.wires)
-        sim.channel(noise_operators(stmt.kind, frame.get_values(stmt.params)), wires)
-        return wires
+        operators = noise_operators(stmt.kind, frame.get_values(stmt.params))
+        for group in stmt.groups:
+            sim.channel(operators, frame.get_values(group))
+        return frame.get_values(stmt.wires)
 
     @interp.impl(stmts.RegisterGate)
     @interp.impl(stmts.RegisterNoise)

@@ -10,7 +10,7 @@ from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.sources import SOURCES, Source
 
 from .base import EmitWire, WireFrame
-from .values import View, Value, Location, Register, is_qubit
+from .values import View, Value, Element, Location, Register, is_qubit
 
 
 def apply(
@@ -73,9 +73,12 @@ def emit_gate(
     """Emit one register operation on whole registers and step-1 slices, or scalar ones.
 
     A register operation takes each operand as its own register, so the operands
-    must share no qubit. Overlapping slices, such as `cx(qs[0:2], qs[1:3])`, get one
-    scalar operation per group in order, which is the order of the source broadcast.
-    Scalar operations need operands whose qubits are all known.
+    must share no qubit. A broadcast over lists of qubits, such as
+    `rx(a, [q0, q2])`, groups the qubits like Python's `zip`. If no 2 groups share
+    a qubit, a gate or a noise channel gets one statement on all groups, which keeps
+    the broadcast as one parallel step. Overlapping groups, such as in
+    `cx(qs[0:2], qs[1:3])`, get one scalar operation per group in the order of the
+    source broadcast. Scalar operations need operands whose qubits are all known.
     """
     entry: Source = SOURCES[type(source)]
     operands = tuple(frame.get(value) for value in entry.qubit_operands(source))
@@ -112,14 +115,18 @@ def emit_gate(
         raise WireConversionError(
             f"'{source.name}' requires qubit lists of equal length.", source
         )
+    groups = list(zip(*operand_items))
+    if not all(is_qubit(location) for group in groups for location in group):
+        raise WireConversionError(
+            f"A qubit of '{source.name}' has no place in a known allocation.",
+            source,
+        )
+    if entry.groups and len(groups) > 1 and disjoint(groups):
+        flat = tuple(location for group in groups for location in group)
+        apply(emit, frame, source, flat, register=False)
+        return ()
     outputs: list[list[ir.SSAValue]] = [[] for _ in entry.results]
-    # Each step takes the next qubit of every operand, like Python's `zip`.
-    for qubits in zip(*operand_items):
-        if not all(is_qubit(location) for location in qubits):
-            raise WireConversionError(
-                f"A qubit of '{source.name}' has no place in a known allocation.",
-                source,
-            )
+    for qubits in groups:
         made = apply(emit, frame, source, qubits, register=False)
         for collected, value in zip(outputs, made.classical, strict=True):
             collected.append(value)
@@ -129,6 +136,25 @@ def emit_gate(
         ).results[0]
         for result, values in zip(entry.result_values(source), outputs, strict=True)
     )
+
+
+def disjoint(groups: list[tuple[Location, ...]]) -> bool:
+    """Check whether no 2 groups of qubit locations provably share a qubit.
+
+    2 locations with different roots name different allocations. 2 elements of
+    one register differ if their indices differ by a nonzero constant.
+    """
+    tagged = [(k, location) for k, group in enumerate(groups) for location in group]
+    for i, (left_group, left) in enumerate(tagged):
+        for right_group, right in tagged[i + 1 :]:
+            if left_group == right_group or left.root is not right.root:
+                continue
+            if not (isinstance(left, Element) and isinstance(right, Element)):
+                return False
+            gap = (left.index - right.index).constant
+            if gap is None or gap == 0:
+                return False
+    return True
 
 
 def element_type(kind: types.TypeAttribute) -> types.TypeAttribute:

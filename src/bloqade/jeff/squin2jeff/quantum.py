@@ -92,8 +92,9 @@ def supported(node: wire.Operation) -> bool:
 def scalar(node: wire.Operation) -> tuple[ir.SSAValue, ...]:
     """Insert the Jeff form of the scalar operation `node` and return its results.
 
-    Gate angles change from turns to radians. Jeff puts targets before controls,
-    so the results go back to the wire order.
+    Gate angles change from turns to radians. A Jeff gate acts on one group of
+    wires, so a gate on several groups becomes one Jeff gate per group. Jeff puts
+    targets before controls, so the results go back to the wire order.
     """
     if isinstance(node, wire.Measure):
         measured = put(stmts.MeasureNd(node.wire), node)
@@ -103,13 +104,16 @@ def scalar(node: wire.Operation) -> tuple[ir.SSAValue, ...]:
     assert isinstance(node, wire.Gate)
     form = GATES[node.kind]
     angles = tuple(radians(angle, node) for angle in node.params)
-    controls, targets = node.wires[: form.controls], node.wires[form.controls :]
-    gate = stmts.Gate(
-        targets, controls, angles, gate_name=form.name, adjoint=node.adjoint
-    )
-    made = put(gate, node)
-    count = len(targets)
-    return (*made.results[count:], *made.results[:count])
+    results: list[ir.SSAValue] = []
+    for group in node.groups:
+        controls, targets = group[: form.controls], group[form.controls :]
+        gate = stmts.Gate(
+            targets, controls, angles, gate_name=form.name, adjoint=node.adjoint
+        )
+        made = put(gate, node)
+        count = len(targets)
+        results.extend((*made.results[count:], *made.results[:count]))
+    return tuple(results)
 
 
 def negated(node: qubit_stmts.IsZero) -> ir.SSAValue:

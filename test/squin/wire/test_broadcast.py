@@ -184,3 +184,49 @@ def test_noise_broadcasts_stop_at_the_shortest_list(sizes):
     n, m = sizes
     expected = [1] * min(n, m) + [0] * max(m - n, 0)
     assert simulate(back, *sizes) == simulate(paired_noise, *sizes) == expected
+
+
+@native.kernel
+def separate_qubits():
+    qs = squin.qalloc(3)
+    native.broadcast.rx(math.pi, [qs[0], qs[2]])
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def overlapping_lists():
+    qs = squin.qalloc(3)
+    squin.x(qs[0])
+    squin.broadcast.cx([qs[0], qs[1]], [qs[1], qs[2]])
+    return squin.broadcast.measure(qs)
+
+
+def test_a_broadcast_over_separate_qubits_stays_one_statement():
+    wired = SquinToWire().emit(separate_qubits)
+    (gate,) = (
+        node
+        for node in wired.callable_region.walk()
+        if isinstance(node, Operation)
+        and not isinstance(node, RegisterOperation)
+        and node.name == "gate"
+    )
+    assert len(gate.groups) == 2
+    back = WireToSquin().emit(wired)
+    rotations = [
+        node for node in back.callable_region.walk() if isinstance(node, native_stmts.R)
+    ]
+    assert len(rotations) == 1
+    assert simulate(back) == simulate(separate_qubits) == [1, 0, 1]
+
+
+def test_groups_that_share_a_qubit_stay_in_source_order():
+    wired = SquinToWire().emit(overlapping_lists)
+    gates = [
+        node
+        for node in wired.callable_region.walk()
+        if isinstance(node, Operation) and node.name == "gate" and node.label == "cx"
+    ]
+    assert [len(gate.groups) for gate in gates] == [1, 1]
+    assert (
+        simulate(WireToSquin().emit(wired)) == simulate(overlapping_lists) == [1, 1, 1]
+    )

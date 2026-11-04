@@ -240,36 +240,55 @@ class Operation(ir.Statement):
         """Return the name of the operation for messages."""
         return self.name
 
+    @property
+    def groups(self) -> tuple[tuple[ir.SSAValue, ...], ...]:
+        """Split `linear` into consecutive groups of `arity.wires` values.
+
+        A `Gate` or a `Noise` acts on each group at the same time. For example,
+        `Gate(kind=cx, wires=(c0, t0, c1, t1))` has the groups `(c0, t0)` and
+        `(c1, t1)`. Every other operation has one group.
+        """
+        size, linear = self.arity.wires, self.linear
+        return tuple(linear[k : k + size] for k in range(0, len(linear), size))
+
 
 @dataclass(frozen=True)
 class HasArity(ir.StmtTrait):
     """Check that an operation has the number of wires and parameters of its kind.
 
-    Kirin's generated `check` of each statement runs this trait.
+    If `groups` is True, the operation may act on any positive number of groups,
+    each with the wire count of the kind. Kirin's generated `check` of each
+    statement runs this trait.
     """
+
+    groups: bool = False
 
     def verify(self, node: ir.Statement) -> None:
         """Raise a validation error if `node` has another arity than its kind."""
         assert isinstance(node, Operation)
         arity = node.arity
         wires, params = len(node.linear), len(node.parameters)
+        if self.groups and wires > 0 and wires % arity.wires == 0:
+            wires = arity.wires
         if (wires, params) != (arity.wires, arity.params):
+            per = " per group" if self.groups else ""
             raise ir.ValidationError(
                 node,
-                f"'{node.label}' needs {arity.wires} qubits and {arity.params}"
-                f" parameters, but it has {wires} and {params}.",
+                f"'{node.label}' needs {arity.wires} qubits{per} and {arity.params}"
+                f" parameters, but it has {len(node.linear)} and {params}.",
             )
 
 
 @statement(dialect=dialect, init=False)
 class Gate(Operation):
-    """Apply the unitary gate `kind` to one wire per qubit of the gate.
+    """Apply the unitary gate `kind` to each group of wires at the same time.
 
-    `params` holds the angles in turns. Result `i` continues wire `i`.
+    Each group holds one wire per qubit of the gate, and the groups share no
+    qubit. `params` holds the angles in turns. Result `i` continues wire `i`.
     """
 
     name = "gate"
-    traits = frozenset({ThreadsInOrder("wires"), HasArity()})
+    traits = frozenset({ThreadsInOrder("wires"), HasArity(groups=True)})
     wires: tuple[ir.SSAValue, ...] = info.argument(WireType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: GateKind = info.attribute()
@@ -307,13 +326,14 @@ class Gate(Operation):
 
 @statement(dialect=dialect, init=False)
 class Noise(Operation):
-    """Apply the noise channel `kind` to one wire per qubit of the channel.
+    """Apply the noise channel `kind` to each group of wires at the same time.
 
-    `params` holds the probabilities. Result `i` continues wire `i`.
+    Each group holds one wire per qubit of the channel, and the groups share no
+    qubit. `params` holds the probabilities. Result `i` continues wire `i`.
     """
 
     name = "noise"
-    traits = frozenset({ThreadsInOrder("wires"), HasArity()})
+    traits = frozenset({ThreadsInOrder("wires"), HasArity(groups=True)})
     wires: tuple[ir.SSAValue, ...] = info.argument(WireType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: NoiseKind = info.attribute()

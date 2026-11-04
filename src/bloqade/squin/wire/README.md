@@ -119,6 +119,10 @@ Measurement produces a classical result and continues the measured qubit.
 The wire dialect has 4 scalar operations: `Gate`, `Noise`, `Measure` and `Reset`.
 Each one acts on one group of qubits.
 A `Gate` or a `Noise` statement holds its kind as an attribute, such as `GateKind.CX`.
+A `Gate` or a `Noise` statement acts on one or more groups of wires at the same time, and the groups share no qubit.
+For example, `Gate(kind=cx, wires=(c0, t0, c1, t1))` applies CX to `(c0, t0)` and to `(c1, t1)` in one parallel step.
+The emitter gives a broadcast over separate qubits, such as `rx(a, [q0, q2])`, one such statement, so the round trip keeps the broadcast.
+If the groups of a broadcast can share a qubit, the emitter emits one statement per group in source order.
 `kinds.py` gives each kind its arity, which is its number of wires and parameters.
 The `HasArity` trait checks the arity when Kirin verifies the IR.
 `TRUNCATES` in `kinds.py` names the kinds whose register form stops at the shortest register.
@@ -154,7 +158,7 @@ At region exit, `free_local_allocations` frees each local allocation that the re
 
 A broadcast over whole registers or step-1 slices emits one register operation, for any length.
 A slice operand becomes a `TakeSlice` before the operation and a `PutSlice` after it.
-A broadcast over a list of separate qubits, such as `[a, qs[2]]`, emits one scalar operation per operand group.
+A broadcast over a list of separate qubits, such as `[a, qs[2]]`, emits one scalar operation on all operand groups.
 Operations with shortest-list semantics stop at the shortest register.
 For every other operation, equal operand lengths are a precondition of the source program.
 The converter rejects operands whose known lengths differ.

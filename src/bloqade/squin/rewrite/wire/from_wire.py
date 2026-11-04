@@ -145,21 +145,22 @@ class FromWireStatements(RewriteRule):
     def operation(self, node: stmts.Operation) -> None:
         """Insert the squin statement of the wire operation `node` before it.
 
-        On a scalar operation, each wire becomes a list of one qubit, and a scalar
-        result, such as a measurement result, becomes item 0 of the list result of
-        the squin statement. On a register operation, each register becomes the list
-        of qubits that it holds, and each list result stays a list.
+        On a scalar operation, qubit field `j` of the squin statement gets the list
+        of wire `j` of every group. So `Gate(kind=cx, wires=(c0, t0, c1, t1))`
+        becomes `cx([c0, c1], [t0, t1])`. A scalar result, such as a measurement
+        result, becomes item 0 of the list result of the squin statement. On a
+        register operation, each register becomes the list of qubits that it holds,
+        and each list result stays a list.
         """
         entry = source_of(node)
         scalar = not isinstance(node, stmts.RegisterOperation)
-        qubits = tuple(
-            (
-                _put(ilist.New(values=(value,), elem_type=QubitType), node).result
-                if scalar
-                else value
+        if scalar:
+            qubits = tuple(
+                _put(ilist.New(values=column, elem_type=QubitType), node).result
+                for column in zip(*node.groups)
             )
-            for value in node.linear
-        )
+        else:
+            qubits = node.linear
         adjoint = (
             node.adjoint
             if isinstance(node, (stmts.Gate, stmts.RegisterGate))

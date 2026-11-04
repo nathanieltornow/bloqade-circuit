@@ -84,6 +84,11 @@ class Entry:
         """Check whether the register form stops at the shortest register."""
         return False
 
+    @property
+    def groups(self) -> bool:
+        """Check whether one scalar statement can act on several groups of wires."""
+        return False
+
     def adjoint(self, stmt: ir.Statement) -> bool:
         """Return the value of the attribute `adjoint` of the squin statement `stmt`."""
         return self.has_adjoint and getattr(stmt, "adjoint")
@@ -114,6 +119,11 @@ class GateEntry(Entry):
     def arity(self) -> Arity:
         """Return the arity of the gate."""
         return GATE_ARITY[self.kind]
+
+    @property
+    def groups(self) -> bool:
+        """Return True, because `Gate` and `Noise` act on several groups at once."""
+        return True
 
     @property
     def truncates(self) -> bool:
@@ -149,6 +159,11 @@ class NoiseEntry(Entry):
     def arity(self) -> Arity:
         """Return the arity of the channel."""
         return NOISE_ARITY[self.kind]
+
+    @property
+    def groups(self) -> bool:
+        """Return True, because `Gate` and `Noise` act on several groups at once."""
+        return True
 
     @property
     def truncates(self) -> bool:

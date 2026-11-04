@@ -1,7 +1,7 @@
 """Turn registers of a constant size into separate wires.
 
-`ExpandBroadcast` replaces a register operation with one scalar operation per
-position when the register types carry their lengths. `UnpackRegister` then replaces
+`ExpandBroadcast` replaces a register operation with scalar operations when the
+register types carry their lengths. A broadcast gate stays one statement. `UnpackRegister` then replaces
 a local register with one `Alloc` per qubit, if every statement on the register's
 linear chain reads a constant index. After both rules, 2 gates on one qubit are
 neighbours on one wire, so a peephole rule can match them.
@@ -25,9 +25,13 @@ from bloqade.squin.wire.types import register_length
 class ExpandBroadcast(RewriteRule):
     """Replace a register operation of static length with scalar operations.
 
-    Each position `k` gets a `Borrow` at `k` from every register, the scalar
-    operation, and a `Release` at `k`. The classical results of the positions form
-    one list per classical result, such as the bits of a `RegisterMeasure`.
+    A `RegisterGate` or a `RegisterNoise` becomes one `Gate` or `Noise` on the
+    groups of all positions, so the broadcast stays one parallel step. Position `k`
+    forms the group of element `k` of every register. A `RegisterMeasure` or a
+    `RegisterReset` becomes one scalar operation per position. Around the scalar
+    operations, each element gets a `Borrow` and a `Release`. The classical results
+    of the positions form one list per classical result, such as the bits of a
+    `RegisterMeasure`.
     """
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
@@ -42,24 +46,32 @@ class ExpandBroadcast(RewriteRule):
         # The rule leaves that operation for the emitter's checks to report.
         if not node.truncates and len(set(known)) > 1:
             return RewriteResult()
+        size = min(known, default=0)
+        if isinstance(node, (stmts.RegisterGate, stmts.RegisterNoise)):
+            steps = [range(size)] if size else []
+        else:
+            steps = [range(position, position + 1) for position in range(size)]
         registers = list(node.linear)
         collected: list[list[ir.SSAValue]] = [[] for _ in node.classical]
-        for position in range(min(known, default=0)):
-            index = py.Constant(position)
-            index.insert_before(node)
+        for positions in steps:
+            elements: list[tuple[int, ir.SSAValue]] = []
             wires: list[ir.SSAValue] = []
-            for k, register in enumerate(registers):
-                borrow = stmts.Borrow(register, index.result)
-                borrow.insert_before(node)
-                borrow.register_out.type = register.type
-                registers[k] = borrow.register_out
-                wires.append(borrow.wire)
+            for position in positions:
+                index = py.Constant(position)
+                index.insert_before(node)
+                for k, register in enumerate(registers):
+                    borrow = stmts.Borrow(register, index.result)
+                    borrow.insert_before(node)
+                    borrow.register_out.type = register.type
+                    registers[k] = borrow.register_out
+                    elements.append((k, index.result))
+                    wires.append(borrow.wire)
             scalar = node.scalar(tuple(wires))
             scalar.insert_before(node)
-            for k, (register, output) in enumerate(zip(registers, scalar.outputs)):
-                release = stmts.Release(register, index.result, output)
+            for (k, index), output in zip(elements, scalar.outputs, strict=True):
+                release = stmts.Release(registers[k], index, output)
                 release.insert_before(node)
-                release.register_out.type = register.type
+                release.register_out.type = registers[k].type
                 registers[k] = release.register_out
             for items, value in zip(collected, scalar.classical, strict=True):
                 items.append(value)

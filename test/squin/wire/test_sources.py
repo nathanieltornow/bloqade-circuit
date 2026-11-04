@@ -137,3 +137,14 @@ def test_every_statement_that_continues_a_linear_operand_has_a_threads_trait():
     }
     for value in dialect.stmts:
         assert (value.get_trait(Threads) is None) == (value in ends), value.__name__
+
+
+def test_a_gate_takes_several_groups_of_its_arity():
+    wires = tuple(ir.TestValue(WireType) for _ in range(4))
+    gate = Gate(GateKind.CX, wires)
+    gate.verify()
+    assert gate.groups == (wires[:2], wires[2:])
+    with pytest.raises(ir.ValidationError, match="per group"):
+        Gate(GateKind.CX, wires[:3]).verify()
+    with pytest.raises(ir.ValidationError, match="needs 1 qubits"):
+        RegisterGate(GateKind.X, (ir.TestValue(RegisterType),) * 2).verify()
