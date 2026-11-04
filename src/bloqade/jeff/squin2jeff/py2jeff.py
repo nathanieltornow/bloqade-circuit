@@ -9,12 +9,11 @@ from kirin.dialects.py import len as py_len, slice as py_slice
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 from kirin.dialects.math import stmts as math_stmts
 
-from bloqade.types import item_type
+from bloqade.types import item_type, output_types
 from bloqade.constants import constant_int
 from bloqade.jeff.forms import SWAPPED, INT_BINARY, FLOAT_UNARY, FLOAT_BINARY
 from bloqade.jeff.types import FloatArrayType, is_bit, is_subtype
 from bloqade.jeff.dialects import stmts
-from bloqade.jeff.dialects.stmts.call import declared_outputs
 from bloqade.squin.rewrite.wire.driver import put, replace
 
 from .values import fitted, bitwidth, jeff_type
@@ -58,7 +57,7 @@ def constant_value(
     """
     match item:
         case tuple(members):
-            outputs = declared_outputs(typ)
+            outputs = output_types(typ)
             if len(outputs) != len(members):
                 outputs = tuple(types.Literal(member) for member in members)
             fields = tuple(

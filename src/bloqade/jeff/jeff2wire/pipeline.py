@@ -2,7 +2,7 @@
 
 from dataclasses import field, dataclass
 
-from kirin import ir, types
+from kirin import ir
 from kirin.passes import Fold, TypeInfer
 from kirin.rewrite import Walk
 from kirin.dialects import func
@@ -17,11 +17,16 @@ from bloqade.jeff.analysis.validation import (
     StructureValidation,
     JeffToSquinValidation,
 )
-from bloqade.squin.rewrite.wire.driver import CheckedFixpoint, reachable
+from bloqade.squin.rewrite.wire.driver import (
+    Retype,
+    CheckedFixpoint,
+    reachable,
+    set_signature,
+)
 from bloqade.squin.analysis.validation.wire import WireValidation
 
 from .jeff2py import JeffToPy
-from .rewrite import Retype, Quantum
+from .rewrite import Quantum, wire_type
 from .jeff2scf import JeffToScf
 
 
@@ -53,7 +58,7 @@ class JeffToWire:
             mark_owned(copy)
             JeffToPy(copy.dialects).unsafe_run(copy)
             JeffToScf(copy.dialects).unsafe_run(copy)
-            Walk(Retype()).rewrite(copy.code)
+            Walk(Retype(wire_type)).rewrite(copy.code)
             Walk(Quantum(self.methods)).rewrite(copy.code)
             copy.dialects = wire_kernel
             Fold(copy.dialects).unsafe_run(copy)
@@ -65,11 +70,6 @@ class JeffToWire:
             inputs = tuple(
                 value.type for value in copy.callable_region.blocks[0].args[1:]
             )
-            copy.code.signature = func.Signature(
-                inputs=inputs, output=returned.value.type
-            )
-            copy.callable_region.blocks[0].args[0].type = types.MethodType[
-                list(inputs), returned.value.type
-            ]
+            set_signature(copy.code, inputs, returned.value.type)
             WireValidation().check(copy)
         return self.methods[method]

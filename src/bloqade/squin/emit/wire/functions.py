@@ -7,7 +7,7 @@ from kirin import ir, types, interp
 from kirin.dialects import py, func
 
 from bloqade import qubit
-from bloqade.types import is_subtype
+from bloqade.types import is_subtype, output_types
 from bloqade.squin.wire import stmts
 from bloqade.analysis.indices import IndexExpr
 from bloqade.squin.wire.group import wire_group
@@ -18,7 +18,6 @@ from bloqade.squin.wire.errors import (
 from bloqade.squin.rewrite.wire.signature import (
     Layout,
     packed_type,
-    output_types,
     quantum_type,
     parameter_type,
     register_shape,

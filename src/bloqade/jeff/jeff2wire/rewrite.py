@@ -21,7 +21,7 @@ from bloqade.squin.gate import stmts as gates
 from bloqade.squin.wire import stmts as wire
 from bloqade.jeff.dialects import stmts
 from bloqade.squin.wire.types import WireType, register_type
-from bloqade.squin.rewrite.wire.driver import put, replace
+from bloqade.squin.rewrite.wire.driver import put, pack, replace
 from bloqade.squin.rewrite.wire.sources import ENTRIES
 from bloqade.squin.rewrite.wire.signature import packed_type
 from bloqade.jeff.analysis.validation.to_squin.gates import (
@@ -46,26 +46,6 @@ def wire_type(typ: types.TypeAttribute) -> types.TypeAttribute:
     if isinstance(typ, types.Generic) and is_subtype(typ, types.Tuple):
         return types.Generic(tuple, *(wire_type(member) for member in typ.vars))
     return typ
-
-
-class Retype(RewriteRule):
-    """Translate block parameters and operation result types before quantum rewriting."""
-
-    def rewrite_Block(self, node: ir.Block) -> RewriteResult:
-        """Give every block parameter its wire or classical type."""
-        for arg in node.args:
-            arg.type = wire_type(arg.type)
-        return RewriteResult()
-
-    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
-        """Translate result types and function signatures."""
-        for value in node.results:
-            value.type = wire_type(value.type)
-        if isinstance(node, func.Function):
-            inputs = tuple(wire_type(typ) for typ in node.signature.inputs)
-            node.signature = func.Signature(inputs=inputs, output=types.Any)
-            node.body.blocks[0].args[0].type = types.MethodType[list(inputs), types.Any]
-        return RewriteResult()
 
 
 DIRECT: dict[type[ir.Statement], Callable[..., ir.Statement]] = {
@@ -147,13 +127,7 @@ class Quantum(RewriteRule):
 
     def returned(self, node: stmts.Return) -> None:
         """Replace a Jeff return with a return of None, one value or a tuple."""
-        if not node.values:
-            value = put(func.ConstantNone(), node).result
-        elif len(node.values) == 1:
-            value = node.values[0]
-        else:
-            value = put(py.tuple.New(node.values), node).result
-        node.replace_by(func.Return(value))
+        node.replace_by(func.Return(pack(node.values, node)))
 
     def gate(self, node: stmts.Gate) -> RewriteResult:
         """Apply each gate power and map output wires to their declared operand positions."""

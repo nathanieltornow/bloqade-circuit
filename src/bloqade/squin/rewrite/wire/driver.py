@@ -1,16 +1,17 @@
 """Run bounded rewrites, insert replacement statements, and reject recursion.
 
 `put` and `replace` are the 2 steps that every rewrite rule of the wire
-conversions uses to swap a statement for its replacement.
+conversions uses to swap a statement for its replacement. `pack`, `set_signature`
+and `Retype` build the function boundaries of all conversions.
 """
 
 from typing import TypeVar
 from dataclasses import field, dataclass
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Sequence
 
-from kirin import ir
+from kirin import ir, types
 from kirin.rewrite import Walk, Fixpoint
-from kirin.dialects import func
+from kirin.dialects import py, func
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade.squin.wire.errors import WireConversionError
@@ -29,6 +30,57 @@ def replace(node: ir.Statement, *values: ir.SSAValue) -> None:
     for result, value in zip(node.results, values, strict=True):
         result.replace_by(value)
     node.delete()
+
+
+def pack(values: Sequence[ir.SSAValue], before: ir.Statement) -> ir.SSAValue:
+    """Return `None`, the single value or a tuple of `values`, inserted before `before`."""
+    if not values:
+        return put(func.ConstantNone(), before).result
+    if len(values) == 1:
+        return values[0]
+    return put(py.tuple.New(tuple(values)), before).result
+
+
+def set_signature(
+    function: func.Function,
+    inputs: tuple[types.TypeAttribute, ...],
+    output: types.TypeAttribute,
+) -> None:
+    """Give `function` the signature of `inputs` and `output`, and its self argument."""
+    function.signature = func.Signature(inputs=inputs, output=output)
+    function.body.blocks[0].args[0].type = types.MethodType[list(inputs), output]
+
+
+@dataclass
+class Retype(RewriteRule):
+    """Give each block argument, result and function signature the type of `convert`."""
+
+    convert: Callable[[types.TypeAttribute], types.TypeAttribute]
+
+    def rewrite_Block(self, node: ir.Block) -> RewriteResult:
+        """Convert the type of each block argument."""
+        return self.retype(node.args)
+
+    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
+        """Convert the type of each result and the signature of a function."""
+        result = self.retype(node.results)
+        if isinstance(node, func.Function):
+            signature = node.signature
+            inputs = tuple(self.convert(typ) for typ in signature.inputs)
+            output = self.convert(signature.output)
+            if (inputs, output) != (signature.inputs, signature.output):
+                set_signature(node, inputs, output)
+                result = RewriteResult(has_done_something=True)
+        return result
+
+    def retype(self, values: Iterable[ir.SSAValue]) -> RewriteResult:
+        """Convert the type of each value of `values`."""
+        changed = False
+        for value in values:
+            typ = self.convert(value.type)
+            changed |= typ != value.type
+            value.type = typ
+        return RewriteResult(has_done_something=changed)
 
 
 @dataclass

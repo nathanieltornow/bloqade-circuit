@@ -13,26 +13,13 @@ from collections.abc import Sequence
 from kirin import types
 from kirin.dialects import func, ilist
 
-from bloqade.types import QubitType, is_subtype
+from bloqade.types import QubitType, is_subtype, output_types
 from bloqade.squin.wire.types import (
     WireType,
     RegisterType,
     register_type,
     literal_length,
 )
-
-
-def output_types(output: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:
-    """Return the type of each output of a function whose output type is `output`.
-
-    `None` gives no output. A tuple gives one output per member, and any other type
-    gives one output.
-    """
-    if is_subtype(output, types.NoneType):
-        return ()
-    if isinstance(output, types.Generic) and is_subtype(output, types.Tuple):
-        return tuple(output.vars)
-    return (output,)
 
 
 def packed_type(outputs: Sequence[types.TypeAttribute]) -> types.TypeAttribute:

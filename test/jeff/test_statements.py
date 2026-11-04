@@ -8,9 +8,9 @@ import pytest
 from kirin import ir, types
 
 from bloqade import jeff
+from bloqade.types import output_types
 from bloqade.jeff.types import qureg
 from bloqade.jeff.dialects import stmts
-from bloqade.jeff.dialects.stmts.call import declared_outputs
 
 from .build import add, entry, method, switch, for_loop, while_loop
 
@@ -687,7 +687,7 @@ def test_rejects_a_returned_value_of_type_bottom():
 
 
 def test_a_literal_tuple_output_gives_one_literal_per_member():
-    assert declared_outputs(types.Literal((1, 2.5))) == (
+    assert output_types(types.Literal((1, 2.5))) == (
         types.Literal(1),
         types.Literal(2.5),
     )

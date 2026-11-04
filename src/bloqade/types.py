@@ -68,3 +68,18 @@ def holds_qubits(typ: types.TypeAttribute) -> bool:
             typ.vararg is not None and holds_qubits(typ.vararg.typ)
         )
     return False
+
+
+def output_types(output: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:
+    """Return the type of each value that a function of the output type `output` returns.
+
+    For example, `tuple[Wire, bool]` gives `(Wire, bool)` and `None` gives `()`. A
+    literal tuple gives one literal type per item, and any other type gives itself.
+    """
+    if is_subtype(output, types.NoneType):
+        return ()
+    if isinstance(output, types.Generic) and is_subtype(output, types.Tuple):
+        return tuple(output.vars)
+    if isinstance(output, types.Literal) and isinstance(output.data, tuple):
+        return tuple(types.Literal(item) for item in output.data)
+    return (output,)

@@ -2,13 +2,36 @@
 
 from dataclasses import dataclass
 
-from kirin import ir
+from kirin import ir, types
 from kirin.passes import Fold, TypeInfer
 from kirin.rewrite import Walk
+from kirin.dialects import ilist
 
-from bloqade.squin.rewrite.wire.driver import reachable
-from bloqade.squin.rewrite.wire.from_wire import FromWire, BoundListLengths
+from bloqade.types import is_subtype
+from bloqade.squin.rewrite.wire.driver import Retype, reachable
+from bloqade.squin.rewrite.wire.from_wire import FromWire
 from bloqade.squin.analysis.validation.wire import WireValidation
+
+
+def bounded_list_lengths(typ: types.TypeAttribute) -> types.TypeAttribute:
+    """Give each unknown list length of `typ` the bound `int` before the type check.
+
+    The bound assumes no concrete size.
+    """
+    if isinstance(typ, types.Generic) and is_subtype(typ, ilist.IListType):
+        element, length = typ.vars
+        return ilist.IListType[
+            bounded_list_lengths(element), types.Int if length == types.Any else length
+        ]
+    if (
+        isinstance(typ, types.Generic)
+        and is_subtype(typ, types.Tuple)
+        and typ.vararg is None
+    ):
+        return types.Generic(
+            tuple, *(bounded_list_lengths(member) for member in typ.vars)
+        )
+    return typ
 
 
 @dataclass
@@ -29,7 +52,7 @@ class WireToSquin:
         for copy in kernels.values():
             TypeInfer(copy.dialects)(copy)
             Fold(copy.dialects).unsafe_run(copy)
-            Walk(BoundListLengths()).rewrite(copy.code)
+            Walk(Retype(bounded_list_lengths)).rewrite(copy.code)
             copy.verify()
             copy.verify_type()
         return kernels[method]

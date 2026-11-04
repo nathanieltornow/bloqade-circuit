@@ -7,12 +7,12 @@ from kirin import ir, types
 from kirin.dialects import py, func
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
-from bloqade.types import is_subtype
+from bloqade.types import is_subtype, output_types
 from bloqade.jeff.types import QuregType, is_linear
 from bloqade.jeff.dialects import stmts
 from bloqade.squin.wire.ownership import InOut, convention
-from bloqade.jeff.dialects.stmts.call import declared_outputs
-from bloqade.squin.rewrite.wire.driver import put, replace
+from bloqade.squin.rewrite.wire.driver import put, replace, set_signature
+from bloqade.squin.rewrite.wire.signature import packed_type
 
 from .values import fitted, jeff_type
 
@@ -54,7 +54,7 @@ class Functions(RewriteRule):
         argument.
         """
         callee = self.methods[node.callee]
-        outputs = declared_outputs(callee.return_type)
+        outputs = output_types(callee.return_type)
         made = put(stmts.Call(callee, tuple(node.inputs), outputs), node)
         assert isinstance(node.callee.code, func.Function)
         if isinstance(convention(node.callee.code), InOut):
@@ -70,16 +70,9 @@ def retype(node: func.Function) -> None:
     """Give the function `node` the Jeff types of its parameters and outputs."""
     inputs = tuple(jeff_type(typ) for typ in node.signature.inputs)
     outputs = tuple(jeff_type(typ) for typ in flat_kinds(node.signature.output))
-    output = (
-        types.NoneType
-        if not outputs
-        else outputs[0] if len(outputs) == 1 else types.Generic(tuple, *outputs)
-    )
-    block = node.body.blocks[0]
-    for argument, typ in zip(block.args[1:], inputs, strict=True):
+    for argument, typ in zip(node.body.blocks[0].args[1:], inputs, strict=True):
         argument.type = typ
-    block.args[0].type = types.MethodType[list(inputs), output]
-    node.signature = func.Signature(inputs=inputs, output=output)
+    set_signature(node, inputs, packed_type(outputs))
 
 
 def returned(node: func.Return) -> None:
@@ -88,7 +81,7 @@ def returned(node: func.Return) -> None:
     if not isinstance(function, func.Function):
         raise ir.ValidationError(node, "Jeff requires returns at function scope.")
     values = flat_values(node.value)
-    expected = declared_outputs(function.signature.output)
+    expected = output_types(function.signature.output)
     if len(values) != len(expected):
         raise ir.ValidationError(
             node, "The return values must match the declared function outputs."
@@ -108,7 +101,7 @@ def flat_kinds(typ: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:
     Jeff has no tuples, so a nested tuple gives its leaf types in order, and None
     gives no output.
     """
-    members = declared_outputs(typ)
+    members = output_types(typ)
     if members == (typ,):
         return members
     return tuple(leaf for member in members for leaf in flat_kinds(member))
@@ -134,7 +127,7 @@ def nested(
 
     This is the inverse of `flat_kinds`.
     """
-    members = declared_outputs(typ)
+    members = output_types(typ)
     if members == (typ,):
         return next(results)
     if not members:

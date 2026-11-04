@@ -29,7 +29,7 @@ from kirin.dialects.py import len as py_len, slice as py_slice
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade.qubit import stmts as qubit_stmts, qalloc
-from bloqade.types import QubitType, is_subtype
+from bloqade.types import QubitType, is_subtype, output_types
 from bloqade.squin.wire import stmts
 from bloqade.squin.wire.group import is_wire, reference_group
 from bloqade.squin.wire.types import RegisterType, is_linear
@@ -42,9 +42,17 @@ from bloqade.squin.wire.ownership import (
     Convention,
     convention,
 )
-from bloqade.squin.rewrite.wire.driver import CheckedFixpoint, put, replace, reachable
+from bloqade.squin.rewrite.wire.driver import (
+    Retype,
+    CheckedFixpoint,
+    put,
+    pack,
+    replace,
+    reachable,
+    set_signature,
+)
 from bloqade.squin.rewrite.wire.sources import entry_of
-from bloqade.squin.rewrite.wire.signature import packed_type, output_types
+from bloqade.squin.rewrite.wire.signature import packed_type
 
 
 def squin_type(typ: types.TypeAttribute) -> types.TypeAttribute:
@@ -431,21 +439,12 @@ class FromWireSignature(RewriteRule):
                 values = list(made.args)
             else:
                 values = []
-            values = values[: len(kept)]
-            if not values:
-                value = put(func.ConstantNone(), returned).result
-            elif len(values) == 1:
-                value = values[0]
-            else:
-                value = put(py.tuple.New(tuple(values)), returned).result
-            put(func.Return(value), returned)
+            put(func.Return(pack(values[: len(kept)], returned)), returned)
             returned.delete()
-        inputs = tuple(squin_type(k) for k in signature.inputs)
         for arg in block.args[1:]:
             arg.type = squin_type(arg.type)
-        output = packed_type(kept)
-        block.args[0].type = types.MethodType[list(inputs), output]
-        node.signature = func.Signature(inputs=inputs, output=output)
+        inputs = tuple(squin_type(k) for k in signature.inputs)
+        set_signature(node, inputs, packed_type(kept))
         return RewriteResult(has_done_something=True)
 
 
@@ -487,7 +486,7 @@ class FromWire:
         assert isinstance(method.code, func.Function)
         if isinstance(convention(method.code), Owns):
             result = Walk(FromWireSignature()).rewrite(method.code).join(result)
-            result = Walk(ReferenceTypes()).rewrite(method.code).join(result)
+            result = Walk(Retype(squin_type)).rewrite(method.code).join(result)
             method.code.attributes.pop(OWNED)
             return result
         regions = Walk(Chain(FromWireRegions(), FromWireSignature()))
@@ -545,66 +544,3 @@ def splice(
     (front := py.binop.Add(head.result, middle)).insert_before(before)
     (whole := py.binop.Add(front.result, tail.result)).insert_before(before)
     return whole.result
-
-
-class ReferenceTypes(RewriteRule):
-    """Give each wire value of an `Owns` function its reference squin type."""
-
-    def rewrite_Block(self, node: ir.Block) -> RewriteResult:
-        """Convert each region parameter to its corresponding reference type."""
-        for value in node.args:
-            value.type = squin_type(value.type)
-        return RewriteResult()
-
-    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
-        """Convert each remaining result type before reference type inference."""
-        for value in node.results:
-            value.type = squin_type(value.type)
-        return RewriteResult()
-
-
-def bounded_list_lengths(typ: types.TypeAttribute) -> types.TypeAttribute:
-    """Constrain unknown list lengths to integers without assuming a concrete size."""
-    if isinstance(typ, types.Generic) and is_subtype(typ, ilist.IListType):
-        element, length = typ.vars
-        return ilist.IListType[
-            bounded_list_lengths(element), types.Int if length == types.Any else length
-        ]
-    if (
-        isinstance(typ, types.Generic)
-        and is_subtype(typ, types.Tuple)
-        and typ.vararg is None
-    ):
-        return types.Generic(
-            tuple, *(bounded_list_lengths(member) for member in typ.vars)
-        )
-    return typ
-
-
-class BoundListLengths(RewriteRule):
-    """Give list lengths integer bounds before checking operation types."""
-
-    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
-        """Refine result types and the declared function signature."""
-        changed = False
-        for value in node.results:
-            typ = bounded_list_lengths(value.type)
-            changed |= value.type != typ
-            value.type = typ
-        if isinstance(node, func.Function):
-            signature = node.signature
-            inputs = tuple(bounded_list_lengths(typ) for typ in signature.inputs)
-            output = bounded_list_lengths(signature.output)
-            changed |= inputs != signature.inputs or output != signature.output
-            node.signature = func.Signature(inputs=inputs, output=output)
-            node.body.blocks[0].args[0].type = types.MethodType[list(inputs), output]
-        return RewriteResult(has_done_something=changed)
-
-    def rewrite_Block(self, node: ir.Block) -> RewriteResult:
-        """Refine list lengths in block arguments."""
-        changed = False
-        for value in node.args:
-            typ = bounded_list_lengths(value.type)
-            changed |= value.type != typ
-            value.type = typ
-        return RewriteResult(has_done_something=changed)
