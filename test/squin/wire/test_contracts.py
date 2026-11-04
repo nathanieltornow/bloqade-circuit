@@ -124,7 +124,7 @@ def test_validation_interprets_each_callee_once(monkeypatch):
 
     monkeypatch.setattr(InterpreterABC, "frame_call", record)
     WireValidation().check(wired)
-    assert len(visits) == 2 * 5
+    assert len(visits) == 3 * 5
     assert set(visits.values()) == {1}
 
 

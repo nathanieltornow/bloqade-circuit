@@ -1,6 +1,7 @@
 """Check wire squin with the kirin validation suite `WireValidation`.
 
-The suite checks structure and types, single use, and the places of register elements.
+The suite checks structure and types, the types at boundaries, single use, and the
+places of register elements.
 """
 
 from dataclasses import replace, dataclass
@@ -8,8 +9,9 @@ from dataclasses import replace, dataclass
 from kirin import ir
 from kirin.validation import ValidationPass, ValidationSuite
 
-from bloqade.squin.analysis.validation.wire.registers import RegisterValidation
 from bloqade.squin.analysis.validation.wire.linearity import LinearityValidation
+from bloqade.squin.analysis.validation.wire.registers import RegisterValidation
+from bloqade.squin.analysis.validation.wire.boundaries import BoundaryValidation
 
 
 class StructureValidation(ValidationPass[None]):
@@ -36,13 +38,14 @@ class StructureValidation(ValidationPass[None]):
 
 @dataclass
 class WireValidation:
-    """Run the wire structure, linearity and register checks."""
+    """Run the wire structure, boundary, linearity and register checks."""
 
     def check(self, method: ir.Method) -> None:
         """Raise a `ValidationErrorGroup` that lists every broken rule of `method`."""
         suite = ValidationSuite(
             [
                 StructureValidation,
+                BoundaryValidation,
                 LinearityValidation,
                 RegisterValidation,
             ]
