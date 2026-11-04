@@ -1,7 +1,9 @@
 """Describe source qubit references as immutable locations in emitted allocations.
 
-The items of a `Register` or a `View` are qubits. The items of a `Grid` or `Rows`
-are the rows of a nested register, whose flat root holds the rows in order.
+The items of a `Register` or a `View` are qubits if its `row_shape` is empty.
+Otherwise its items are the rows of a nested register, and the flat register holds
+the rows in order. For example, `IList[IList[Qubit, 2], 3]` is a `Register` of 3
+items with the row shape `(2,)`.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from typing import TypeAlias
 from dataclasses import dataclass
 
 from kirin import ir
+from kirin.dialects import py, ilist
 
 from bloqade.analysis.indices import Slice, IndexExpr, python_slice
 from bloqade.squin.wire.errors import WireConversionError
@@ -33,59 +36,39 @@ class Element:
 
 @dataclass(frozen=True)
 class Register:
-    """Name one whole flat register allocation."""
+    """Name one whole register allocation."""
 
     root: ir.SSAValue
     length: IndexExpr | None = None
-    """The number of qubits, or None if it is unknown."""
+    """The number of items, or None if it is unknown."""
+    row_shape: tuple[int | None, ...] = ()
+    """The dimensions of one item row, outermost first, or `()` for qubit items."""
 
 
 @dataclass(frozen=True)
 class View:
-    """Name a contiguous slice of the qubits of a register."""
+    """Name the items of a register at the flat indices of `span`."""
 
     root: ir.SSAValue
     span: Slice
-    """The flat root index of each qubit of the slice."""
+    """The flat index where each item starts."""
+    row_shape: tuple[int | None, ...] = ()
+    """The dimensions of one item row, outermost first, or `()` for qubit items."""
 
     @property
     def length(self) -> IndexExpr | None:
-        """Return the number of qubits, or None if it is unknown."""
+        """Return the number of items, or None if it is unknown."""
         return self.span.length
 
 
-@dataclass(frozen=True)
-class Grid:
-    """Name one whole nested register allocation."""
+Single: TypeAlias = Qubit | Element
+"""Name a location of exactly one qubit."""
 
-    root: ir.SSAValue
-    length: IndexExpr | None
-    """The number of rows, or None if it is unknown."""
-    row_shape: tuple[int | None, ...]
-    """The dimensions of one row, outermost first."""
-
-
-@dataclass(frozen=True)
-class Rows:
-    """Name a row of a nested register whose items are rows themselves."""
-
-    root: ir.SSAValue
-    span: Slice
-    """The flat root index where each item row starts."""
-    row_shape: tuple[int, ...]
-    """The dimensions of one item row, outermost first."""
-
-    @property
-    def length(self) -> IndexExpr | None:
-        """Return the number of item rows."""
-        return self.span.length
-
-
-Location: TypeAlias = Qubit | Element | Register | View | Grid | Rows
-"""Name the allocation, the qubit or the register part that a source reference holds."""
-
-Part: TypeAlias = Register | View | Grid | Rows
+Part: TypeAlias = Register | View
 """Name a location that holds indexed items."""
+
+Location: TypeAlias = Single | Part
+"""Name the allocation, the qubit or the register part that a source reference holds."""
 
 Value: TypeAlias = ir.SSAValue | Location | tuple["Value", ...] | None
 """Represent an emitted classical value, a quantum location, or a source container.
@@ -95,21 +78,16 @@ emitted form.
 """
 
 
-def is_qubit(value: Value) -> bool:
-    """Check whether `value` names exactly one qubit."""
-    return isinstance(value, (Qubit, Element))
-
-
 def contains_location(value: Value) -> bool:
-    """Identify source containers that still contain quantum locations."""
-    return isinstance(value, (Qubit, Element, Register, View, Grid, Rows)) or (
+    """Check whether `value` is a location or a tuple that holds a location."""
+    return isinstance(value, (Qubit, Element, Register, View)) or (
         isinstance(value, tuple) and any(contains_location(item) for item in value)
     )
 
 
 def items_of(location: Location, at: ir.Statement) -> Part:
     """Return `location` if it holds indexed items, or raise an error for one qubit."""
-    if not isinstance(location, (Register, View, Grid, Rows)):
+    if not isinstance(location, (Register, View)):
         raise WireConversionError("A scalar qubit has no indexed elements.", at)
     return location
 
@@ -119,13 +97,13 @@ def select(location: Location, index: IndexExpr, at: ir.Statement) -> Location:
     part = items_of(location, at)
     index = checked_index(part.length, index, at)
     match part:
-        case Register(root):
+        case Register(root, _, ()):
             return Element(root, index)
-        case View(root, span):
+        case View(root, span, ()):
             return Element(root, span.item(index))
-        case Grid(root, _, row_shape):
+        case Register(root, _, row_shape):
             return row(root, index.scale(row_width(row_shape, at)), row_shape, at)
-        case Rows(root, span, row_shape):
+        case View(root, span, row_shape):
             return row(root, span.item(index), row_shape, at)
 
 
@@ -159,9 +137,7 @@ def checked_index(
     return index
 
 
-def known_shape(
-    shape: tuple[int | None, ...], at: ir.Statement | None
-) -> tuple[int, ...]:
+def known_shape(shape: tuple[int | None, ...], at: ir.Statement) -> tuple[int, ...]:
     """Return the row dimensions `shape`, which must all be known."""
     known = tuple(size for size in shape if size is not None)
     if len(known) != len(shape):
@@ -171,19 +147,17 @@ def known_shape(
     return known
 
 
-def row_width(shape: tuple[int | None, ...], at: ir.Statement | None) -> int:
+def row_width(shape: tuple[int | None, ...], at: ir.Statement) -> int:
     """Return the number of qubits in one row of the dimensions `shape`."""
     return math.prod(known_shape(shape, at))
 
 
 def row(
     root: ir.SSAValue, start: IndexExpr, shape: tuple[int | None, ...], at: ir.Statement
-) -> View | Rows:
+) -> View:
     """Return the location of the row of dimensions `shape` that starts at `start`."""
     outer, *inner = known_shape(shape, at)
-    if not inner:
-        return View(root, Slice(start, 1, IndexExpr(outer)))
-    return Rows(root, Slice(start, math.prod(inner), IndexExpr(outer)), tuple(inner))
+    return View(root, Slice(start, math.prod(inner), IndexExpr(outer)), tuple(inner))
 
 
 def select_slice(
@@ -199,7 +173,7 @@ def select_slice(
     """
     part = items_of(location, at)
     count = None if part.length is None else part.length.constant
-    if isinstance(part, (Grid, Rows)):
+    if part.row_shape:
         if count is None or any(
             x is not None and x.constant is None for x in (start, stop)
         ):
@@ -221,3 +195,53 @@ def select_slice(
     if span is None:
         raise WireConversionError("The slice has no place in a known allocation.", at)
     return View(part.root, span)
+
+
+def known_items(value: Value, at: ir.Statement) -> tuple[Value, ...] | None:
+    """Return the item meanings of a container whose length is known, or None.
+
+    A constant empty list, such as the operand of `broadcast.x([])`, has no items.
+    """
+    if isinstance(value, tuple):
+        return value
+    if isinstance(value, ir.SSAValue) and isinstance(value.owner, py.Constant):
+        data = value.owner.value.unwrap()
+        if isinstance(data, ilist.IList) and len(data) == 0:
+            return ()
+    if isinstance(value, (Register, View)) and value.length is not None:
+        if (count := value.length.constant) is not None:
+            return tuple(select(value, IndexExpr(i), at) for i in range(max(0, count)))
+    return None
+
+
+def extent(location: Location) -> tuple[IndexExpr, IndexExpr] | None:
+    """Return the first flat index and the qubit count of a contiguous location.
+
+    The result is None for a location whose qubits the emitter cannot bound, such as
+    a whole register.
+    """
+    match location:
+        case Element(_, index):
+            return index, IndexExpr(1)
+        case View(_, Slice(start, 1, length), ()) if length is not None:
+            return start, length
+    return None
+
+
+def apart(left: Location, right: Location) -> bool:
+    """Check whether two locations provably share no qubit.
+
+    Locations with different roots name different allocations. 2 contiguous locations
+    of one register are apart if one ends before the other starts.
+    """
+    if left.root is not right.root:
+        return True
+    a, b = extent(left), extent(right)
+    if a is None or b is None:
+        return False
+    (a_start, a_count), (b_start, b_count) = a, b
+    gaps = (
+        (a_start + a_count - b_start).constant,
+        (b_start + b_count - a_start).constant,
+    )
+    return any(gap is not None and gap <= 0 for gap in gaps)

@@ -35,6 +35,19 @@ def yield_wires(
     body.push(scf.Yield(*classical, *(body.latest[root] for root in roots)))
 
 
+def same_locations(
+    left: Sequence[Value], right: Sequence[Value], stmt: ir.Statement, message: str
+) -> None:
+    """Raise `message` unless both sequences hold the same location at each position.
+
+    A loop body must yield each carried location back, and both branches must yield
+    the same location at each position.
+    """
+    for a, b in zip(left, right, strict=True):
+        if (contains_location(a) or contains_location(b)) and a != b:
+            raise WireConversionError(message, stmt)
+
+
 def resume(
     frame: WireFrame,
     made: ir.Statement,
@@ -105,11 +118,12 @@ class ControlFlow(interp.MethodTable):
                 )
             # A quantum initializer gets no block argument, because `carry_wires`
             # carries its root. The body must yield the same location back.
-            for i, value in enumerate(initial):
-                if i not in classical_indices and value != yielded[i]:
-                    raise WireConversionError(
-                        "Cannot resolve a value carried by a loop or branch.", stmt
-                    )
+            same_locations(
+                initial,
+                yielded,
+                stmt,
+                "Cannot resolve a value carried by a loop or branch.",
+            )
             outputs = tuple(
                 emit.classical_value(body, yielded[i]) for i in classical_indices
             )
@@ -147,15 +161,15 @@ class ControlFlow(interp.MethodTable):
         left, right = yields
         if len(left) != len(right):
             raise WireConversionError("Branch results must have matching counts.", stmt)
-        classical_indices: list[int] = []
-        for i, (a, b) in enumerate(zip(left, right, strict=True)):
-            if contains_location(a) or contains_location(b):
-                if a != b:
-                    raise WireConversionError(
-                        "A branch reference has no place in one known allocation.", stmt
-                    )
-            else:
-                classical_indices.append(i)
+        same_locations(
+            left,
+            right,
+            stmt,
+            "A branch reference has no place in one known allocation.",
+        )
+        classical_indices = [
+            i for i, value in enumerate(left) if not contains_location(value)
+        ]
         for body, yielded in zip(bodies, yields, strict=True):
             outputs = tuple(
                 emit.classical_value(body, yielded[i]) for i in classical_indices

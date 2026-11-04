@@ -1,42 +1,23 @@
-"""Resolve qubit references in allocations, aliases, containers, lengths and indexing."""
+"""Resolve qubit references in aliases, containers, lengths and indexing."""
 
 from kirin import ir, types, interp
 from kirin.dialects import py, func, ilist
 from kirin.dialects.py import len as py_len, slice as py_slice
 
-from bloqade import qubit
 from bloqade.types import is_subtype, holds_qubits
 from bloqade.constants import constant_int
-from bloqade.squin.wire import stmts
 from bloqade.analysis.indices import IndexExpr
 from bloqade.squin.wire.errors import WireConversionError
 
 from .base import EmitWire, WireFrame
-from .gates import emit_gate
-from .values import Value, Location, select, select_slice, contains_location
-
-
-@qubit.dialect.register(key="emit.squin_wire")
-class Qubits(interp.MethodTable):
-    """Emit standalone qubit allocations, measurements and resets."""
-
-    @interp.impl(qubit.stmts.New)
-    def new(
-        self, emit: EmitWire, frame: WireFrame, stmt: qubit.stmts.New
-    ) -> tuple[Value]:
-        """Create a qubit and record its lifetime in the current region."""
-        return (emit.new_qubit(frame, frame.push(stmts.Alloc()).results[0]),)
-
-    @interp.impl(qubit.stmts.Measure)
-    @interp.impl(qubit.stmts.Reset)
-    def measure(
-        self,
-        emit: EmitWire,
-        frame: WireFrame,
-        stmt: qubit.stmts.Measure | qubit.stmts.Reset,
-    ) -> tuple[Value, ...]:
-        """Emit the wire form of a measurement or a reset."""
-        return emit_gate(emit, frame, stmt)
+from .values import (
+    Value,
+    Location,
+    select,
+    known_items,
+    select_slice,
+    contains_location,
+)
 
 
 @py.assign.dialect.register(key="emit.squin_wire")
@@ -87,7 +68,7 @@ class Arithmetic(interp.MethodTable):
         """Concatenate known quantum sequences or copy the classical addition."""
         left, right = frame.get_values(stmt.args)
         if contains_location(left) or contains_location(right):
-            a, b = emit.known_items(left, stmt), emit.known_items(right, stmt)
+            a, b = known_items(left, stmt), known_items(right, stmt)
             if a is None or b is None:
                 raise WireConversionError(
                     "Quantum concatenation requires known source lengths.", stmt
@@ -159,7 +140,7 @@ def element_item(
     A runtime index must already be a valid wire index, between 0 and the length minus
     1. Only a negative constant index counts from the end.
     """
-    position = emit.index(stmt.index)
+    position = emit.indices.of(stmt.index)
     if isinstance(container, Location):
         return select(container, position, stmt)
     if isinstance(container, tuple):
@@ -178,8 +159,8 @@ def slice_bounds(
     """Read the bounds of the source slice `value` as index expressions."""
     node = value.owner
     if isinstance(node, py_slice.Slice):
-        start = None if is_none(node.start) else emit.index(node.start)
-        stop = None if is_none(node.stop) else emit.index(node.stop)
+        start = None if is_none(node.start) else emit.indices.of(node.start)
+        stop = None if is_none(node.stop) else emit.indices.of(node.stop)
         step = 1 if is_none(node.step) else constant_int(node.step)
     elif isinstance(node, py.Constant) and isinstance(
         sliced := node.value.unwrap(), slice

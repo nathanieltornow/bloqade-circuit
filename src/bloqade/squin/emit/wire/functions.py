@@ -26,12 +26,11 @@ from bloqade.squin.rewrite.wire.signature import (
 
 from .base import EmitWire, WireFrame, body_of
 from .values import (
-    Grid,
     Qubit,
     Value,
+    Single,
     Element,
     Register,
-    is_qubit,
     contains_location,
 )
 
@@ -88,7 +87,7 @@ class Functions(interp.MethodTable):
                 end,
             )
         borrowed = [
-            cast(Qubit | Register | Grid, parameter_values[i])
+            cast(Qubit | Register, parameter_values[i])
             for i in layout.borrowed_positions
         ]
         results = (
@@ -154,12 +153,9 @@ def add_parameter(
     frame.latest[argument] = argument
     if typ == WireType:
         return Qubit(argument)
-    shape = register_shape(source.type)
-    outer = shape[0] if shape else None
+    outer, *inner = register_shape(source.type) or (None,)
     length = None if outer is None else IndexExpr(outer)
-    if len(shape) > 1:
-        return Grid(argument, length, shape[1:])
-    return Register(argument, length)
+    return Register(argument, length, tuple(inner))
 
 
 def ordinary_values(
@@ -235,7 +231,7 @@ def allocate_register(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Re
     root = frame.push(stmts.AllocRegister(size)).results[0]
     frame.latest[root] = root
     frame.local_roots.append(root)
-    length = emit.index(stmt.inputs[0])
+    length = emit.indices.of(stmt.inputs[0])
     # A negative constant size gives an empty register, like `range(n)`.
     if (count := length.constant) is not None:
         length = IndexExpr(max(0, count))
@@ -251,10 +247,7 @@ def run_library(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
     # The body reads the caller's integers when it emits an index of a caller
     # location, so the frame has parent access.
     with emit.new_frame(stmt.callee.code, has_parent_access=True) as body:
-        body.site = frame.site or stmt
-        body.output = frame.output
-        body.latest = frame.latest
-        body.local_roots = frame.local_roots
+        body.share(frame, stmt)
         # A wrapper body never uses its self argument, which has no emitted form.
         result = emit.frame_call(
             body, stmt.callee.code, None, *frame.get_values(stmt.inputs)
@@ -273,8 +266,7 @@ def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
     layout = Layout.of(callee.signature)
     wired = emit.converted[stmt.callee]
     arguments = frame.get_values(stmt.inputs)
-    borrowed = borrowed_operands(arguments, layout, stmt)
-    check_shapes(callee, layout, borrowed, stmt)
+    borrowed = borrowed_locations(callee, layout, arguments, stmt)
     location_at = dict(zip(layout.borrowed_positions, borrowed, strict=True))
     inputs = tuple(
         (
@@ -296,47 +288,44 @@ def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
     return ordinary[0] if ordinary else frame.push(func.ConstantNone()).results[0]
 
 
-def borrowed_operands(
-    arguments: tuple[Value, ...], layout: Layout, stmt: func.Invoke
-) -> list[Qubit | Register | Grid | Element]:
-    """Return the borrowed call operands, which must be qubits or whole registers.
+def borrowed_locations(
+    callee: func.Function,
+    layout: Layout,
+    arguments: tuple[Value, ...],
+    stmt: func.Invoke,
+) -> list[Single | Register]:
+    """Return the quantum call operands, each with the shape that its parameter declares.
 
-    The borrow check rejects 2 operands that provably name the same qubit.
+    A qubit parameter takes one qubit, and a register parameter takes a whole
+    register. The callee reads register dimensions from its parameter types, so an
+    argument of another shape would make it address the wrong qubits. The register
+    check rejects 2 operands that provably name the same qubit.
     """
-    operands = [arguments[i] for i in layout.borrowed_positions]
-    if not all(isinstance(x, (Qubit, Register, Grid, Element)) for x in operands):
+    parameters = callee.body.blocks[0].args[1:]
+    if not all(
+        isinstance(arguments[i], (Qubit, Element, Register))
+        for i in layout.borrowed_positions
+    ):
         raise WireConversionError(
             "A call requires whole registers or individual qubits.", stmt
         )
-    return cast(list[Qubit | Register | Grid | Element], operands)
-
-
-def check_shapes(
-    callee: func.Function,
-    layout: Layout,
-    borrowed: list[Qubit | Register | Grid | Element],
-    stmt: func.Invoke,
-) -> None:
-    """Require each quantum argument to have the shape that its parameter declares.
-
-    The callee reads register dimensions from its parameter types, so an argument
-    of another shape would make it address the wrong qubits.
-    """
-    parameters = callee.body.blocks[0].args[1:]
-    for position, operand in zip(layout.borrowed_positions, borrowed, strict=True):
-        typ = parameters[position].type
+    borrowed: list[Single | Register] = []
+    for position in layout.borrowed_positions:
+        operand, typ = arguments[position], parameters[position].type
         if quantum_type(typ) == WireType:
-            if not is_qubit(operand):
+            if not isinstance(operand, (Qubit, Element)):
                 raise WireConversionError(
                     "A qubit parameter requires one qubit argument.", stmt
                 )
+            borrowed.append(operand)
             continue
-        if not isinstance(operand, (Register, Grid)):
+        if not isinstance(operand, Register):
             raise WireConversionError(
                 "A register parameter requires a whole register argument.", stmt
             )
         expected = register_shape(typ)
-        actual = shape_of(operand)
+        outer = None if operand.length is None else operand.length.constant
+        actual = (outer, *operand.row_shape)
         if len(expected) != len(actual) or any(
             size is not None and size != given for size, given in zip(expected, actual)
         ):
@@ -345,14 +334,8 @@ def check_shapes(
                 " parameter declares.",
                 stmt,
             )
-
-
-def shape_of(register: Register | Grid) -> tuple[int | None, ...]:
-    """Return the known dimensions of a whole register, outermost first."""
-    outer = None if register.length is None else register.length.constant
-    if isinstance(register, Grid):
-        return (outer, *register.row_shape)
-    return (outer,)
+        borrowed.append(operand)
+    return borrowed
 
 
 def call_results(
