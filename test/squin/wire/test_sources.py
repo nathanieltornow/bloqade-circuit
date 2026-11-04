@@ -16,7 +16,6 @@ from bloqade.squin.wire import (
     RegisterMeasure,
 )
 from bloqade.squin.noise import stmts as noise_stmts
-from bloqade.squin.wire.kinds import GATE_ARITY, NOISE_ARITY
 from bloqade.squin.wire.sources import (
     SOURCES,
     GATE_SOURCES,
@@ -40,8 +39,8 @@ def test_every_flat_qubit_statement_has_an_entry():
 
 
 def test_every_kind_has_exactly_one_source():
-    assert set(GATE_SOURCES) == set(GATE_ARITY) == set(GateKind)
-    assert set(NOISE_SOURCES) == set(NOISE_ARITY) == set(NoiseKind)
+    assert set(GATE_SOURCES) == set(GateKind)
+    assert set(NOISE_SOURCES) == set(NoiseKind)
 
 
 def test_native_gates_keep_their_own_kinds():
@@ -95,7 +94,7 @@ def test_an_operation_rejects_a_shape_that_differs_from_its_kind(build):
         ),
         (
             GateEntry(gate_stmts.Rz, ("qubits",), ("angle",), kind=GateKind.CX),
-            "arity of its kind",
+            "counts of its kind",
         ),
         (MeasureEntry(qubit_stmts.Measure, ("qubits",)), "results in order"),
         (
@@ -139,7 +138,7 @@ def test_every_statement_that_continues_a_linear_operand_has_a_threads_trait():
         assert (value.get_trait(Threads) is None) == (value in ends), value.__name__
 
 
-def test_a_gate_takes_several_groups_of_its_arity():
+def test_a_gate_takes_several_groups_of_its_kind():
     wires = tuple(ir.TestValue(WireType) for _ in range(4))
     gate = Gate(GateKind.CX, wires)
     gate.verify()

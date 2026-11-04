@@ -22,16 +22,7 @@ from bloqade.squin.gate import stmts as gate_stmts
 from bloqade.squin.noise import stmts as noise_stmts
 from bloqade.native.dialects.gate import stmts as native_stmts
 
-from .kinds import (
-    TRUNCATES,
-    GATE_ARITY,
-    NOISE_ARITY,
-    RESET_ARITY,
-    MEASURE_ARITY,
-    Arity,
-    GateKind,
-    NoiseKind,
-)
+from .kinds import GateKind, NoiseKind
 from .stmts import (
     Gate,
     Noise,
@@ -116,9 +107,9 @@ class GateEntry(Entry):
     kind: GateKind
 
     @property
-    def arity(self) -> Arity:
-        """Return the arity of the gate."""
-        return GATE_ARITY[self.kind]
+    def counts(self) -> tuple[int, int]:
+        """Return the number of qubits and parameters of the gate."""
+        return self.kind.wires, self.kind.params
 
     @property
     def groups(self) -> bool:
@@ -128,7 +119,7 @@ class GateEntry(Entry):
     @property
     def truncates(self) -> bool:
         """Check whether the register form of the kind stops at the shortest register."""
-        return self.kind in TRUNCATES
+        return self.kind.truncates
 
     def scalar(
         self,
@@ -156,9 +147,9 @@ class NoiseEntry(Entry):
     kind: NoiseKind
 
     @property
-    def arity(self) -> Arity:
-        """Return the arity of the channel."""
-        return NOISE_ARITY[self.kind]
+    def counts(self) -> tuple[int, int]:
+        """Return the number of qubits and parameters of the channel."""
+        return self.kind.wires, self.kind.params
 
     @property
     def groups(self) -> bool:
@@ -168,7 +159,7 @@ class NoiseEntry(Entry):
     @property
     def truncates(self) -> bool:
         """Check whether the register form of the kind stops at the shortest register."""
-        return self.kind in TRUNCATES
+        return self.kind.truncates
 
     def scalar(
         self,
@@ -194,9 +185,9 @@ class MeasureEntry(Entry):
     """Map the squin measurement to `Measure` and `RegisterMeasure`."""
 
     @property
-    def arity(self) -> Arity:
-        """Return the arity of a measurement."""
-        return MEASURE_ARITY
+    def counts(self) -> tuple[int, int]:
+        """Return 1 qubit and no parameters for a measurement."""
+        return 1, 0
 
     def scalar(
         self,
@@ -224,9 +215,9 @@ class ResetEntry(Entry):
     """Map the squin reset to `Reset` and `RegisterReset`."""
 
     @property
-    def arity(self) -> Arity:
-        """Return the arity of a reset."""
-        return RESET_ARITY
+    def counts(self) -> tuple[int, int]:
+        """Return 1 qubit and no parameters for a reset."""
+        return 1, 0
 
     def scalar(
         self,
@@ -337,11 +328,8 @@ def check(entry: Source) -> Source:
         raise ValueError(f"The wire entry of {name} must take flat qubit lists.")
     if tuple(fields.results) != entry.results:
         raise ValueError(f"The wire entry of {name} must list its results in order.")
-    if (len(entry.qubits), len(entry.params)) != (
-        entry.arity.wires,
-        entry.arity.params,
-    ):
-        raise ValueError(f"The wire entry of {name} must match the arity of its kind.")
+    if (len(entry.qubits), len(entry.params)) != entry.counts:
+        raise ValueError(f"The wire entry of {name} must match the counts of its kind.")
     return entry
 
 

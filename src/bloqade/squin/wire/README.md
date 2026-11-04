@@ -124,9 +124,9 @@ A `Gate` or a `Noise` statement acts on one or more groups of wires at the same 
 For example, `Gate(kind=cx, wires=(c0, t0, c1, t1))` applies CX to `(c0, t0)` and to `(c1, t1)` in one parallel step.
 The emitter gives a broadcast over separate qubits, such as `rx(a, [q0, q2])`, one such statement, so the round trip keeps the broadcast.
 If the groups of a broadcast can share a qubit, the emitter emits one statement per group in source order.
-`kinds.py` gives each kind its arity, which is its number of wires and parameters.
-The `HasArity` trait checks the arity when Kirin verifies the IR.
-`TRUNCATES` in `kinds.py` names the kinds whose register form stops at the shortest register.
+Each kind in `kinds.py` holds its number of qubits and parameters, such as 1 qubit and 1 angle for `GateKind.RZ`.
+The `MatchesKind` trait checks these counts when Kirin verifies the IR.
+A kind with `truncates` set, such as `GateKind.NATIVE_CZ`, has a register form that stops at the shortest register.
 The `Threads` trait is the one record of which result continues which wire.
 The wire dialect imports nothing from squin.
 

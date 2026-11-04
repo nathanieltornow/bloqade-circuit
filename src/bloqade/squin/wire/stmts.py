@@ -23,16 +23,7 @@ from kirin.dialects import ilist
 
 from bloqade.types import MeasurementResultType
 
-from .kinds import (
-    TRUNCATES,
-    GATE_ARITY,
-    NOISE_ARITY,
-    RESET_ARITY,
-    MEASURE_ARITY,
-    Arity,
-    GateKind,
-    NoiseKind,
-)
+from .kinds import GateKind, NoiseKind
 from .types import WireType, RegisterType
 from .traits import Threads
 from ._dialect import dialect
@@ -231,50 +222,51 @@ class Operation(ir.Statement):
         return tuple(result for result in self.results if result not in outputs)
 
     @property
-    def arity(self) -> Arity:
-        """Return the number of wires and parameters that the operation needs."""
-        raise NotImplementedError
-
-    @property
     def label(self) -> str:
         """Return the name of the operation for messages."""
         return self.name
 
     @property
     def groups(self) -> tuple[tuple[ir.SSAValue, ...], ...]:
-        """Split `linear` into consecutive groups of `arity.wires` values.
+        """Return the groups of `linear` that the operation acts on at the same time.
 
-        A `Gate` or a `Noise` acts on each group at the same time. For example,
-        `Gate(kind=cx, wires=(c0, t0, c1, t1))` has the groups `(c0, t0)` and
-        `(c1, t1)`. Every other operation has one group.
+        A `Gate` or a `Noise` splits `linear` into consecutive groups of one wire per
+        qubit of its kind. For example, `Gate(kind=cx, wires=(c0, t0, c1, t1))` has
+        the groups `(c0, t0)` and `(c1, t1)`. Every other operation has one group.
         """
-        size, linear = self.arity.wires, self.linear
-        return tuple(linear[k : k + size] for k in range(0, len(linear), size))
+        return (self.linear,)
+
+
+def chunks(
+    values: tuple[ir.SSAValue, ...], size: int
+) -> tuple[tuple[ir.SSAValue, ...], ...]:
+    """Split `values` into consecutive tuples of `size` values."""
+    return tuple(values[k : k + size] for k in range(0, len(values), size))
 
 
 @dataclass(frozen=True)
-class HasArity(ir.StmtTrait):
-    """Check that an operation has the number of wires and parameters of its kind.
+class MatchesKind(ir.StmtTrait):
+    """Check that a gate or a noise channel has the operand counts of its kind.
 
-    If `groups` is True, the operation may act on any positive number of groups,
-    each with the wire count of the kind. Kirin's generated `check` of each
-    statement runs this trait.
+    If `groups` is True, the statement can act on any positive number of groups, each
+    with the qubit count of the kind. Kirin's generated `check` of each statement runs
+    this trait.
     """
 
     groups: bool = False
 
     def verify(self, node: ir.Statement) -> None:
-        """Raise a validation error if `node` has another arity than its kind."""
-        assert isinstance(node, Operation)
-        arity = node.arity
-        wires, params = len(node.linear), len(node.parameters)
-        if self.groups and wires > 0 and wires % arity.wires == 0:
-            wires = arity.wires
-        if (wires, params) != (arity.wires, arity.params):
+        """Raise a validation error if `node` has other operand counts than its kind."""
+        assert isinstance(node, (Gate, Noise, RegisterGate, RegisterNoise))
+        kind = node.kind
+        wires, params = len(node.linear), len(node.params)
+        if self.groups and wires > 0 and wires % kind.wires == 0:
+            wires = kind.wires
+        if (wires, params) != (kind.wires, kind.params):
             per = " per group" if self.groups else ""
             raise ir.ValidationError(
                 node,
-                f"'{node.label}' needs {arity.wires} qubits{per} and {arity.params}"
+                f"'{kind.label}' needs {kind.wires} qubits{per} and {kind.params}"
                 f" parameters, but it has {len(node.linear)} and {params}.",
             )
 
@@ -288,7 +280,7 @@ class Gate(Operation):
     """
 
     name = "gate"
-    traits = frozenset({Threads("wires"), HasArity(groups=True)})
+    traits = frozenset({Threads("wires"), MatchesKind(groups=True)})
     wires: tuple[ir.SSAValue, ...] = info.argument(WireType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: GateKind = info.attribute()
@@ -314,14 +306,14 @@ class Gate(Operation):
         )
 
     @property
-    def arity(self) -> Arity:
-        """Return the arity of the gate kind."""
-        return GATE_ARITY[self.kind]
-
-    @property
     def label(self) -> str:
         """Return the gate kind."""
-        return self.kind.value
+        return self.kind.label
+
+    @property
+    def groups(self) -> tuple[tuple[ir.SSAValue, ...], ...]:
+        """Return the groups of one wire per qubit of the kind."""
+        return chunks(self.linear, self.kind.wires)
 
 
 @statement(dialect=dialect, init=False)
@@ -333,7 +325,7 @@ class Noise(Operation):
     """
 
     name = "noise"
-    traits = frozenset({Threads("wires"), HasArity(groups=True)})
+    traits = frozenset({Threads("wires"), MatchesKind(groups=True)})
     wires: tuple[ir.SSAValue, ...] = info.argument(WireType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: NoiseKind = info.attribute()
@@ -356,14 +348,14 @@ class Noise(Operation):
         )
 
     @property
-    def arity(self) -> Arity:
-        """Return the arity of the channel kind."""
-        return NOISE_ARITY[self.kind]
-
-    @property
     def label(self) -> str:
         """Return the channel kind."""
-        return self.kind.value
+        return self.kind.label
+
+    @property
+    def groups(self) -> tuple[tuple[ir.SSAValue, ...], ...]:
+        """Return the groups of one wire per qubit of the kind."""
+        return chunks(self.linear, self.kind.wires)
 
 
 @statement(dialect=dialect)
@@ -371,15 +363,10 @@ class Measure(Operation):
     """Measure the qubit of `wire`, keep it, and return its measurement result."""
 
     name = "measure"
-    traits = frozenset({Threads("wire"), HasArity()})
+    traits = frozenset({Threads("wire")})
     wire: ir.SSAValue = info.argument(WireType)
     wire_out: ir.ResultValue = info.result(WireType)
     bit: ir.ResultValue = info.result(MeasurementResultType)
-
-    @property
-    def arity(self) -> Arity:
-        """Return the arity of a measurement."""
-        return MEASURE_ARITY
 
 
 @statement(dialect=dialect)
@@ -387,14 +374,9 @@ class Reset(Operation):
     """Reset the qubit of `wire` to the zero state."""
 
     name = "reset"
-    traits = frozenset({Threads("wire"), HasArity()})
+    traits = frozenset({Threads("wire")})
     wire: ir.SSAValue = info.argument(WireType)
     wire_out: ir.ResultValue = info.result(WireType)
-
-    @property
-    def arity(self) -> Arity:
-        """Return the arity of a reset."""
-        return RESET_ARITY
 
 
 class RegisterOperation(Operation):
@@ -419,7 +401,7 @@ class RegisterGate(RegisterOperation):
     """Apply the gate `kind` at every position of one register per qubit of the gate."""
 
     name = "register_gate"
-    traits = frozenset({Threads("registers"), HasArity()})
+    traits = frozenset({Threads("registers"), MatchesKind()})
     registers: tuple[ir.SSAValue, ...] = info.argument(RegisterType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: GateKind = info.attribute()
@@ -445,19 +427,14 @@ class RegisterGate(RegisterOperation):
         )
 
     @property
-    def arity(self) -> Arity:
-        """Return the arity of the gate kind."""
-        return GATE_ARITY[self.kind]
-
-    @property
     def label(self) -> str:
         """Return the gate kind."""
-        return self.kind.value
+        return self.kind.label
 
     @property
     def truncates(self) -> bool:
         """Check whether the kind stops at the shortest register."""
-        return self.kind in TRUNCATES
+        return self.kind.truncates
 
     def scalar(self, wires: tuple[ir.SSAValue, ...]) -> Gate:
         """Return the gate on one wire per register."""
@@ -469,7 +446,7 @@ class RegisterNoise(RegisterOperation):
     """Apply the noise channel `kind` at every position of whole registers."""
 
     name = "register_noise"
-    traits = frozenset({Threads("registers"), HasArity()})
+    traits = frozenset({Threads("registers"), MatchesKind()})
     registers: tuple[ir.SSAValue, ...] = info.argument(RegisterType)
     params: tuple[ir.SSAValue, ...] = info.argument()
     kind: NoiseKind = info.attribute()
@@ -492,19 +469,14 @@ class RegisterNoise(RegisterOperation):
         )
 
     @property
-    def arity(self) -> Arity:
-        """Return the arity of the channel kind."""
-        return NOISE_ARITY[self.kind]
-
-    @property
     def label(self) -> str:
         """Return the channel kind."""
-        return self.kind.value
+        return self.kind.label
 
     @property
     def truncates(self) -> bool:
         """Check whether the kind stops at the shortest register."""
-        return self.kind in TRUNCATES
+        return self.kind.truncates
 
     def scalar(self, wires: tuple[ir.SSAValue, ...]) -> Noise:
         """Return the noise channel on one wire per register."""
@@ -516,17 +488,12 @@ class RegisterMeasure(RegisterOperation):
     """Measure every qubit of `register` and return the results in order."""
 
     name = "register_measure"
-    traits = frozenset({Threads("register"), HasArity()})
+    traits = frozenset({Threads("register")})
     register: ir.SSAValue = info.argument(RegisterType)
     register_out: ir.ResultValue = info.result(RegisterType)
     bits: ir.ResultValue = info.result(
         ilist.IListType[MeasurementResultType, types.Any]
     )
-
-    @property
-    def arity(self) -> Arity:
-        """Return the arity of a measurement."""
-        return MEASURE_ARITY
 
     def scalar(self, wires: tuple[ir.SSAValue, ...]) -> Measure:
         """Return the measurement of one wire."""
@@ -539,14 +506,9 @@ class RegisterReset(RegisterOperation):
     """Reset every qubit of `register` to the zero state."""
 
     name = "register_reset"
-    traits = frozenset({Threads("register"), HasArity()})
+    traits = frozenset({Threads("register")})
     register: ir.SSAValue = info.argument(RegisterType)
     register_out: ir.ResultValue = info.result(RegisterType)
-
-    @property
-    def arity(self) -> Arity:
-        """Return the arity of a reset."""
-        return RESET_ARITY
 
     def scalar(self, wires: tuple[ir.SSAValue, ...]) -> Reset:
         """Return the reset of one wire."""
