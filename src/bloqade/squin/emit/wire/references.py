@@ -12,22 +12,31 @@ from bloqade.analysis.indices import IndexExpr
 from bloqade.squin.wire.errors import WireConversionError
 
 from .base import EmitWire, WireFrame
-from .values import Qubit, Value, Location, select, select_slice, contains_location
+from .gates import emit_gate
+from .values import Value, Location, select, select_slice, contains_location
 
 
 @qubit.dialect.register(key="emit.squin_wire")
 class Qubits(interp.MethodTable):
-    """Emit standalone qubit allocations."""
+    """Emit standalone qubit allocations, measurements and resets."""
 
     @interp.impl(qubit.stmts.New)
     def new(
         self, emit: EmitWire, frame: WireFrame, stmt: qubit.stmts.New
     ) -> tuple[Value]:
         """Create a qubit and record its lifetime in the current region."""
-        root = frame.push(stmts.Alloc()).results[0]
-        frame.latest[root] = root
-        frame.local_roots.append(root)
-        return (Qubit(root),)
+        return (emit.new_qubit(frame, frame.push(stmts.Alloc()).results[0]),)
+
+    @interp.impl(qubit.stmts.Measure)
+    @interp.impl(qubit.stmts.Reset)
+    def measure(
+        self,
+        emit: EmitWire,
+        frame: WireFrame,
+        stmt: qubit.stmts.Measure | qubit.stmts.Reset,
+    ) -> tuple[Value, ...]:
+        """Emit the wire form of a measurement or a reset."""
+        return emit_gate(emit, frame, stmt)
 
 
 @py.assign.dialect.register(key="emit.squin_wire")

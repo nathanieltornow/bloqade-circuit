@@ -1,7 +1,7 @@
 """Define which statements a complete wire conversion can keep.
 
 The target keeps wire operations and classical operations whose values hold no qubit
-references.
+references. A statement of a foreign dialect that holds no qubit reference also stays.
 """
 
 from dataclasses import field, dataclass
@@ -17,7 +17,11 @@ from bloqade.squin import gate, noise
 from bloqade.types import holds_qubits
 from bloqade.squin.wire import stmts
 from bloqade.native.dialects import gate as native_gate
-from bloqade.squin.wire.group import kernel as wire_kernel, reference_kernel
+from bloqade.squin.wire.group import (
+    kernel as wire_kernel,
+    is_wire,
+    reference_kernel,
+)
 from bloqade.squin.analysis.validation.wire.stages import SourceAnalysis
 
 CLASSICAL_DIALECTS = reference_kernel.data - {
@@ -45,6 +49,7 @@ class ConversionTarget(SourceAnalysis):
         legal_dialect = (
             node.dialect in CLASSICAL_DIALECTS
             or node.dialect is stmts.dialect
+            or node.dialect not in wire_kernel.data
             or isinstance(
                 node, (qubit.stmts.IsZero, qubit.stmts.IsOne, qubit.stmts.IsLost)
             )
@@ -53,7 +58,7 @@ class ConversionTarget(SourceAnalysis):
             holds_qubits(value.type) for value in (*node.args, *node.results)
         )
         legal_call = not isinstance(node, func.Call) and (
-            not isinstance(node, func.Invoke) or node.callee.dialects is wire_kernel
+            not isinstance(node, func.Invoke) or is_wire(node.callee)
         )
         legal_signature = not isinstance(node, func.Function) or not any(
             holds_qubits(kind)

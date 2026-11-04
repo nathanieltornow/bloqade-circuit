@@ -28,8 +28,9 @@ from kirin.rewrite.abc import RewriteRule, RewriteResult
 from bloqade.qubit import stmts as qubit_stmts, qalloc
 from bloqade.types import QubitType
 from bloqade.squin.wire import stmts
-from bloqade.squin.wire.group import kernel as wire_kernel, reference_kernel
+from bloqade.squin.wire.group import is_wire, reference_group
 from bloqade.squin.wire.types import RegisterType, is_linear
+from bloqade.squin.wire.traits import Threads, ReferenceForm
 from bloqade.squin.wire.sources import source_of
 from bloqade.squin.wire.ownership import KEY as OWNED, owns_inputs
 from bloqade.squin.wire.signature import packed_type, output_types
@@ -80,6 +81,8 @@ class FromWireStatements(RewriteRule):
         """Rewrite `node` if it belongs to the wire dialect."""
         if isinstance(node, stmts.Operation):
             self.operation(node)
+        elif (form := node.get_trait(ReferenceForm)) is not None:
+            self.extension(node, form)
         elif isinstance(node, stmts.Alloc):
             node.result.replace_by(_put(qubit_stmts.New(), node).result)
         elif isinstance(node, stmts.AllocRegister):
@@ -141,6 +144,23 @@ class FromWireStatements(RewriteRule):
             return RewriteResult()
         node.delete()
         return RewriteResult(has_done_something=True)
+
+    def extension(self, node: ir.Statement, form: ReferenceForm) -> None:
+        """Insert the reference form of a wire statement that another dialect owns.
+
+        `form` returns one value for each result that no `Threads` pair continues.
+        Each continuing result reads as its operand.
+        """
+        threads = node.get_trait(Threads)
+        continued = dict(
+            (result, operand)
+            for operand, result in ([] if threads is None else threads.threads(node))
+        )
+        fresh = [result for result in node.results if result not in continued]
+        for result, value in zip(fresh, form.rebuild(node), strict=True):
+            result.replace_by(value)
+        for result, operand in continued.items():
+            result.replace_by(operand)
 
     def operation(self, node: stmts.Operation) -> None:
         """Insert the squin statement of the wire operation `node` before it.
@@ -267,7 +287,7 @@ class FromWireCalls(RewriteRule):
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Rewrite `node` if it calls a wire squin method."""
-        if not isinstance(node, func.Invoke) or node.callee.dialects is not wire_kernel:
+        if not isinstance(node, func.Invoke) or not is_wire(node.callee):
             return RewriteResult()
         assert isinstance(node.callee.code, func.Function)
         signature = node.callee.code.signature
@@ -357,6 +377,11 @@ class FromWireSignature(RewriteRule):
 class FromWire:
     """Convert wire squin methods into squin kernels, one copy per method."""
 
+    wire_dialects: tuple[ir.Dialect, ...] = ()
+    """The dialects of the wire statements that other dialects add.
+
+    The squin kernels leave these dialects out of their dialect groups.
+    """
     kernels: dict[ir.Method, ir.Method] = field(default_factory=dict)
     """Map each wire method to its squin kernel."""
     pending: list[ir.Method] = field(default_factory=list)
@@ -369,7 +394,9 @@ class FromWire:
         a recursive kernel can name the kernel before its rewrite.
         """
         if method not in self.kernels:
-            self.kernels[method] = method.similar(reference_kernel)
+            self.kernels[method] = method.similar(
+                reference_group(method.dialects, self.wire_dialects)
+            )
             self.pending.append(method)
         return self.kernels[method]
 

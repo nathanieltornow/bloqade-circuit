@@ -21,6 +21,7 @@ from bloqade.squin.wire.types import (
     linear_paths,
     contains_linear,
 )
+from bloqade.squin.wire.traits import ReferenceForm
 from bloqade.squin.analysis.validation.wire.calls import CachedCalls
 
 KEY = "squin.wire.linearity"
@@ -122,7 +123,8 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
         """Return the statements that use the quantum field at `path` of `value`.
 
         An empty path names `value` itself. The check records an error for each use that
-        cannot consume a quantum value.
+        cannot consume a quantum value. A wire statement of another dialect can consume
+        one, and its `ReferenceForm` trait marks it.
         """
         users: list[ir.Statement] = []
         for use in value.uses:
@@ -137,7 +139,9 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
                         user, "Tuple extraction must preserve the quantum field type."
                     )
             elif not (
-                user.dialect is stmts.dialect or isinstance(user, QUANTUM_CONSUMERS)
+                user.dialect is stmts.dialect
+                or user.has_trait(ReferenceForm)
+                or isinstance(user, QUANTUM_CONSUMERS)
             ):
                 self.error(user, f"'{user.name}' cannot consume a quantum value.")
             users.append(user)

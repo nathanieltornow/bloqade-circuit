@@ -2,7 +2,7 @@
 
 from typing import TypeVar
 from dataclasses import field, replace, dataclass
-from collections.abc import Mapping
+from collections.abc import Mapping, Callable, Sequence
 
 from kirin import ir, types
 from kirin.emit import EmitABC, EmitFrame
@@ -14,10 +14,9 @@ from kirin.dialects.py.len import Len
 from bloqade.types import holds_qubits
 from bloqade.squin.wire import stmts
 from bloqade.analysis.indices import Sym, Iter, Emitted, Indices, IndexExpr
-from bloqade.squin.wire.group import reference_kernel
 from bloqade.squin.wire.types import WireType
 from bloqade.squin.wire.errors import WireConversionError
-from bloqade.squin.wire.sources import SOURCES
+from bloqade.squin.wire.traits import Threads
 
 from .values import (
     Grid,
@@ -29,6 +28,7 @@ from .values import (
     Location,
     Register,
     select,
+    is_qubit,
     row_width,
     contains_location,
 )
@@ -89,6 +89,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
     source: ir.Method
     converted: Mapping[ir.Method, ir.Method]
     """The wire method of each user callee, which the driver converts first."""
+    wire_dialects: tuple[ir.Dialect, ...] = ()
+    """The dialects of the wire statements that other dialects emit, such as Gemini."""
     result: ir.Method | None = field(default=None, init=False)
     """The emitted wire method, which the function handler sets at its end."""
     indices: Indices = field(init=False)
@@ -105,7 +107,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
         self.callables = EmitTable(prefix="")
         self.callable_to_emit = WorkList()
         self.result = None
-        self.indices = Indices(reference_kernel)
+        self.indices = Indices(self.dialects)
 
     def emit_method(self) -> ir.Method:
         """Emit one source method using the wire methods of its callees.
@@ -241,6 +243,56 @@ class EmitWire(EmitABC[WireFrame, Value]):
                 value = frame.push(stmts.PutSlice(register, at, value)).register_out
         frame.latest[location.root] = value
 
+    def operate(
+        self,
+        frame: WireFrame,
+        locations: Sequence[Location],
+        build: Callable[[tuple[ir.SSAValue, ...]], ir.Statement],
+    ) -> ir.Statement:
+        """Emit the statement that `build` makes on the wires of `locations`.
+
+        The function acquires each location, calls `build` with the wires or
+        registers in order, and pushes the statement. The statement must carry a
+        `Threads` trait. The function then restores each location with the result
+        that continues its wire. A dialect that adds statements to wire programs
+        calls this from its method table under the key `emit.squin_wire`.
+        """
+        inputs = tuple(self.acquire(frame, location) for location in locations)
+        made = frame.push(build(inputs))
+        continued = dict(made.get_present_trait(Threads).threads(made))
+        for location, wire in zip(locations, inputs, strict=True):
+            self.restore(frame, location, continued[wire])
+        return made
+
+    def qubits_of(
+        self, frame: WireFrame, value: ir.SSAValue, at: ir.Statement
+    ) -> tuple[Location, ...]:
+        """Return the location of each qubit that the source value `value` names.
+
+        A qubit gives its own location. A list, a register or a slice of known
+        length gives the location of each item in order. The function raises a
+        conversion error for any other value.
+        """
+        meaning = frame.get(value)
+        if is_qubit(meaning):
+            assert isinstance(meaning, (Qubit, Element))
+            return (meaning,)
+        items = self.known_items(meaning, at)
+        if items is None or not all(is_qubit(item) for item in items):
+            raise WireConversionError(
+                f"'{at.name}' needs qubits whose places are all known.", at
+            )
+        return tuple(item for item in items if isinstance(item, (Qubit, Element)))
+
+    def new_qubit(self, frame: WireFrame, wire: ir.SSAValue) -> Qubit:
+        """Record the new wire `wire` as a standalone qubit of the current region.
+
+        The region frees the qubit at its end, like a qubit of `qubit.new`.
+        """
+        frame.latest[wire] = wire
+        frame.local_roots.append(wire)
+        return Qubit(wire)
+
     def length_value(self, frame: WireFrame, value: Value) -> ir.SSAValue:
         """Return the length of a source container as an emitted integer.
 
@@ -297,12 +349,11 @@ class EmitWire(EmitABC[WireFrame, Value]):
         return None
 
     def eval_fallback(self, frame: WireFrame, node: ir.Statement) -> tuple[Value, ...]:
-        """Emit the wire form of a squin operation, or copy a classical operation with mapped operands."""
-        if type(node) in SOURCES:
-            # `gates` imports this module, so this import must stay local.
-            from .gates import emit_gate
+        """Copy a classical operation with mapped operands.
 
-            return emit_gate(self, frame, node)
+        The quantum operations of each dialect have their own method table, such as
+        the tables in `gates.py`. A statement on qubits without one has no wire form.
+        """
         values = frame.get_values(node.args)
         if (
             node.regions

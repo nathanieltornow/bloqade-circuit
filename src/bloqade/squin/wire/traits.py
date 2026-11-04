@@ -3,7 +3,8 @@
 `Threads` tells which result of a statement continues which linear operand. A
 rewrite rule or an analysis reads it to follow one qubit from statement to
 statement. `ThreadsPairs` names fixed fields, and `ThreadsInOrder` pairs a tuple
-field with the results in order.
+field with the results in order. `ReferenceForm` lets a statement of another
+dialect convert itself back to reference squin.
 """
 
 from abc import ABC, abstractmethod
@@ -54,3 +55,22 @@ class ThreadsInOrder(Threads):
     def threads(self, stmt: ir.Statement) -> list[tuple[ir.SSAValue, ir.ResultValue]]:
         """Return each item of the tuple field with the result at its position."""
         return list(zip(getattr(stmt, self.field), stmt.results))
+
+
+@dataclass(frozen=True)
+class ReferenceForm(ir.StmtTrait, ABC):
+    """Rebuild the reference form of a wire statement that another dialect owns.
+
+    A dialect that adds statements to wire programs gives each one this trait.
+    `WireToSquin` calls `rebuild` on each such statement. It then reads each result
+    that a `Threads` pair continues as its operand, and deletes the statement.
+    """
+
+    @abstractmethod
+    def rebuild(self, node: ir.Statement) -> tuple[ir.SSAValue, ...]:
+        """Insert the reference statements of `node` before it and return new values.
+
+        The result holds one value for each result of `node` that no `Threads`
+        pair continues, in result order. A wire operand already reads as its qubit
+        reference, so a reference statement can take it as a qubit.
+        """

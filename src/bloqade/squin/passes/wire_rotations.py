@@ -38,16 +38,19 @@ class MergeNativeRotations(Pass):
         return dead.join(result)
 
 
-def merge_native_rotations(kernel: ir.Method) -> ir.Method:
+def merge_native_rotations(
+    kernel: ir.Method, wire_dialects: tuple[ir.Dialect, ...] = ()
+) -> ir.Method:
     """Return a copy of `kernel` in which `MergeNativeRotations` merges each run.
 
     The function converts `kernel` and its callees to wire squin, runs
     `MergeNativeRotations` on each wire method, and converts the result back. The
     copy acts on every qubit like `kernel`, up to a global phase. `kernel` stays
-    unchanged.
+    unchanged. `wire_dialects` holds the dialects of the wire statements that other
+    dialects of `kernel` emit, such as Gemini.
     """
-    converter = SquinToWire()
+    converter = SquinToWire(wire_dialects)
     wired = converter.emit(kernel)
     for method in converter.converted.values():
         MergeNativeRotations(method.dialects)(method)
-    return WireToSquin().emit(wired)
+    return WireToSquin(wire_dialects).emit(wired)

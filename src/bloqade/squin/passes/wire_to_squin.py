@@ -15,11 +15,17 @@ from bloqade.squin.analysis.validation.wire import WireValidation
 class WireToSquin:
     """Convert a wire squin method and every wire callee back to squin kernels."""
 
+    wire_dialects: tuple[ir.Dialect, ...] = ()
+    """The dialects of the wire statements that other dialects add, such as Gemini.
+
+    Each of their statements needs a `ReferenceForm` trait.
+    """
+
     def emit(self, method: ir.Method) -> ir.Method:
         """Return a squin kernel that runs the same program as `method`."""
         for callee in reachable(method):
             WireValidation().check(callee)
-        rewrite = FromWire()
+        rewrite = FromWire(wire_dialects=self.wire_dialects)
         result = rewrite.convert(method)
         for copy in reversed(list(rewrite.kernels.values())):
             TypeInfer(copy.dialects)(copy)

@@ -320,6 +320,19 @@ FreeRegister(r2)                 Free(b)
 
 After unpacking, 2 gates on one qubit are neighbours on one wire, so a peephole rule can match them.
 
+## Statements of other dialects
+
+A dialect outside squin, such as Gemini, can add its own statements to wire programs.
+It owns 3 pieces, and bloqade-circuit needs no change for a new dialect:
+
+1. A wire dialect with the linear form of each statement. A statement that continues wires carries a `Threads` trait, so the validators and passes follow its qubits.
+2. A method table on the reference dialect under the key `emit.squin_wire`. It calls `EmitWire.qubits_of` to find the qubits of an operand, `EmitWire.operate` to emit a statement on their wires, and `EmitWire.new_qubit` to record a new wire as an allocation.
+3. A `ReferenceForm` trait on each wire statement. `WireToSquin` calls its `rebuild` method to insert the reference statement.
+
+The caller passes the wire dialect as `wire_dialects` to `SquinToWire`, `WireToSquin` and `merge_native_rotations`.
+`test/squin/wire/test_extension.py` shows a complete small dialect.
+The squin, noise and native gate dialects use the same method tables under `emit.squin_wire`.
+
 ## Merging native rotations
 
 `merge_native_rotations` in `squin/passes/wire_rotations.py` merges each run of native `R` and `Rz` gates into at most one `R` and one `Rz`.

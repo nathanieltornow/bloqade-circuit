@@ -8,7 +8,7 @@ from kirin.rewrite import Walk, Fixpoint, DeadCodeElimination
 from kirin.validation import ValidationSuite
 
 from bloqade.squin.emit.wire import EmitWire
-from bloqade.squin.wire.group import reference_kernel
+from bloqade.squin.wire.group import is_wire
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.emit.wire.functions import is_library
@@ -26,6 +26,12 @@ from bloqade.squin.analysis.validation.wire.stages import (
 class SquinToWire:
     """Emit source methods once and require complete, validated wire results."""
 
+    wire_dialects: tuple[ir.Dialect, ...] = ()
+    """The dialects of the wire statements that other dialects emit, such as Gemini.
+
+    A dialect outside squin adds its statements to wire programs with a method table
+    under `emit.squin_wire`. Its wire statements need their dialect here.
+    """
     converted: dict[ir.Method, ir.Method] = field(default_factory=dict, init=False)
     """The validated wire method of each converted source method."""
     active: set[ir.Method] = field(default_factory=set, init=False)
@@ -34,8 +40,10 @@ class SquinToWire:
     def emit(self, method: ir.Method) -> ir.Method:
         """Build verified wire IR while preserving the source and its callees."""
         self.converted, self.active = {}, set()
-        if not method.dialects.data <= reference_kernel.data:
-            raise ValueError("SquinToWire expects squin or native kernel dialects.")
+        if is_wire(method):
+            raise ValueError(
+                "SquinToWire expects a squin kernel without wire statements."
+            )
         return self.convert(method)
 
     def convert(self, source: ir.Method) -> ir.Method:
@@ -71,7 +79,9 @@ class SquinToWire:
 
         Dead-code removal runs first, so type inference reads only live operations.
         """
-        method = EmitWire(source.dialects, source, self.converted).emit_method()
+        method = EmitWire(
+            source.dialects, source, self.converted, self.wire_dialects
+        ).emit_method()
         Fixpoint(Walk(DeadCodeElimination())).rewrite(method.code)
         TypeInfer(method.dialects)(method)
         if violations := ConversionTarget.check(method):

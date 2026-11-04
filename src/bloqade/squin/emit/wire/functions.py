@@ -9,7 +9,7 @@ from kirin.dialects import py, func
 from bloqade import qubit
 from bloqade.squin.wire import stmts
 from bloqade.analysis.indices import IndexExpr
-from bloqade.squin.wire.group import kernel
+from bloqade.squin.wire.group import wire_group
 from bloqade.squin.wire.types import (
     WireType,
     quantum_type,
@@ -104,7 +104,9 @@ class Functions(interp.MethodTable):
             input_types, packed_type(tuple(value.type for value in results))
         )
         self_arg.type = types.MethodType[list(input_types), signature.output]
-        method = wire_method(emit.source, stmt, frame.output, signature)
+        method = wire_method(
+            emit.source, stmt, frame.output, signature, emit.wire_dialects
+        )
         emit.result = method
         return ()
 
@@ -192,14 +194,22 @@ def emit_return(frame: WireFrame, results: tuple[ir.SSAValue, ...]) -> None:
 
 
 def wire_method(
-    source: ir.Method, stmt: func.Function, body: ir.Block, signature: func.Signature
+    source: ir.Method,
+    stmt: func.Function,
+    body: ir.Block,
+    signature: func.Signature,
+    wire_dialects: tuple[ir.Dialect, ...] = (),
 ) -> ir.Method:
-    """Build the wire method with the body `body` and the metadata of `source`."""
+    """Build the wire method with the body `body` and the metadata of `source`.
+
+    `wire_dialects` joins the dialect group, so the method can hold wire statements
+    of other dialects.
+    """
     code = stmt.from_stmt(stmt, regions=[ir.Region(body)])
     code.source = None if stmt.source is None else replace(stmt.source)
     code.signature = signature
     return ir.Method(
-        kernel,
+        wire_group(source.dialects, wire_dialects),
         code,
         nargs=source.nargs,
         mod=source.mod,

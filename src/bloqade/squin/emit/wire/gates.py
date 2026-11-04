@@ -1,13 +1,16 @@
 """Emit scalar wire operations on qubits and register operations on whole registers or slices."""
 
-from typing import cast
+from typing import Any, cast
 
-from kirin import ir, types
+from kirin import ir, types, interp
 from kirin.dialects import ilist
 
+from bloqade.squin.gate import stmts as gate_stmts
+from bloqade.squin.noise import stmts as noise_stmts
 from bloqade.squin.wire.stmts import Operation
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.sources import SOURCES, Source
+from bloqade.native.dialects.gate import stmts as native_stmts
 
 from .base import EmitWire, WireFrame
 from .values import View, Value, Element, Location, Register, is_qubit
@@ -26,16 +29,18 @@ def apply(
     whole registers. Otherwise each location is one qubit.
     """
     entry = SOURCES[type(source)]
-    inputs = tuple(emit.acquire(frame, location) for location in locations)
-    params = tuple(
-        emit.classical_value(frame, frame.get(value))
-        for value in entry.param_operands(source)
-    )
     build = entry.register if register else entry.scalar
-    made = frame.push(build(inputs, params, entry.adjoint(source)))
-    for location, output in zip(locations, made.outputs, strict=True):
-        emit.restore(frame, location, output)
-    return made
+
+    def made(inputs: tuple[ir.SSAValue, ...]) -> Operation:
+        params = tuple(
+            emit.classical_value(frame, frame.get(value))
+            for value in entry.param_operands(source)
+        )
+        return build(inputs, params, entry.adjoint(source))
+
+    operation = emit.operate(frame, locations, made)
+    assert isinstance(operation, Operation)
+    return operation
 
 
 def register_gate(
@@ -185,3 +190,40 @@ def apart(parts: tuple[Register | View, ...]) -> bool:
             if not any(gap is not None and gap <= 0 for gap in gaps):
                 return False
     return True
+
+
+def operation(
+    self: interp.MethodTable, emit: EmitWire, frame: WireFrame, stmt: ir.Statement
+) -> tuple[Value, ...]:
+    """Emit the wire form of the squin statement `stmt`."""
+    return emit_gate(emit, frame, stmt)
+
+
+def every_source(dialect: ir.Dialect) -> Any:
+    """Return `operation` as the method of every statement of `dialect` in `SOURCES`."""
+    rule: Any = operation
+    for source in SOURCES:
+        if source.dialect is dialect:
+            rule = interp.impl(source)(rule)
+    return rule
+
+
+@gate_stmts.dialect.register(key="emit.squin_wire")
+class Gates(interp.MethodTable):
+    """Emit each squin gate with `emit_gate`."""
+
+    gate = every_source(gate_stmts.dialect)
+
+
+@noise_stmts.dialect.register(key="emit.squin_wire")
+class Noises(interp.MethodTable):
+    """Emit each squin noise channel on flat qubit lists with `emit_gate`."""
+
+    noise = every_source(noise_stmts.dialect)
+
+
+@native_stmts.dialect.register(key="emit.squin_wire")
+class NativeGates(interp.MethodTable):
+    """Emit each native gate with `emit_gate`."""
+
+    gate = every_source(native_stmts.dialect)

@@ -5,7 +5,12 @@ statement consumes its input wires and returns new wires. The conversion passes 
 """
 
 from . import typeinfer as typeinfer
-from .group import kernel as kernel
+from .group import (
+    kernel as kernel,
+    is_wire as is_wire,
+    wire_group as wire_group,
+    reference_group as reference_group,
+)
 from .kinds import GateKind as GateKind, NoiseKind as NoiseKind
 from .stmts import (
     Free as Free,
@@ -37,6 +42,7 @@ from .errors import WireConversionError as WireConversionError
 from .traits import (
     Threads as Threads,
     ThreadsPairs as ThreadsPairs,
+    ReferenceForm as ReferenceForm,
     ThreadsInOrder as ThreadsInOrder,
 )
 from ._dialect import dialect as dialect
