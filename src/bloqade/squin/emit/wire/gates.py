@@ -10,8 +10,8 @@ from bloqade.squin.gate import stmts as gate_stmts
 from bloqade.squin.noise import stmts as noise_stmts
 from bloqade.squin.wire.stmts import Operation
 from bloqade.squin.wire.errors import WireConversionError
-from bloqade.squin.wire.sources import SOURCES, Source
 from bloqade.native.dialects.gate import stmts as native_stmts
+from bloqade.squin.rewrite.wire.sources import SOURCES, Source
 
 from .base import EmitWire, WireFrame
 from .values import View, Value, Element, Location, Register, is_qubit

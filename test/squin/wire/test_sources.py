@@ -16,17 +16,16 @@ from bloqade.squin.wire import (
     RegisterMeasure,
 )
 from bloqade.squin.noise import stmts as noise_stmts
-from bloqade.squin.wire.sources import (
+from bloqade.native.dialects.gate import stmts as native_stmts
+from bloqade.squin.rewrite.wire.sources import (
     SOURCES,
     GATE_SOURCES,
     NOISE_SOURCES,
     GateEntry,
     NoiseEntry,
-    MeasureEntry,
     check,
     source_of,
 )
-from bloqade.native.dialects.gate import stmts as native_stmts
 
 
 def test_every_flat_qubit_statement_has_an_entry():
@@ -87,23 +86,10 @@ def test_an_operation_rejects_a_shape_that_differs_from_its_kind(build):
 @pytest.mark.parametrize(
     "entry, reason",
     [
-        (GateEntry(gate_stmts.CX, ("controls",), kind=GateKind.CX), "fields in order"),
+        (GateEntry(gate_stmts.Rz, GateKind.CX), "counts of its kind"),
+        (GateEntry(gate_stmts.CX, GateKind.X), "counts of its kind"),
         (
-            GateEntry(gate_stmts.Rz, ("qubits",), kind=GateKind.RZ),
-            "fields in order",
-        ),
-        (
-            GateEntry(gate_stmts.Rz, ("qubits",), ("angle",), kind=GateKind.CX),
-            "counts of its kind",
-        ),
-        (MeasureEntry(qubit_stmts.Measure, ("qubits",)), "results in order"),
-        (
-            NoiseEntry(
-                noise_stmts.CorrelatedQubitLoss,
-                ("qubits",),
-                ("p",),
-                kind=NoiseKind.QUBIT_LOSS,
-            ),
+            NoiseEntry(noise_stmts.CorrelatedQubitLoss, NoiseKind.QUBIT_LOSS),
             "flat qubit lists",
         ),
     ],
@@ -111,6 +97,13 @@ def test_an_operation_rejects_a_shape_that_differs_from_its_kind(build):
 def test_the_table_check_compares_each_entry_with_the_squin_schema(entry, reason):
     with pytest.raises(ValueError, match=reason):
         check(entry)
+
+
+def test_an_entry_reads_its_fields_from_the_squin_schema():
+    cx = SOURCES[gate_stmts.CX]
+    assert (cx.qubits, cx.params, cx.results) == (("controls", "targets"), (), ())
+    assert SOURCES[gate_stmts.U3].params == ("theta", "phi", "lam")
+    assert SOURCES[qubit_stmts.Measure].results == ("result",)
 
 
 def test_an_entry_rebuilds_its_squin_statement():

@@ -33,10 +33,10 @@ from bloqade.squin.wire.group import is_wire, reference_group
 from bloqade.squin.wire.types import RegisterType, is_linear
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.traits import Threads, ReferenceForm
-from bloqade.squin.wire.sources import source_of
 from bloqade.squin.wire.ownership import KEY as OWNED, owns_inputs
 from bloqade.squin.wire.signature import packed_type, output_types
 from bloqade.squin.rewrite.wire.driver import CheckedFixpoint, put
+from bloqade.squin.rewrite.wire.sources import source_of
 
 
 def squin_type(kind: types.TypeAttribute) -> types.TypeAttribute:

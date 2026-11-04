@@ -13,11 +13,11 @@ from bloqade import squin, native
 from bloqade.types import Qubit
 from bloqade.pyqrack import DynamicMemorySimulator
 from bloqade.squin.wire import Operation, RegisterOperation
-from bloqade.squin.wire.sources import source_of
 from bloqade.native.dialects.gate import stmts as native_stmts
 from bloqade.squin.passes.wire_target import ConversionTarget
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
+from bloqade.squin.rewrite.wire.sources import source_of
 from bloqade.squin.analysis.validation.wire import WireValidation
 
 

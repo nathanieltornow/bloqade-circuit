@@ -21,9 +21,9 @@ from bloqade.squin.gate import stmts as gates
 from bloqade.squin.wire import stmts as wire
 from bloqade.jeff.dialects import stmts
 from bloqade.squin.wire.types import WireType, register_type
-from bloqade.squin.wire.sources import SOURCES
 from bloqade.squin.wire.signature import packed_type
 from bloqade.squin.rewrite.wire.driver import put, replace
+from bloqade.squin.rewrite.wire.sources import SOURCES
 from bloqade.jeff.analysis.validation.to_squin.gates import (
     SINGLE,
     ROTATION,

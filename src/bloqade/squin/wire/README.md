@@ -134,9 +134,10 @@ Each scalar operation has a register form: `RegisterGate`, `RegisterNoise`, `Reg
 A register form takes one register for each qubit list and applies the scalar form at each position.
 Its classical results stay lists, so `RegisterMeasure` returns one list of measurement results.
 
-`sources.py` maps each squin statement on qubits to its kind and names its qubit-list fields, classical fields and results.
+`bloqade.squin.rewrite.wire.sources` maps each squin statement on qubits to its kind.
+Each entry reads the qubit-list fields, the classical fields and the results of its statement from Kirin's statement schema.
 Only the conversions read this table.
-When the module loads, it checks each entry against Kirin's statement schema.
+When the module loads, it checks the counts of each entry against its kind.
 `WireToSquin` reads the table backwards to rebuild the source operation.
 It gives a scalar operation singleton qubit lists, and a register form the same registers.
 
