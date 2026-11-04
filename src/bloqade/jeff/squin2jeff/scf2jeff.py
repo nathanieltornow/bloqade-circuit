@@ -8,8 +8,9 @@ from kirin.dialects.ilist import stmts as ilist_stmts
 from bloqade.types import is_subtype
 from bloqade.jeff.forms import loop_range
 from bloqade.jeff.dialects import stmts
+from bloqade.squin.rewrite.wire.driver import put, replace
 
-from .kinds import put, fitted, replace, jeff_kind
+from .values import fitted, jeff_type
 
 
 class ControlFlow(RewriteRule):
@@ -80,7 +81,7 @@ def switch(node: scf.IfElse) -> None:
     each body when it is built, so this rewrite also replaces each body yield.
     """
     separate(node, tuple(node.results))
-    outputs = tuple(jeff_kind(result.type) for result in node.results)
+    outputs = tuple(jeff_type(result.type) for result in node.results)
     regions: list[ir.Region] = []
     for body in (node.else_body, node.then_body):
         block = body.blocks[0]

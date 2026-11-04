@@ -1,8 +1,8 @@
 """Replace wire statements with Jeff quantum statements.
 
 A Jeff register value carries its static length in its type, such as `qureg(3)`,
-whenever the rewrite knows that length. An operation that continues a register
-keeps the type of its input.
+whenever the rewrite knows that length. A result that a `Threads` pair continues
+keeps the type of its operand.
 """
 
 from kirin import ir, types
@@ -15,8 +15,10 @@ from bloqade.jeff.forms import GATES
 from bloqade.jeff.types import IntArrayType, qureg, is_subtype, qureg_length
 from bloqade.squin.wire import stmts as wire
 from bloqade.jeff.dialects import stmts
+from bloqade.squin.wire.traits import Threads
+from bloqade.squin.rewrite.wire.driver import put, replace
 
-from .kinds import put, radians, replace, bitwidth
+from .values import radians, bitwidth
 
 DIRECT: dict[type[ir.Statement], type[ir.Statement]] = {
     wire.Alloc: stmts.Alloc,
@@ -35,17 +37,6 @@ DIRECT: dict[type[ir.Statement], type[ir.Statement]] = {
 }
 """Map each wire statement to the Jeff statement with the same operands and results."""
 
-CONTINUES = (
-    wire.Borrow,
-    wire.Release,
-    wire.Length,
-    wire.Take,
-    wire.Put,
-    wire.TakeSlice,
-    wire.PutSlice,
-)
-"""The wire statements whose first result continues their register operand."""
-
 
 class Quantum(RewriteRule):
     """Replace each wire statement and measurement predicate with Jeff."""
@@ -54,8 +45,9 @@ class Quantum(RewriteRule):
         """Rewrite `node` if it has a Jeff form, and leave any other statement."""
         if type(node) in DIRECT:
             made = put(DIRECT[type(node)](*node.args), node)
-            if isinstance(node, CONTINUES):
-                made.results[0].type = node.args[0].type
+            if (threads := node.get_trait(Threads)) is not None:
+                for k, (operand, _) in enumerate(threads.threads(node)):
+                    made.results[k].type = operand.type
             if isinstance(node, wire.TakeSlice):
                 made.results[1].type = qureg(constant_int(node.length))
             replace(node, *made.results)
@@ -162,6 +154,10 @@ def broadcast(node: wire.RegisterOperation) -> tuple[ir.SSAValue, ...]:
     Jeff gates act on single qubits. If the registers have a static length, the
     rewrite emits the scalar operation once per position. Otherwise it emits a Jeff
     loop that fills arrays of runtime length.
+
+    The rule reads the lengths from the Jeff types. These types keep the length of
+    a register through an in-out call, which the wire types lose. So the wire rule
+    `ExpandBroadcast` cannot do this expansion before the Jeff rules run.
     """
     if not supported(node):
         raise ir.ValidationError(node, f"Jeff has no form for '{node.label}'.")

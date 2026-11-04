@@ -15,14 +15,9 @@ from bloqade.jeff.forms import SWAPPED, INT_BINARY, FLOAT_UNARY, FLOAT_BINARY
 from bloqade.jeff.types import FloatArrayType, is_bit, is_subtype
 from bloqade.jeff.dialects import stmts
 from bloqade.jeff.dialects.stmts.call import declared_outputs
+from bloqade.squin.rewrite.wire.driver import put, replace
 
-from .kinds import (
-    put,
-    fitted,
-    replace,
-    bitwidth,
-    jeff_kind,
-)
+from .values import fitted, bitwidth, jeff_type
 
 Values = tuple[ir.SSAValue, ...]
 
@@ -70,7 +65,7 @@ def constant_value(
                 constant_value(before, member, k) for member, k in zip(members, outputs)
             )
             return put(py.tuple.New(fields), before).result
-        case ilist.IList(data=list(members)) if jeff_kind(typ) == FloatArrayType or any(
+        case ilist.IList(data=list(members)) if jeff_type(typ) == FloatArrayType or any(
             isinstance(member, float) for member in members
         ):
             floats = tuple(float(member) for member in members)
@@ -79,9 +74,9 @@ def constant_value(
             width = bitwidth(item_type(typ))
             ints = tuple(int(member) for member in members)
             return put(stmts.IntArrayConst(values=ints, bitwidth=width), before).result
-        case bool() | int() | float() if jeff_kind(typ) == types.Bool:
+        case bool() | int() | float() if jeff_type(typ) == types.Bool:
             return put(stmts.ConstInt(value=int(item), bitwidth=1), before).result
-        case bool() | int() | float() if jeff_kind(typ) == types.Float:
+        case bool() | int() | float() if jeff_type(typ) == types.Float:
             return put(stmts.ConstFloat(value=float(item)), before).result
         case bool() | int():
             return put(stmts.ConstInt(value=int(item)), before).result

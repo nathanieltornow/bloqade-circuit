@@ -12,8 +12,9 @@ from bloqade.jeff.types import QuregType, is_linear
 from bloqade.jeff.dialects import stmts
 from bloqade.squin.wire.ownership import InOut, convention
 from bloqade.jeff.dialects.stmts.call import declared_outputs
+from bloqade.squin.rewrite.wire.driver import put, replace
 
-from .kinds import put, fitted, replace, jeff_kind
+from .values import fitted, jeff_type
 
 
 @dataclass
@@ -67,8 +68,8 @@ class Functions(RewriteRule):
 
 def retype(node: func.Function) -> None:
     """Give the function `node` the Jeff types of its parameters and outputs."""
-    inputs = tuple(jeff_kind(typ) for typ in node.signature.inputs)
-    outputs = tuple(jeff_kind(typ) for typ in flat_kinds(node.signature.output))
+    inputs = tuple(jeff_type(typ) for typ in node.signature.inputs)
+    outputs = tuple(jeff_type(typ) for typ in flat_kinds(node.signature.output))
     output = (
         types.NoneType
         if not outputs

@@ -1,25 +1,22 @@
-"""Map squin wire types to Jeff types and insert Jeff statements during rewrites."""
+"""Convert squin wire types and values to Jeff types and values during rewrites."""
 
 import math
-from typing import TypeVar
 
 from kirin import ir, types
 from kirin.dialects import ilist
 
 from bloqade.types import MeasurementResultType, is_subtype
-from bloqade.jeff.types import WireType, IntArrayType, FloatArrayType, qureg, is_bit
+from bloqade.jeff.types import WireType, IntArrayType, FloatArrayType, qureg
 from bloqade.jeff.dialects import stmts
 from bloqade.squin.wire.types import (
     WireType as SquinWireType,
     RegisterType,
     register_length,
 )
-from bloqade.squin.rewrite.wire.driver import put as insert, replace as replace
-
-StatementT = TypeVar("StatementT", bound=ir.Statement)
+from bloqade.squin.rewrite.wire.driver import put
 
 
-def jeff_kind(typ: types.TypeAttribute) -> types.TypeAttribute:
+def jeff_type(typ: types.TypeAttribute) -> types.TypeAttribute:
     """Return the Jeff type of a value of the squin type `typ`.
 
     A register keeps its static length, so `Register[3]` becomes `qureg(3)`.
@@ -62,16 +59,6 @@ def bitwidth(elements: types.TypeAttribute) -> int:
     return 32
 
 
-def put(stmt: StatementT, before: ir.Statement) -> StatementT:
-    """Insert `stmt` before the statement `before` and return `stmt`.
-
-    An integer operation on bits gives a bit, which the statement types `Bool`.
-    """
-    if isinstance(stmt, (stmts.IntUnary, stmts.IntBinary)) and is_bit(stmt.args[0]):
-        stmt.results[0].type = types.Bool
-    return insert(stmt, before)
-
-
 def fitted(
     value: ir.SSAValue, typ: types.TypeAttribute, before: ir.Statement
 ) -> ir.SSAValue:
@@ -81,7 +68,7 @@ def fitted(
     in an integer position becomes `int_select(bit, 1, 0)`. The value can still be a
     wire value, such as a measurement result, so the check reads its Jeff type.
     """
-    if jeff_kind(value.type) == types.Bool and jeff_kind(typ) == types.Int:
+    if jeff_type(value.type) == types.Bool and jeff_type(typ) == types.Int:
         one = put(stmts.ConstInt(value=1), before).result
         zero = put(stmts.ConstInt(value=0), before).result
         return put(stmts.IntSelect(value, one, zero), before).result
