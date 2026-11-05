@@ -6,10 +6,14 @@ its length and its holes, which are the elements that a `Borrow`, a `Take` or a
 `TakeSlice` took out.
 
 The analysis records these errors:
-- A statement borrows an element that is already out.
+- A statement takes an element that is already out of its register.
 - A `Release` puts back a wire that came from another element.
 - A register with holes leaves through a free, a yield, a return or a call.
 - A loop, a branch or an in-out function moves a qubit to another position.
+
+A register place that the analysis cannot name is `Unknown`. A borrow or a release
+on such a register records nothing. The next statement that needs a complete
+register then reports it.
 """
 
 from __future__ import annotations
@@ -228,14 +232,24 @@ class Fields(Place):
 
 
 def unnamed(value: ir.SSAValue) -> Place:
-    """Return the place of a value whose allocation the analysis cannot name.
+    """Return the place of a value whose origin the analysis cannot trace.
 
-    A register gets an unnamed complete register, because every register that
-    crosses a call, a tuple or a region has no holes.
+    A register gets a complete register of its own root, because every register
+    that crosses a call, a tuple or a region has no holes.
     """
     if is_subtype(value.type, RegisterType):
-        return Register(None)
+        return Register(value)
     return Unknown()
+
+
+def named(place: Place, value: ir.SSAValue) -> Place:
+    """Give a register place without a root the root `value`.
+
+    A loop or a branch that joins 2 different registers gives its result this root.
+    """
+    if isinstance(place, Register) and place.root is None:
+        return replace(place, root=value)
+    return place
 
 
 def made(value: ir.SSAValue, length: IndexExpr | None = None) -> Place:
@@ -245,22 +259,27 @@ def made(value: ir.SSAValue, length: IndexExpr | None = None) -> Place:
     return Register(value, length)
 
 
-def element(register: Register, index: IndexExpr) -> Place:
-    """Return the place of element `index` of `register`.
+def position(register: Register, index: IndexExpr) -> IndexExpr:
+    """Return the element position of `index`, which counts from 0.
 
-    A negative index counts from the end of a register of known length. The result
-    is `Unknown` for an index outside the known length and for an unnamed register.
+    A negative constant index counts from the end of a register of known length.
     """
-    if register.root is None:
-        return Unknown()
-    position = index.constant
-    if position is not None and position < 0:
-        if register.length is None:
-            return Unknown()
-        index = register.length + index
-        position = index.constant
+    if (at := index.constant) is not None and at < 0 and register.length is not None:
+        return register.length + index
+    return index
+
+
+def element(register: Register, index: IndexExpr) -> Place:
+    """Return the place of the element at the position `index` of `register`.
+
+    The result is `Unknown` for a negative position, for a position outside the
+    known length and for a register without a root.
+    """
+    at = index.constant
     size = None if register.length is None else register.length.constant
-    if size is not None and position is not None and not 0 <= position < size:
+    if register.root is None or (at is not None and at < 0):
+        return Unknown()
+    if size is not None and at is not None and at >= size:
         return Unknown()
     return Element(register.root, index)
 
@@ -325,7 +344,9 @@ class RegisterAnalysis(CachedCalls[Place]):
         """Record the validation error `message` at `node`."""
         self.add_validation_error(node, ir.ValidationError(node, message))
 
-    def expect(self, node: ir.Statement, actual: Place, expected: Place, message: str):
+    def expect(
+        self, node: ir.Statement, actual: Place, expected: Place, message: str
+    ) -> None:
         """Record `message` at `node` unless both places name the same allocation."""
         if not actual.roots() or actual != expected:
             self.error(node, message)
@@ -343,18 +364,47 @@ class RegisterAnalysis(CachedCalls[Place]):
             place = frame.get(value)
             if isinstance(place, Unknown):
                 self.error(
-                    node, f"'{node.name}' takes a register with unknown borrowed slots"
+                    node, f"'{node.name}' takes a register that the check cannot name."
                 )
             elif isinstance(place, Register) and place.holes:
-                self.error(node, f"'{node.name}' takes a register with borrowed slots")
+                self.error(
+                    node, f"'{node.name}' takes a register with an element out of it."
+                )
+
+    def open_hole(self, stmt: ir.Statement, register: Place, hole: Hole) -> Place:
+        """Return `register` with the hole `hole`, and check that the hole is free.
+
+        Any other place than a register stays as it is.
+        """
+        if not isinstance(register, Register):
+            return register
+        if any(overlaps(hole, other) for other in register.holes):
+            self.error(
+                stmt,
+                f"'{stmt.name}' takes an element that is already out of its register.",
+            )
+        return replace(register, holes=register.holes | {hole})
+
+    def close_hole(
+        self, stmt: ir.Statement, register: Place, hole: Hole, message: str
+    ) -> Place:
+        """Return `register` without the hole `hole`, or record `message` if it lacks it.
+
+        Any other place than a register stays as it is.
+        """
+        if not isinstance(register, Register):
+            return register
+        if hole not in register.holes:
+            self.error(stmt, message)
+        return replace(register, holes=register.holes - {hole})
 
     @property
     def checks_positions(self) -> bool:
         """Check whether the innermost function keeps its qubits in position.
 
-        An in-out function must return each quantum parameter in its position, and
-        its loops and branches must keep each qubit in its position. Jeff import marks
-        consuming functions as owned, and they skip these checks.
+        An `InOut` function must return each quantum parameter in its position, and
+        its loops and branches must keep each qubit in its position. An `Owns`
+        function skips these checks.
         """
         function = self.active_functions[-1]
         return not (
@@ -370,9 +420,6 @@ class RegisterAnalysis(CachedCalls[Place]):
         **kwargs: Place,
     ) -> Place:
         """Interpret the function body, then check its return suffix."""
-        if node in self.active_functions:
-            self.error(node, "Wire validation does not support recursive calls.")
-            return Unknown()
         self.active_functions.append(node)
         try:
             result = super().frame_call(frame, node, *args, **kwargs)
@@ -394,7 +441,7 @@ class RegisterAnalysis(CachedCalls[Place]):
         end = region.blocks[0].last_stmt
         assert end is not None
         if len(outputs) < len(parameters):
-            self.error(end, "The return suffix must include every borrowed parameter.")
+            self.error(end, "The return must end with every in-out parameter.")
             return
         if not parameters:
             return
@@ -405,7 +452,7 @@ class RegisterAnalysis(CachedCalls[Place]):
                 end,
                 actual,
                 frame.get(parameter),
-                f"return suffix position {i} must continue borrowed parameter {i}",
+                f"Return suffix position {i} must continue in-out parameter {i}.",
             )
 
     def eval_fallback(
@@ -467,14 +514,10 @@ class Registers(interp.MethodTable):
         register = frame.get(stmt.register)
         if not isinstance(register, Register):
             return register, register
-        index = check.index(stmt.index)
-        hole = (
-            Moved(one(index)) if isinstance(stmt, stmts.Take) else Borrowed(one(index))
-        )
-        if any(overlaps(hole, other) for other in register.holes):
-            check.error(stmt, f"'{stmt.name}' takes a slot that is already borrowed")
-        holes = register.holes | {hole}
-        return replace(register, holes=holes), element(register, index)
+        at = position(register, check.index(stmt.index))
+        kind = Moved if isinstance(stmt, stmts.Take) else Borrowed
+        opened = check.open_hole(stmt, register, kind(one(at)))
+        return opened, element(register, at)
 
     @interp.impl(stmts.Release)
     def release(
@@ -482,45 +525,45 @@ class Registers(interp.MethodTable):
     ) -> tuple[Place, ...]:
         """Remove the hole at the index, and require the wire of that element."""
         register = frame.get(stmt.register)
-        if isinstance(register, Unreachable):
-            return (register,)
         if not isinstance(register, Register):
-            check.error(stmt, "'release' requires a matching borrowed index")
-            return (unnamed(stmt.register_out),)
-        index = check.index(stmt.index)
-        hole = Borrowed(one(index))
-        if hole not in register.holes:
-            check.error(stmt, "'release' requires a matching borrowed index")
+            return (register,)
+        at = position(register, check.index(stmt.index))
         check.expect(
             stmt,
             frame.get(stmt.wire),
-            element(register, index),
-            "A release must restore the qubit from its register slot.",
+            element(register, at),
+            "A release must put back the qubit of its register element.",
         )
-        return (replace(register, holes=register.holes - {hole}),)
+        message = "'release' requires a borrowed element at its index."
+        return (check.close_hole(stmt, register, Borrowed(one(at)), message),)
 
     @interp.impl(stmts.Put)
     def put(
         self, check: RegisterAnalysis, frame: ForwardFrame[Place], stmt: stmts.Put
     ) -> tuple[Place, ...]:
-        """Fill the moved element at the index, which makes the register a new one."""
+        """Fill the taken element at the index, which makes the register a new one."""
         register = frame.get(stmt.register)
-        if isinstance(register, Unreachable):
+        if not isinstance(register, Register):
             return (register,)
-        hole = Moved(one(check.index(stmt.index)))
-        if not isinstance(register, Register) or hole not in register.holes:
-            check.error(stmt, "'put' requires a matching taken index")
-            return (Register(stmt.register_out),)
-        return (Register(stmt.register_out, register.length, register.holes - {hole}),)
+        at = position(register, check.index(stmt.index))
+        message = "'put' requires a taken element at its index."
+        closed = check.close_hole(stmt, register, Moved(one(at)), message)
+        return (replace(closed, root=stmt.register_out),)
 
     @interp.impl(stmts.Length)
     def length(
         self, check: RegisterAnalysis, frame: ForwardFrame[Place], stmt: stmts.Length
     ) -> tuple[Place, ...]:
-        """Keep the register, and record its known length for later indices."""
+        """Keep the register, and record its known length for later indices.
+
+        The rule clears an entry of an earlier call of the same function, so that
+        each call reads only its own register length.
+        """
         register = frame.get(stmt.register)
         if isinstance(register, Register) and register.length is not None:
             check.lengths[stmt.result] = register.length
+        else:
+            check.lengths.pop(stmt.result, None)
         return register, Unknown()
 
     @interp.impl(stmts.SplitRegister)
@@ -547,11 +590,10 @@ class Registers(interp.MethodTable):
     ) -> tuple[Place, ...]:
         """Require complete registers, and name the new register of both."""
         check.expect_complete(frame, stmt, stmt.args)
-        first, second = frame.get(stmt.first), frame.get(stmt.second)
-        lengths = [
-            p.length if isinstance(p, Register) else None for p in (first, second)
-        ]
-        a, b = lengths
+        a, b = (
+            place.length if isinstance(place, Register) else None
+            for place in frame.get_values(stmt.args)
+        )
         return (Register(stmt.result, None if a is None or b is None else a + b),)
 
     @interp.impl(stmts.TakeSlice)
@@ -561,27 +603,21 @@ class Registers(interp.MethodTable):
         frame: ForwardFrame[Place],
         stmt: stmts.TakeSlice,
     ) -> tuple[Place, ...]:
-        """Add a moved range, and name the slice register as that part."""
+        """Add a taken range, and name the slice register as that part."""
         register = frame.get(stmt.register)
         size = check.index(stmt.length)
-        if isinstance(register, Unreachable):
-            return register, register
         if not isinstance(register, Register):
-            return unnamed(stmt.register_out), Register(None, size)
-        start = check.index(stmt.start)
-        hole = Moved(Slice(start, 1, size))
-        if any(overlaps(hole, other) for other in register.holes):
-            check.error(
-                stmt, "A slice extraction overlaps an outstanding register hole."
-            )
+            return register, Register(stmt.slice_register, size)
+        start = position(register, check.index(stmt.start))
+        opened = check.open_hole(stmt, register, Moved(Slice(start, 1, size)))
         root = None if register.root is None else Part(register.root, start)
-        return replace(register, holes=register.holes | {hole}), Register(root, size)
+        return opened, Register(root or stmt.slice_register, size)
 
     @interp.impl(stmts.PutSlice)
     def put_slice(
         self, check: RegisterAnalysis, frame: ForwardFrame[Place], stmt: stmts.PutSlice
     ) -> tuple[Place, ...]:
-        """Fill a moved range with a complete slice of the same length.
+        """Fill a taken range with a complete slice of the same length.
 
         The register keeps its root if the slice returns to the range that it left.
         A slice from anywhere else, such as in the register surgery that Jeff import
@@ -589,27 +625,21 @@ class Registers(interp.MethodTable):
         """
         check.expect_complete(frame, stmt, (stmt.slice_register,))
         register = frame.get(stmt.register)
-        if isinstance(register, Unreachable):
+        if not isinstance(register, Register):
             return (register,)
         part = frame.get(stmt.slice_register)
         size = part.length if isinstance(part, Register) else None
-        start = check.index(stmt.start)
-        hole = Moved(Slice(start, 1, size))
-        if (
-            not isinstance(register, Register)
-            or size is None
-            or hole not in register.holes
-        ):
-            check.error(
-                stmt, "A slice insertion must match an empty range and its length."
-            )
-            return (Register(stmt.register_out),)
-        holes = register.holes - {hole}
+        start = position(register, check.index(stmt.start))
+        message = "A slice insertion must fill a taken range of the same length."
+        if size is None:
+            check.error(stmt, message)
+            return (Register(stmt.register_out, register.length),)
+        closed = check.close_hole(stmt, register, Moved(Slice(start, 1, size)), message)
         if register.root is not None and part == Register(
             Part(register.root, start), size
         ):
-            return (replace(register, holes=holes),)
-        return (Register(stmt.register_out, register.length, holes),)
+            return (closed,)
+        return (replace(closed, root=stmt.register_out),)
 
     @interp.impl(stmts.DiscardRegister)
     def discard(
@@ -625,7 +655,7 @@ class Registers(interp.MethodTable):
             and any(isinstance(hole, Borrowed) for hole in register.holes)
         ):
             check.error(
-                stmt, "A discarded register must restore every borrowed element."
+                stmt, "A discarded register must get back every borrowed element."
             )
         return ()
 
@@ -684,8 +714,15 @@ class Functions(interp.MethodTable):
     def invoke(
         self, check: RegisterAnalysis, frame: ForwardFrame[Place], stmt: func.Invoke
     ) -> tuple[Place, ...]:
-        """Run the callee on the argument places, and name its new allocations."""
+        """Run the callee on the argument places, and name its new allocations.
+
+        The rule reports a recursive call before Kirin's call machinery runs, because
+        that machinery answers a recursive call with the bottom place.
+        """
         check.expect_complete(frame, stmt, stmt.args)
+        if stmt.callee.code in check.active_functions:
+            check.error(stmt, "Wire validation does not support recursive calls.")
+            return (unnamed(stmt.result),)
         inputs = frame.get_values(stmt.inputs)
         _, result = check.call(stmt.callee.code, Unknown(), *inputs)
         roots = frozenset(root for value in inputs for root in value.roots())
@@ -734,9 +771,12 @@ class ControlFlow(interp.MethodTable):
                     end,
                     actual,
                     expected,
-                    f"yield position {i} must continue loop input position {i}",
+                    f"Yield position {i} must continue loop input position {i}.",
                 )
-        return tuple(before.join(after) for before, after in zip(initial, yielded))
+        return tuple(
+            named(before.join(after), result)
+            for before, after, result in zip(initial, yielded, stmt.results)
+        )
 
     @interp.impl(scf.IfElse)
     def branch(
@@ -746,6 +786,9 @@ class ControlFlow(interp.MethodTable):
         check.expect_complete(frame, stmt, stmt.args)
         yielded: list[tuple[Place, ...]] = []
         for region in (stmt.then_body, stmt.else_body):
+            if not region.blocks:
+                yielded.append(tuple(unnamed(result) for result in stmt.results))
+                continue
             with check.new_frame(stmt, has_parent_access=True) as body:
                 result = check.frame_call_region(
                     body, stmt, region, *(unnamed(arg) for arg in region.blocks[0].args)
@@ -759,9 +802,12 @@ class ControlFlow(interp.MethodTable):
                     stmt,
                     second,
                     first,
-                    f"both branches must continue the same qubit at yield position {i}",
+                    f"Both branches must continue the same qubit at yield position {i}.",
                 )
-        return tuple(first.join(second) for first, second in zip(left, right))
+        return tuple(
+            named(first.join(second), result)
+            for first, second, result in zip(left, right, stmt.results)
+        )
 
 
 def parameter(argument: ir.BlockArgument) -> Place:

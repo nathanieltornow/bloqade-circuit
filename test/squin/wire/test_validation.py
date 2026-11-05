@@ -64,7 +64,7 @@ def test_a_slot_borrowed_twice_breaks_the_register_rule():
     again = wire_stmts.Borrow(borrow.register_out, borrow.index)
     again.insert_after(borrow)
     found = errors(RegisterValidation(), wired)
-    assert any("already borrowed" in message for message in found)
+    assert any("already out of its register" in message for message in found)
 
 
 def test_a_release_without_a_borrow_breaks_the_register_rule():
@@ -77,7 +77,7 @@ def test_a_release_without_a_borrow_breaks_the_register_rule():
     release = wire_stmts.Release(alloc.result, zero.result, fresh.result)
     release.insert_after(fresh)
     found = errors(RegisterValidation(), wired)
-    assert any("matching borrowed index" in message for message in found)
+    assert any("borrowed element at its index" in message for message in found)
 
 
 def test_a_register_that_leaves_with_a_borrowed_slot_breaks_the_register_rule():
@@ -91,7 +91,7 @@ def test_a_register_that_leaves_with_a_borrowed_slot_breaks_the_register_rule():
     loop = first(wired, scf.For)
     loop.initializers = (borrow.register_out,)
     found = errors(RegisterValidation(), wired)
-    assert any("borrowed slots" in message for message in found)
+    assert any("with an element out of it" in message for message in found)
 
 
 def test_a_gate_on_a_classical_value_breaks_the_types():

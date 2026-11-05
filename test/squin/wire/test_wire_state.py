@@ -42,7 +42,7 @@ def test_wire_validation_rejects_a_duplicate_borrow():
         args = list(use.stmt.args)
         args[use.index] = duplicate.register_out
         use.stmt.args = tuple(args)
-    with pytest.raises(ValidationErrorGroup, match="already borrowed"):
+    with pytest.raises(ValidationErrorGroup, match="already out of its register"):
         WireValidation().check(method)
 
 
@@ -223,7 +223,7 @@ def test_wire_validation_rejects_an_outstanding_borrow_at_a_boundary():
     )
     release.register_out.replace_by(release.register)
     release.delete()
-    with pytest.raises(ValidationErrorGroup, match="borrowed slots"):
+    with pytest.raises(ValidationErrorGroup, match="with an element out of it"):
         WireValidation().check(method)
 
 

@@ -81,7 +81,7 @@ def test_emitted_signature_rejects_reordered_borrowed_results():
     method.callable_region.blocks[0].args[0].type = types.MethodType[
         list(method.code.signature.inputs), packed.results[0].type
     ]
-    with pytest.raises(ValidationErrorGroup, match="return suffix position"):
+    with pytest.raises(ValidationErrorGroup, match="Return suffix position"):
         WireValidation().check(method)
 
 

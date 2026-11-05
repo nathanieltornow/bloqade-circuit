@@ -34,7 +34,7 @@ def test_rewrite_exhaustion_is_an_error():
 def test_one_converter_recovers_after_failure_and_produces_deterministic_output():
     converter = SquinToWire()
     before = identical_operands.code.print_str()
-    with pytest.raises(ValidationErrorGroup, match="already borrowed"):
+    with pytest.raises(ValidationErrorGroup, match="already out of its register"):
         converter.emit(identical_operands)
     assert identical_operands.code.print_str() == before
     first = converter.emit(calls)

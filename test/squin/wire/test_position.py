@@ -74,9 +74,11 @@ def assert_only_positions_fail(method: ir.Method, match: str):
     for validation in (StructureValidation(), LinearityValidation()):
         assert errors(validation, method) == []
     found = errors(RegisterValidation(), method)
-    assert found and all("position" in error or "slot" in error for error in found)
+    assert found and all(
+        "position" in error or "register element" in error for error in found
+    )
     assert any(match in error for error in found)
-    assert not any("borrowed slots" in error for error in found)
+    assert not any("with an element out of it" in error for error in found)
     with pytest.raises(ValidationErrorGroup, match=match):
         WireValidation().check(method)
 
@@ -98,20 +100,20 @@ def test_both_branches_must_continue_the_same_qubits(body):
     wired = SquinToWire().emit(branch_pair)
     branch = first(wired, scf.IfElse)
     swap_yield(getattr(branch, body).blocks[0].last_stmt)
-    assert_only_positions_fail(wired, "both branches")
+    assert_only_positions_fail(wired, "Both branches")
 
 
 def test_a_function_cannot_exchange_its_borrowed_parameters():
     wired = SquinToWire().emit(loop_pair)
     swap_suffix(wired)
-    assert_only_positions_fail(wired, "return suffix position")
+    assert_only_positions_fail(wired, "Return suffix position")
 
 
 def test_a_call_checks_the_return_suffix_inside_its_callee():
     wired = SquinToWire().emit(call_pair)
     call = first(wired, func.Invoke)
     swap_suffix(call.callee)
-    assert_only_positions_fail(wired, "return suffix position")
+    assert_only_positions_fail(wired, "Return suffix position")
 
 
 def test_a_release_cannot_exchange_the_qubits_of_two_slots():
@@ -121,7 +123,7 @@ def test_a_release_cannot_exchange_the_qubits_of_two_slots():
     ]
     first_release, second_release = releases[:2]
     first_release.wire, second_release.wire = second_release.wire, first_release.wire
-    assert_only_positions_fail(wired, "register slot")
+    assert_only_positions_fail(wired, "of its register element")
 
 
 def test_a_function_cannot_replace_a_borrowed_wire_with_a_fresh_wire():
@@ -133,7 +135,7 @@ def test_a_function_cannot_replace_a_borrowed_wire_with_a_fresh_wire():
     fresh.insert_before(packed)
     stmts.Free(old).insert_before(packed)
     packed.args = (*packed.args[:-1], fresh.result)
-    assert_only_positions_fail(wired, "return suffix position")
+    assert_only_positions_fail(wired, "Return suffix position")
 
 
 def test_a_function_must_return_every_borrowed_parameter():
@@ -142,7 +144,7 @@ def test_a_function_must_return_every_borrowed_parameter():
     packed = returned.value.owner
     returned.value = packed.args[0]
     assert any(
-        "every borrowed parameter" in error
+        "every in-out parameter" in error
         for error in errors(RegisterValidation(), wired)
     )
 
@@ -161,4 +163,4 @@ def test_a_slice_must_return_to_the_range_that_it_left():
     ]
     first_start, second_start = first_put.start, second_put.start
     first_put.args[1], second_put.args[1] = second_start, first_start
-    assert_only_positions_fail(wired, "return suffix position")
+    assert_only_positions_fail(wired, "Return suffix position")

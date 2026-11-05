@@ -13,6 +13,7 @@ from bloqade.squin.analysis.validation.wire.registers import (
     Register,
     Standalone,
     element,
+    position,
 )
 
 
@@ -75,9 +76,10 @@ def test_call_results_keep_passed_roots_and_distinguish_new_roots():
     assert first.items[1].roots().isdisjoint(second.items[1].roots())
 
 
-def test_register_elements_resolve_negative_indices_and_reject_invalid_ones():
+def test_register_positions_count_negative_indices_from_the_end():
     register = Register("register", IndexExpr(3))
-    assert element(register, IndexExpr(-1)) == element(register, IndexExpr(2))
+    assert position(register, IndexExpr(-1)) == IndexExpr(2)
+    assert element(register, IndexExpr(-1)) == Place.top()
     assert element(register, IndexExpr(3)) == Place.top()
     assert element(register, IndexExpr(-4)) == Place.top()
     assert element(Register(None, IndexExpr(3)), IndexExpr(0)) == Place.top()

@@ -107,7 +107,7 @@ def test_unrelated_symbols_can_borrow_together():
 
 
 def test_equal_index_expressions_cannot_borrow_twice():
-    with pytest.raises(ValidationErrorGroup, match="already borrowed"):
+    with pytest.raises(ValidationErrorGroup, match="already out of its register"):
         WireValidation().check(borrows(offset=0))
 
 

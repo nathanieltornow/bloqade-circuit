@@ -24,7 +24,7 @@ def identical_operands():
 
 
 def test_conversion_builds_wire_operations_and_validation_rejects_invalid_borrows():
-    reason = "already borrowed"
+    reason = "already out of its register"
     before = identical_operands.code.print_str()
     method = identical_operands.similar()
     method = EmitWire(method.dialects, method, {}).emit_method()
@@ -84,7 +84,7 @@ def test_definite_callee_ownership_failure_stops_emission(monkeypatch):
         return run(emitter)
 
     monkeypatch.setattr(EmitWire, "emit_method", record)
-    with pytest.raises(ValidationErrorGroup, match="already borrowed"):
+    with pytest.raises(ValidationErrorGroup, match="already out of its register"):
         SquinToWire().emit(call_identical_operands)
     assert attempts == [identical_operands.sym_name]
 
@@ -98,7 +98,9 @@ def test_callee_failure_keeps_the_original_condition_and_location():
         assert error.node.source is not None
         assert error.source is not None
         assert error.source.lineno > 0
-    assert any("already borrowed" in str(error) for error in caught.value.errors)
+    assert any(
+        "already out of its register" in str(error) for error in caught.value.errors
+    )
 
 
 def test_borrow_failure_points_to_the_source_call_and_preserves_source_metadata():
@@ -114,7 +116,9 @@ def test_borrow_failure_points_to_the_source_call_and_preserves_source_metadata(
         with pytest.raises(ValidationErrorGroup) as caught:
             SquinToWire().emit(identical_operands)
         errors = [
-            error for error in caught.value.errors if "already borrowed" in str(error)
+            error
+            for error in caught.value.errors
+            if "already out of its register" in str(error)
         ]
         assert errors
         for error in errors:

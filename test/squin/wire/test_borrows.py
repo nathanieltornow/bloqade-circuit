@@ -62,7 +62,8 @@ def test_a_later_borrow_cannot_escape_after_an_equivalent_index_release(packed):
     for check in (StructureValidation(), LinearityValidation()):
         assert errors(check, method) == []
     assert any(
-        "borrowed slots" in error for error in errors(RegisterValidation(), method)
+        "with an element out of it" in error
+        for error in errors(RegisterValidation(), method)
     )
 
 

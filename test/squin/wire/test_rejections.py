@@ -41,7 +41,11 @@ def two_registers(flag: bool) -> ilist.IList[MeasurementResult, Any]:
 @pytest.mark.parametrize(
     "kernel, error, reason",
     [
-        (calls_with_one_qubit_twice, ValidationErrorGroup, "already borrowed"),
+        (
+            calls_with_one_qubit_twice,
+            ValidationErrorGroup,
+            "already out of its register",
+        ),
         (two_registers, WireConversionError, "has no place"),
     ],
 )
