@@ -74,11 +74,16 @@ def output_types(output: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]
     """Return the type of each value that a function of the output type `output` returns.
 
     For example, `tuple[Wire, bool]` gives `(Wire, bool)` and `None` gives `()`. A
-    literal tuple gives one literal type per item, and any other type gives itself.
+    literal tuple gives one literal type per item. Any other type, such as a tuple of
+    any length, gives itself.
     """
     if is_subtype(output, types.NoneType):
         return ()
-    if isinstance(output, types.Generic) and is_subtype(output, types.Tuple):
+    if (
+        isinstance(output, types.Generic)
+        and is_subtype(output, types.Tuple)
+        and output.vararg is None
+    ):
         return tuple(output.vars)
     if isinstance(output, types.Literal) and isinstance(output.data, tuple):
         return tuple(types.Literal(item) for item in output.data)

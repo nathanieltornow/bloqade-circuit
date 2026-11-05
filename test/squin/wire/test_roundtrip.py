@@ -346,3 +346,21 @@ def runtime_tail_length(n: int) -> int:
 def test_slices_of_known_and_runtime_length_keep_their_results(kernel, args):
     restored = WireToSquin().emit(SquinToWire().emit(kernel))
     assert simulate(restored, *args) == simulate(kernel, *args)
+
+
+@squin.kernel
+def flip_and_count(q: Qubit):
+    squin.x(q)
+    return 1, 2
+
+
+@squin.kernel
+def constant_tuple_from_a_call() -> int:
+    qs = squin.qalloc(1)
+    pair = flip_and_count(qs[0])
+    return pair[0] + pair[1]
+
+
+def test_a_call_keeps_a_constant_tuple_result():
+    restored = WireToSquin().emit(SquinToWire().emit(constant_tuple_from_a_call))
+    assert simulate(restored) == simulate(constant_tuple_from_a_call) == 3

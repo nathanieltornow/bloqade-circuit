@@ -53,12 +53,7 @@ class Layout:
         borrowed_positions = tuple(
             i for i, typ in enumerate(signature.inputs) if quantum_type(typ) is not None
         )
-        packed = (
-            ordinary_count > 1
-            and isinstance(signature.output, types.Generic)
-            and is_subtype(signature.output, types.Tuple)
-        )
-        return cls(borrowed_positions, ordinary_count, packed)
+        return cls(borrowed_positions, ordinary_count, ordinary_count > 1)
 
     def result_types(
         self, output: types.TypeAttribute
@@ -69,10 +64,7 @@ class Layout:
         """
         count = self.ordinary_count + len(self.borrowed_positions)
         outputs = (output,) if count == 1 else output_types(output)
-        if len(outputs) != count:
-            raise ValueError(
-                f"The wire output type {output} must have {count} results."
-            )
+        assert len(outputs) == count, f"{output} must have {count} wire results"
         return outputs
 
 
