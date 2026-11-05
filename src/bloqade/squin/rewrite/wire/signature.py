@@ -1,6 +1,6 @@
 """Describe the calling convention of converted wire functions.
 
-A wire function returns the ordinary source results and then each borrowed quantum
+A wire function returns the ordinary source results and then each in-out quantum
 parameter, so `answer = f(q, n)` becomes `answer, q_next = f_wire(q, n)`.
 """
 
@@ -39,7 +39,7 @@ def packed_type(outputs: Sequence[types.TypeAttribute]) -> types.TypeAttribute:
 class Layout:
     """Describe the wire results that the signature of a source function implies."""
 
-    borrowed_positions: tuple[int, ...]
+    inout_positions: tuple[int, ...]
     """The argument positions of the quantum parameters."""
     ordinary_count: int
     """The number of ordinary source results."""
@@ -54,10 +54,10 @@ class Layout:
     def of(cls, signature: func.Signature) -> Layout:
         """Read the layout from the signature of a source function."""
         ordinary_count = len(output_types(signature.output))
-        borrowed_positions = tuple(
+        inout_positions = tuple(
             i for i, typ in enumerate(signature.inputs) if quantum_type(typ) is not None
         )
-        return cls(borrowed_positions, ordinary_count, ordinary_count > 1)
+        return cls(inout_positions, ordinary_count, ordinary_count > 1)
 
     def result_types(
         self, output: types.TypeAttribute
@@ -66,7 +66,7 @@ class Layout:
 
         A single wire result keeps its own type, even if that type is a tuple.
         """
-        count = self.ordinary_count + len(self.borrowed_positions)
+        count = self.ordinary_count + len(self.inout_positions)
         outputs = (output,) if count == 1 else output_types(output)
         assert len(outputs) == count, f"{output} must have {count} wire results"
         return outputs

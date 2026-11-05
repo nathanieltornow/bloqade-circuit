@@ -59,7 +59,7 @@ class Functions(interp.MethodTable):
         """Emit the wire form of the source function and record the wire method.
 
         Every ordinary result must be classical. A function can allocate and free
-        qubits, but it returns qubits only through its borrowed parameters.
+        qubits, but it returns qubits only through its in-out parameters.
         """
         if isinstance(stmt.signature.output, types.BottomType):
             raise WireConversionError(
@@ -86,13 +86,12 @@ class Functions(interp.MethodTable):
                 " pass them in.",
                 end,
             )
-        borrowed = [
-            cast(Qubit | Register, parameter_values[i])
-            for i in layout.borrowed_positions
+        inout = [
+            cast(Qubit | Register, parameter_values[i]) for i in layout.inout_positions
         ]
         results = (
             *(emit.classical_value(frame, value) for value in ordinary),
-            *(emit.acquire(frame, location) for location in borrowed),
+            *(emit.acquire(frame, location) for location in inout),
         )
         frame.free_local_allocations()
         emit_return(frame, results)
@@ -256,7 +255,7 @@ def run_library(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
 
 
 def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
-    """Call a converted function and continue the borrowed qubits with its results."""
+    """Call a converted function and continue its in-out qubits with its results."""
     if any(is_subtype(value.type, types.Tuple) for value in stmt.inputs):
         raise WireConversionError(
             "Wire calls require separate arguments for tuple fields.", stmt
@@ -266,8 +265,8 @@ def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
     layout = Layout.of(callee.signature)
     wired = emit.converted[stmt.callee]
     arguments = frame.get_values(stmt.inputs)
-    borrowed = borrowed_locations(callee, layout, arguments, stmt)
-    location_at = dict(zip(layout.borrowed_positions, borrowed, strict=True))
+    inout = inout_locations(callee, layout, arguments, stmt)
+    location_at = dict(zip(layout.inout_positions, inout, strict=True))
     inputs = tuple(
         (
             emit.acquire(frame, location_at[i])
@@ -280,7 +279,7 @@ def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
     made.result.type = wired.return_type
     outputs = call_results(frame, made.result, layout)
     count = layout.ordinary_count
-    for location, result in zip(borrowed, outputs[count:], strict=True):
+    for location, result in zip(inout, outputs[count:], strict=True):
         emit.restore(frame, location, result)
     ordinary = outputs[:count]
     if layout.packed:
@@ -288,7 +287,7 @@ def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
     return ordinary[0] if ordinary else frame.push(func.ConstantNone()).results[0]
 
 
-def borrowed_locations(
+def inout_locations(
     callee: func.Function,
     layout: Layout,
     arguments: tuple[Value, ...],
@@ -302,12 +301,12 @@ def borrowed_locations(
     it address the wrong qubits.
     """
     parameters = callee.body.blocks[0].args[1:]
-    borrowed: list[Single | Register | View] = []
-    for position in layout.borrowed_positions:
+    inout: list[Single | Register | View] = []
+    for position in layout.inout_positions:
         operand, typ = arguments[position], parameters[position].type
         match operand:
             case Qubit() | Element() if quantum_type(typ) == WireType:
-                borrowed.append(operand)
+                inout.append(operand)
                 continue
             case Register(_, length, row_shape):
                 outer = None if length is None else length.constant
@@ -337,19 +336,19 @@ def borrowed_locations(
                 " parameter declares.",
                 stmt,
             )
-        borrowed.append(operand)
-    whole = [operand for operand in borrowed if isinstance(operand, Register)]
+        inout.append(operand)
+    whole = [operand for operand in inout if isinstance(operand, Register)]
     if any(
         other is not register and other.root is register.root
         for register in whole
-        for other in borrowed
+        for other in inout
     ):
         raise WireConversionError(
             "A call cannot take a whole register together with a qubit or a slice"
             " of the same register.",
             stmt,
         )
-    return borrowed
+    return inout
 
 
 def call_results(

@@ -200,7 +200,7 @@ Each structured region must contain one block with its expected terminator.
 ## Calls and returns
 
 Every quantum parameter borrows its input allocation.
-The function returns the latest value of each borrowed parameter in declaration order.
+The function returns the latest value of each in-out parameter in declaration order.
 Ordinary results precede this borrowed-parameter suffix.
 A function cannot return qubits, so every ordinary result is classical.
 A function can allocate qubits and free them before it returns.
@@ -215,7 +215,7 @@ answer, q1 = call f_wire(q0, n)
 ```
 
 `Layout` reads this convention from the source signature.
-It gives the borrowed parameter positions, the ordinary result count and the tuple packing of the source return.
+It gives the in-out parameter positions, the ordinary result count and the tuple packing of the source return.
 The caller reads the type of each wire result from the callee's inferred signature.
 
 The caller consumes its latest inputs and restores them from the borrowed-parameter suffix.
@@ -300,7 +300,7 @@ Each analysis records its errors at callee nodes, so a reused result loses no er
 Quantum tuple fields require constant indices within their bounds.
 Tuple construction, extraction, calls and region boundaries must preserve quantum field types.
 Function parameters and region state carry separate wire or register values.
-Function results can use a flat tuple of ordinary outputs followed by borrowed parameters.
+Function results can use a flat tuple of ordinary outputs followed by in-out parameters.
 
 ## Unpacking registers
 
@@ -402,7 +402,7 @@ Jeff import validates the source and converts private copies of the reachable fu
 Local rewrite rules translate classical operations, structured regions and quantum operations.
 The converter rejects recursive call graphs.
 
-Imported functions use consuming quantum parameters.
+Jeff import marks each imported function as `Owns`, unless the function keeps each qubit in its position.
 Their `squin.wire.owned` marker requires explicit quantum outputs and permits changes in result positions.
 The wire validators still enforce linear uses and correct register ownership.
 Source squin conversion retains its borrowed-parameter convention.

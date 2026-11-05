@@ -26,7 +26,7 @@ class InOut:
 
 @dataclass(frozen=True)
 class Owns:
-    """Name a function that consumes its quantum parameters."""
+    """Name a function that takes its quantum parameters and returns its qubits in any order."""
 
 
 Convention: TypeAlias = InOut | Owns
@@ -41,7 +41,7 @@ def convention(function: func.Function) -> Convention:
 
 
 def mark_owned(method: ir.Method) -> None:
-    """Mark `method` as a function that consumes its quantum parameters."""
+    """Mark `method` as an `Owns` function."""
     method.code.attributes[KEY] = ir.PyAttr(True)
 
 

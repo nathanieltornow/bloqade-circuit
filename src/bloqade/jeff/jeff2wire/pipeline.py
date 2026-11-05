@@ -44,7 +44,7 @@ class JeffToWire:
     methods: dict[ir.Method, ir.Method] = field(default_factory=dict, init=False)
 
     def emit(self, method: ir.Method) -> ir.Method:
-        """Return verified wire code with consuming function parameters and explicit result order."""
+        """Return the verified wire copy of `method`, with the wire copies of its callees."""
         self.methods = {}
         if method.dialects is not jeff_kernel:
             raise ValueError("JeffToWire expects jeff.kernel dialects.")
