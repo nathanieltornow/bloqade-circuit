@@ -234,3 +234,28 @@ def nested_qubits():
 def test_a_call_or_return_that_aliases_qubits_has_no_wire_form(kernel, reason):
     with pytest.raises((WireConversionError, ValidationErrorGroup), match=reason):
         SquinToWire().emit(kernel)
+
+
+def test_a_branch_rule_rejects_a_qubit_made_inside_the_branch():
+    from kirin import types
+    from kirin.rewrite import Walk
+    from kirin.dialects import scf
+
+    from bloqade.qubit import stmts as qubit_stmts
+    from bloqade.squin.wire import WireType
+    from bloqade.squin.rewrite.wire.from_wire import FromWireRegions
+
+    flag = ir.TestValue(types.Bool)
+    bodies = []
+    for _ in range(2):
+        block = ir.Block()
+        block.args.append_from(types.Bool, "flag")
+        # The statement rules have already turned the wire into a qubit.
+        made = qubit_stmts.New()
+        block.stmts.extend([made, scf.Yield(made.result)])
+        bodies.append(ir.Region(block))
+    branch = scf.IfElse(flag, *bodies)
+    branch.results[0].type = WireType
+    holder = ir.Block([branch])
+    with pytest.raises(WireConversionError, match="exist before the branch"):
+        Walk(FromWireRegions()).rewrite(holder)

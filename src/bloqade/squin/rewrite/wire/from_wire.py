@@ -345,8 +345,17 @@ class FromWireRegions(RewriteRule):
         assert isinstance(then_yield, scf.Yield)
         if any(is_linear(then_yield.values[k].type) for k in dropped):
             return RewriteResult()
+        else_yield = node.else_body.blocks[0].last_stmt
+        assert isinstance(else_yield, scf.Yield)
         for k in dropped:
-            node.results[k].replace_by(then_yield.values[k])
+            value = then_yield.values[k]
+            if value is not else_yield.values[k] or node.is_ancestor(value.owner):
+                raise WireConversionError(
+                    "Both branches must yield the same qubit, and the qubit must"
+                    " exist before the branch.",
+                    node,
+                )
+            node.results[k].replace_by(value)
         for body in (node.then_body, node.else_body):
             _strip_yield(body.blocks[0], dropped)
         kept = _without(tuple(node.results), dropped)
