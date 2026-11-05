@@ -182,7 +182,9 @@ def test_emission_rejects_an_unsupported_reference_observer():
     )
     compare = py.cmp.Eq(allocation.result, allocation.result)
     compare.insert_after(allocation)
-    with pytest.raises(WireConversionError, match="Unsupported reference operation"):
+    with pytest.raises(
+        WireConversionError, match="has no wire form for qubit references"
+    ):
         EmitWire(method.dialects, method, {}).emit_method()
 
 

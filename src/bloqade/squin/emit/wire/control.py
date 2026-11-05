@@ -97,6 +97,12 @@ class ControlFlow(interp.MethodTable):
         classical = tuple(
             emit.classical_value(frame, initial[i]) for i in classical_indices
         )
+        if contains_location(frame.get(stmt.iterable)):
+            raise WireConversionError(
+                "A loop cannot iterate over qubits. Iterate over `range(len(qs))`"
+                " and index the qubits.",
+                stmt,
+            )
         iterable = emit.classical_value(frame, frame.get(stmt.iterable))
         source_args = body_of(stmt.body, stmt, len(stmt.initializers) + 1).args
         with emit.new_frame(stmt, has_parent_access=True) as body:
@@ -122,7 +128,8 @@ class ControlFlow(interp.MethodTable):
                 initial,
                 yielded,
                 stmt,
-                "Cannot resolve a value carried by a loop or branch.",
+                "A loop must yield each qubit reference that it carries in its"
+                " position.",
             )
             outputs = tuple(
                 emit.classical_value(body, yielded[i]) for i in classical_indices
@@ -143,17 +150,17 @@ class ControlFlow(interp.MethodTable):
         roots = tuple(frame.latest)
         bodies: list[WireFrame] = []
         yields: list[tuple[Value, ...]] = []
-        for source in (stmt.then_body, stmt.else_body):
+        for region in (stmt.then_body, stmt.else_body):
             with emit.new_frame(stmt, has_parent_access=True) as body:
                 body.site, body.current_stmt = frame.site, stmt
                 # Each body of Kirin's `scf.IfElse` gets the condition as a block
                 # argument.
                 arguments = tuple(
                     body.output.args.append_from(arg.type, arg.name)
-                    for arg in body_of(source, stmt, 1).args
+                    for arg in body_of(region, stmt, 1).args
                 )
                 body.latest = dict(frame.latest)
-                yielded = emit.frame_call_region(body, stmt, source, *arguments)
+                yielded = emit.frame_call_region(body, stmt, region, *arguments)
                 if not isinstance(yielded, tuple):
                     raise WireConversionError("A branch must end with a yield.", stmt)
                 bodies.append(body)
@@ -165,7 +172,7 @@ class ControlFlow(interp.MethodTable):
             left,
             right,
             stmt,
-            "A branch reference has no place in one known allocation.",
+            "Both branches must give the same qubit reference at each result.",
         )
         classical_indices = [
             i for i, value in enumerate(left) if not contains_location(value)

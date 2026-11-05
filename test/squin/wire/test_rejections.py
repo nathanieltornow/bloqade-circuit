@@ -46,7 +46,7 @@ def two_registers(flag: bool) -> ilist.IList[MeasurementResult, Any]:
             ValidationErrorGroup,
             "already out of its register",
         ),
-        (two_registers, WireConversionError, "has no place"),
+        (two_registers, WireConversionError, "same qubit reference"),
     ],
 )
 def test_unresolved_references_fail_conversion_and_preserve_the_source(
@@ -94,7 +94,7 @@ def mixed_broadcast(qs: ilist.IList[Qubit, Any]):
         (rows_of_unknown_count, "nested register slice requires constant bounds"),
         (rows_of_unknown_width, "requires known inner dimensions"),
         (sliced_by_a_parameter, "slice bounds have no supported source form"),
-        (mixed_broadcast, "cannot index a heterogeneous quantum container"),
+        (mixed_broadcast, "cannot mix a register of runtime length"),
     ],
     ids=lambda x: x if isinstance(x, str) else x.sym_name,
 )

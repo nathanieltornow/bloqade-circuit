@@ -14,7 +14,6 @@ from kirin.dialects.py.len import Len
 from bloqade.types import holds_qubits
 from bloqade.squin.wire import stmts
 from bloqade.analysis.indices import Sym, Iter, Slice, Indices, IndexExpr
-from bloqade.squin.wire.types import WireType
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.traits import Threads
 
@@ -26,6 +25,8 @@ from .values import (
     Element,
     Location,
     Register,
+    WrapperSelf,
+    singles,
     row_width,
     known_items,
     contains_location,
@@ -38,11 +39,9 @@ StatementT = TypeVar("StatementT", bound=ir.Statement)
 class WireFrame(EmitFrame[Value]):
     """Hold the emission state of one source region.
 
-    The inherited `entries` map each source value to its meaning: an emitted
-    classical value, a quantum `Location` or a tuple of meanings. Kirin's
-    `EmitFrame` has no place for the wire state, so this frame adds it: the block it
-    emits, the latest wire of each qubit, and the allocations to free at its end.
-    Each loop or branch body gets its own frame, so each body has its own wire state.
+    The inherited `entries` map each source value to its meaning, such as a quantum
+    `Location`. The frame adds the wire state: the block it emits, the latest wire of
+    each allocation and the allocations to free at its end.
     """
 
     output: ir.Block = field(default_factory=ir.Block)
@@ -53,8 +52,8 @@ class WireFrame(EmitFrame[Value]):
     An operation that consumes a qubit replaces the entry of its root. A root has
     no entry while an operation holds its whole value.
     """
-    local_roots: list[ir.SSAValue] = field(default_factory=list)
-    """The allocation roots that this region allocated and must free at its end."""
+    local_roots: list[Qubit | Register] = field(default_factory=list)
+    """The allocations that this region made and must free at its end."""
     site: func.Invoke | None = None
     """The user call that runs the library wrapper of this frame, or None in user code.
 
@@ -80,6 +79,15 @@ class WireFrame(EmitFrame[Value]):
         self.output = caller.output
         self.latest = caller.latest
         self.local_roots = caller.local_roots
+
+    def own(self, location: Qubit | Register, local: bool = True) -> None:
+        """Start the wire state of the allocation `location`.
+
+        If `local` is True, the region frees the allocation at its end.
+        """
+        self.latest[location.root] = location.root
+        if local:
+            self.local_roots.append(location)
 
     def push(self, node: StatementT) -> StatementT:
         """Append an operation and give it the source location of the current operation."""
@@ -118,7 +126,7 @@ class WireFrame(EmitFrame[Value]):
         value = self.get(source)
         if not isinstance(value, ir.SSAValue):
             raise WireConversionError(
-                "An emitted index requires output SSA symbols.", self.statement
+                "An index symbol has no emitted integer value.", self.statement
             )
         return value
 
@@ -135,13 +143,10 @@ class WireFrame(EmitFrame[Value]):
 
     def free_local_allocations(self) -> None:
         """Free each local allocation that the region still holds at its end."""
-        for root in self.local_roots:
-            if (value := self.latest.pop(root, None)) is not None:
-                self.push(
-                    stmts.Free(value)
-                    if value.type == WireType
-                    else stmts.FreeRegister(value)
-                )
+        for location in self.local_roots:
+            if (value := self.latest.pop(location.root, None)) is not None:
+                free = stmts.Free if isinstance(location, Qubit) else stmts.FreeRegister
+                self.push(free(value))
 
 
 def body_of(region: ir.Region, node: ir.Statement, count: int) -> ir.Block:
@@ -219,10 +224,14 @@ class EmitWire(EmitABC[WireFrame, Value]):
         """
         if isinstance(value, ir.SSAValue):
             return value
-        if value is None:
+        if isinstance(value, WrapperSelf):
             raise WireConversionError(
                 "A library wrapper cannot use its own function object.",
                 frame.statement,
+            )
+        if value is None:
+            raise WireConversionError(
+                "A statement without a result has no value.", frame.statement
             )
         if isinstance(value, tuple):
             return frame.push(
@@ -290,17 +299,20 @@ class EmitWire(EmitABC[WireFrame, Value]):
     ) -> ir.Statement:
         """Emit the statement that `build` makes on the wires of `locations`.
 
-        The function acquires each location, calls `build` with the wires or
-        registers in order, and pushes the statement. The statement must carry a
-        `Threads` trait. The function then restores each location with the result
-        that continues its wire. A dialect that adds statements to wire programs
-        calls this from its method table under the key `emit.squin_wire`.
+        The statement must carry a `Threads` trait, and each location continues with
+        its result. A dialect that adds statements to wire programs calls this from
+        its method table under the key `emit.squin_wire`.
         """
         inputs = tuple(self.acquire(frame, location) for location in locations)
         made = frame.push(build(inputs))
         self.check_dialect(made)
         continued = dict(made.get_present_trait(Threads).threads(made))
         for location, wire in zip(locations, inputs, strict=True):
+            if wire not in continued:
+                raise WireConversionError(
+                    f"The Threads trait of '{made.name}' must continue each input.",
+                    made,
+                )
             self.restore(frame, location, continued[wire])
         return made
 
@@ -332,14 +344,11 @@ class EmitWire(EmitABC[WireFrame, Value]):
         if isinstance(meaning, (Qubit, Element)):
             return (meaning,)
         items = known_items(meaning, at)
-        qubits = tuple(
-            item for item in items or () if isinstance(item, (Qubit, Element))
-        )
-        if items is None or len(qubits) != len(items):
+        if items is None:
             raise WireConversionError(
                 f"'{at.name}' needs qubits whose places are all known.", at
             )
-        return qubits
+        return singles(items, at)
 
     def new_qubit(self, frame: WireFrame, wire: ir.SSAValue) -> Qubit:
         """Record the new wire `wire` as a standalone qubit of the current region.
@@ -348,9 +357,9 @@ class EmitWire(EmitABC[WireFrame, Value]):
         """
         if isinstance(wire.owner, ir.Statement):
             self.check_dialect(wire.owner)
-        frame.latest[wire] = wire
-        frame.local_roots.append(wire)
-        return Qubit(wire)
+        qubit = Qubit(wire)
+        frame.own(qubit)
+        return qubit
 
     def length_value(self, frame: WireFrame, value: Value) -> ir.SSAValue:
         """Return the length of a source container as an emitted integer.
@@ -417,7 +426,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
             holds_qubits(result.type) for result in node.results
         ):
             raise WireConversionError(
-                f"Unsupported reference operation '{node.name}'.", node
+                f"The statement '{node.name}' has no wire form for qubit references.",
+                node,
             )
         made = node.from_stmt(
             node, args=tuple(self.classical_value(frame, value) for value in values)

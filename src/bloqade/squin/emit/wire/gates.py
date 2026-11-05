@@ -11,6 +11,7 @@ from bloqade.types import item_type
 from bloqade.squin.gate import stmts as gate_stmts
 from bloqade.squin.wire import stmts
 from bloqade.squin.noise import stmts as noise_stmts
+from bloqade.analysis.indices import Slice
 from bloqade.squin.wire.stmts import Operation
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.native.dialects.gate import stmts as native_stmts
@@ -19,13 +20,12 @@ from bloqade.squin.rewrite.wire.sources import ENTRIES, Entry
 from .base import EmitWire, WireFrame
 from .values import (
     View,
-    Qubit,
     Value,
     Single,
-    Element,
     Location,
     Register,
     apart,
+    singles,
     known_items,
 )
 
@@ -33,12 +33,12 @@ from .values import (
 def apply(
     emit: EmitWire,
     frame: WireFrame,
-    source: ir.Statement,
+    stmt: ir.Statement,
     entry: Entry,
     locations: tuple[Location, ...],
     register: bool,
 ) -> Operation:
-    """Emit the wire form of `source` on the operands at `locations` and restore them.
+    """Emit the wire form of `stmt` on the operands at `locations` and restore them.
 
     If `register` is True, each location is a register part and the statement acts on
     whole registers. Otherwise each location is one qubit.
@@ -48,9 +48,9 @@ def apply(
     def made(inputs: tuple[ir.SSAValue, ...]) -> Operation:
         params = tuple(
             emit.classical_value(frame, frame.get(value))
-            for value in entry.param_operands(source)
+            for value in entry.param_operands(stmt)
         )
-        return build(inputs, params, entry.adjoint(source))
+        return build(inputs, params, entry.adjoint(stmt))
 
     operation = emit.operate(frame, locations, made)
     assert isinstance(operation, Operation)
@@ -59,26 +59,24 @@ def apply(
 
 def register_parts(operands: tuple[Value, ...]) -> tuple[Register | View, ...] | None:
     """Return the operands if each one is a whole register or a step-1 slice of qubits."""
-    parts = tuple(
-        value
-        for value in operands
-        if isinstance(value, Register)
-        and not value.row_shape
-        or isinstance(value, View)
-        and value.span.step == 1
-        and not value.row_shape
-    )
-    return parts if len(parts) == len(operands) else None
+    parts: list[Register | View] = []
+    for value in operands:
+        match value:
+            case Register(row_shape=()) | View(span=Slice(step=1), row_shape=()):
+                parts.append(value)
+            case _:
+                return None
+    return tuple(parts)
 
 
 def register_gate(
     emit: EmitWire,
     frame: WireFrame,
-    source: ir.Statement,
+    stmt: ir.Statement,
     entry: Entry,
     parts: tuple[Register | View, ...],
 ) -> tuple[ir.SSAValue, ...]:
-    """Emit the register form of `source` and return its classical list results.
+    """Emit the register form of `stmt` and return its classical list results.
 
     Operands of different known lengths fail, unless the statement stops at the
     shortest register.
@@ -87,13 +85,13 @@ def register_gate(
     known = {count for count in counts if count is not None}
     if not entry.truncates and len(known) > 1:
         raise WireConversionError(
-            f"'{source.name}' requires qubit lists of equal length.", source
+            f"'{stmt.name}' requires qubit lists of equal length.", stmt
         )
     if entry.truncates:
         size = None if None in counts else min(known)
     else:
         size = next(iter(known), None)
-    made = apply(emit, frame, source, entry, parts, register=True)
+    made = apply(emit, frame, stmt, entry, parts, register=True)
     length = types.Any if size is None else types.Literal(size)
     for value in made.classical:
         value.type = ilist.IListType[item_type(value.type), length]
@@ -101,65 +99,57 @@ def register_gate(
 
 
 def qubit_groups(
-    entry: Entry, operands: tuple[Value, ...], source: ir.Statement
+    entry: Entry, operands: tuple[Value, ...], stmt: ir.Statement
 ) -> list[tuple[Single, ...]]:
     """Group the qubits of the operands like Python's `zip`, one qubit per operand.
 
     Each operand must have a known length, and all qubits must have known places.
     """
-    items = tuple(known_items(value, source) for value in operands)
+    items = tuple(known_items(value, stmt) for value in operands)
     if any(item is None for item in items):
         if register_parts(operands) is not None:
             raise WireConversionError(
                 "A runtime broadcast over register parts that can share qubits has"
                 " no wire form.",
-                source,
+                stmt,
             )
         if not all(isinstance(value, (Register, View, tuple)) for value in operands):
             raise WireConversionError(
-                "A runtime broadcast requires resolved register operands.", source
+                "A runtime broadcast requires resolved register operands.", stmt
+            )
+        if any(isinstance(value, tuple) for value in operands):
+            raise WireConversionError(
+                "A runtime broadcast cannot mix a register of runtime length with a"
+                " list of qubits.",
+                stmt,
             )
         raise WireConversionError(
-            "A runtime broadcast cannot index a heterogeneous quantum container.",
-            source,
+            "A runtime broadcast over a strided or nested slice has no wire form.",
+            stmt,
         )
     known = tuple(item for item in items if item is not None)
     if not entry.truncates and len({len(item) for item in known}) > 1:
         raise WireConversionError(
-            f"'{source.name}' requires qubit lists of equal length.", source
+            f"'{stmt.name}' requires qubit lists of equal length.", stmt
         )
-    groups = list(zip(*known))
-    qubits = [
-        tuple(item for item in group if isinstance(item, (Qubit, Element)))
-        for group in groups
-    ]
-    if any(len(group) != len(kept) for group, kept in zip(groups, qubits)):
-        raise WireConversionError(
-            f"A qubit of '{source.name}' has no place in a known allocation.",
-            source,
-        )
-    return qubits
+    return [singles(group, stmt) for group in zip(*known)]
 
 
 def emit_gate(
-    emit: EmitWire, frame: WireFrame, source: ir.Statement
+    emit: EmitWire, frame: WireFrame, stmt: ir.Statement
 ) -> tuple[Value, ...]:
-    """Emit one register operation on whole registers and step-1 slices, or scalar ones.
+    """Emit the wire form of the squin statement `stmt` on registers or on qubits.
 
-    A register operation takes each operand as its own register, so the operands
-    must share no qubit. A broadcast over lists of qubits, such as
-    `rx(a, [q0, q2])`, groups the qubits like Python's `zip`. If no 2 groups share
-    a qubit, a gate or a noise channel gets one statement on all groups, which keeps
-    the broadcast as one parallel step. Overlapping groups, such as in
-    `cx(qs[0:2], qs[1:3])`, get one scalar operation per group in the order of the
-    source broadcast.
+    Whole registers and step-1 slices that share no qubit get one register
+    operation. Other operands group their qubits like Python's `zip`. Groups that
+    share no qubit form one statement, and overlapping groups get one statement each.
     """
-    entry = ENTRIES[type(source)]
-    operands = tuple(frame.get(value) for value in entry.qubit_operands(source))
+    entry = ENTRIES[type(stmt)]
+    operands = tuple(frame.get(value) for value in entry.qubit_operands(stmt))
     parts = register_parts(operands)
     if parts is not None and all(apart(a, b) for a, b in combinations(parts, 2)):
-        return register_gate(emit, frame, source, entry, parts)
-    groups = qubit_groups(entry, operands, source)
+        return register_gate(emit, frame, stmt, entry, parts)
+    groups = qubit_groups(entry, operands, stmt)
     if (
         entry.broadcast
         and len(groups) > 1
@@ -171,16 +161,16 @@ def emit_gate(
         )
     ):
         flat = tuple(location for group in groups for location in group)
-        apply(emit, frame, source, entry, flat, register=False)
+        apply(emit, frame, stmt, entry, flat, register=False)
         return ()
     outputs: list[list[ir.SSAValue]] = [[] for _ in entry.results]
     for group in groups:
-        made = apply(emit, frame, source, entry, group, register=False)
+        made = apply(emit, frame, stmt, entry, group, register=False)
         for collected, value in zip(outputs, made.classical, strict=True):
             collected.append(value)
     return tuple(
         frame.push(ilist.New(tuple(values), elem_type=item_type(result.type))).result
-        for result, values in zip(entry.result_values(source), outputs, strict=True)
+        for result, values in zip(entry.result_values(stmt), outputs, strict=True)
     )
 
 
@@ -199,10 +189,10 @@ def operation(
 
 def every_source(dialect: ir.Dialect) -> Rule:
     """Return `operation` as the method of every statement of `dialect` in `ENTRIES`."""
-    first, *rest = (source for source in ENTRIES if source.dialect is dialect)
+    first, *rest = (op for op in ENTRIES if op.dialect is dialect)
     rule: Rule = interp.impl(first)(operation)
-    for source in rest:
-        rule = interp.impl(source)(rule)
+    for op in rest:
+        rule = interp.impl(op)(rule)
     return rule
 
 

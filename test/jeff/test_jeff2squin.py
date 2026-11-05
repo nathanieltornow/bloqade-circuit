@@ -208,9 +208,7 @@ def _returned(mt: ir.Method) -> int:
 
 
 @pytest.mark.parametrize("swapped, count", [(False, 1), (True, 3)])
-def test_a_function_that_keeps_its_wires_in_place_returns_only_its_bit(
-    swapped, count
-):
+def test_a_function_that_keeps_its_wires_in_place_returns_only_its_bit(swapped, count):
     """A function returns (bit, q0, q1). One wire passes through a gate and the
     other through a loop. If both wires stay in place, the squin kernel returns
     only the bit. If the function exchanges them, it returns all three values."""

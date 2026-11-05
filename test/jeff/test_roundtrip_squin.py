@@ -723,19 +723,19 @@ CASES = [
     pytest.param(
         loop_over_qubits,
         (),
-        "classical operation cannot consume a quantum reference",
+        "cannot iterate over qubits",
         id="for q in qs",
     ),
     pytest.param(
         picked_in_a_branch,
         (True,),
-        "branch reference",
+        "same qubit reference at each result",
         id="a qubit picked in a branch",
     ),
     pytest.param(
         carried_by_a_loop,
         (2,),
-        "value carried by a loop or branch",
+        "yield each qubit reference that it carries",
         id="a qubit carried by a loop",
     ),
     pytest.param(
@@ -752,12 +752,15 @@ CASES = [
         id="a call of a nested def",
     ),
     pytest.param(
-        mapped, (), "Unsupported reference operation 'map'", id="ilist.map over qubits"
+        mapped,
+        (),
+        "'map' has no wire form for qubit references",
+        id="ilist.map over qubits",
     ),
     pytest.param(
         for_each_qubit,
         (),
-        "Unsupported reference operation 'for_each'",
+        "'for_each' has no wire form for qubit references",
         id="ilist.for_each over qubits",
     ),
     pytest.param(

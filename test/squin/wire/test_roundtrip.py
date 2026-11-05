@@ -290,11 +290,11 @@ def mapped() -> ilist.IList[MeasurementResult, Any]:
     "kernel, reason",
     [
         (through_calls, "cannot return qubits"),
-        (loop_over_qubits, "classical operation cannot consume a quantum reference"),
+        (loop_over_qubits, "cannot iterate over qubits"),
         (picked_in_a_branch, "branch"),
         (carried_by_a_loop, "loop"),
-        (for_each_qubit, "Unsupported reference operation"),
-        (mapped, "Unsupported reference operation"),
+        (for_each_qubit, "has no wire form for qubit references"),
+        (mapped, "has no wire form for qubit references"),
     ],
 )
 def test_direct_emission_rejects_forms_that_require_source_transformation(

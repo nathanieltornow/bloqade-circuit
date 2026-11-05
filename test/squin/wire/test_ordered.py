@@ -61,7 +61,7 @@ def test_unresolved_references_fail_without_reference_analysis(
     forbid_reference_analysis,
 ):
     before = two_registers.code.print_str()
-    with pytest.raises(WireConversionError, match="has no place"):
+    with pytest.raises(WireConversionError, match="same qubit reference"):
         SquinToWire().emit(two_registers)
     assert two_registers.code.print_str() == before
 

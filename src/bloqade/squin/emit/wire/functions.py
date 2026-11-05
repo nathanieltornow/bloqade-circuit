@@ -31,6 +31,7 @@ from .values import (
     Single,
     Element,
     Register,
+    WrapperSelf,
     contains_location,
 )
 
@@ -135,7 +136,7 @@ class Functions(interp.MethodTable):
             return (allocate_register(emit, frame, stmt),)
         if is_library(stmt.callee):
             return (run_library(emit, frame, stmt),)
-        return (call(emit, frame, stmt),)
+        return (call_converted(emit, frame, stmt),)
 
 
 def add_parameter(
@@ -149,12 +150,14 @@ def add_parameter(
     argument = frame.output.args.append_from(typ, source.name)
     if quantum_type(source.type) is None:
         return argument
-    frame.latest[argument] = argument
     if typ == WireType:
-        return Qubit(argument)
-    outer, *inner = register_shape(source.type) or (None,)
-    length = None if outer is None else IndexExpr(outer)
-    return Register(argument, length, tuple(inner))
+        location: Qubit | Register = Qubit(argument)
+    else:
+        outer, *inner = register_shape(source.type) or (None,)
+        length = None if outer is None else IndexExpr(outer)
+        location = Register(argument, length, tuple(inner))
+    frame.own(location, local=False)
+    return location
 
 
 def ordinary_values(
@@ -228,13 +231,13 @@ def allocate_register(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Re
     """
     size = emit.classical_value(frame, frame.get(stmt.inputs[0]))
     root = frame.push(stmts.AllocRegister(size)).results[0]
-    frame.latest[root] = root
-    frame.local_roots.append(root)
     length = emit.index(stmt.inputs[0])
     # A negative constant size gives an empty register, like `range(n)`.
     if (count := length.constant) is not None:
         length = IndexExpr(max(0, count))
-    return Register(root, length)
+    register = Register(root, length)
+    frame.own(register)
+    return register
 
 
 def run_library(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
@@ -247,14 +250,13 @@ def run_library(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
     # location, so the frame has parent access.
     with emit.new_frame(stmt.callee.code, has_parent_access=True) as body:
         body.share(frame, stmt)
-        # A wrapper body never uses its self argument, which has no emitted form.
         result = emit.frame_call(
-            body, stmt.callee.code, None, *frame.get_values(stmt.inputs)
+            body, stmt.callee.code, WrapperSelf(), *frame.get_values(stmt.inputs)
         )
     return result
 
 
-def call(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
+def call_converted(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Value:
     """Call a converted function and continue its in-out qubits with its results."""
     if any(is_subtype(value.type, types.Tuple) for value in stmt.inputs):
         raise WireConversionError(

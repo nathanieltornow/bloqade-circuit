@@ -70,12 +70,27 @@ Part: TypeAlias = Register | View
 Location: TypeAlias = Single | Part
 """Name the allocation, the qubit or the register part that a source reference holds."""
 
-Value: TypeAlias = ir.SSAValue | Location | tuple["Value", ...] | None
+
+@dataclass(frozen=True)
+class WrapperSelf:
+    """Name the self argument of a library wrapper, which has no emitted form."""
+
+
+Value: TypeAlias = ir.SSAValue | Location | WrapperSelf | tuple["Value", ...] | None
 """Represent an emitted classical value, a quantum location, or a source container.
 
-None is the meaning of the self argument of a library wrapper, which has no
-emitted form.
+None is the result of a statement without results, which Kirin's emitter gives.
 """
+
+
+def singles(items: tuple[Value, ...], at: ir.Statement) -> tuple[Single, ...]:
+    """Return `items`, which must all be qubit locations of known places."""
+    qubits = tuple(item for item in items if isinstance(item, (Qubit, Element)))
+    if len(qubits) != len(items):
+        raise WireConversionError(
+            f"A qubit of '{at.name}' has no place in a known allocation.", at
+        )
+    return qubits
 
 
 def contains_location(value: Value) -> bool:
@@ -119,7 +134,7 @@ def checked_index(
     if position is not None and position < 0:
         if count is None:
             raise WireConversionError(
-                "Cannot resolve a negative index into a register of unknown length.",
+                "A negative index needs a register of known length.",
                 at,
             )
         position += count
