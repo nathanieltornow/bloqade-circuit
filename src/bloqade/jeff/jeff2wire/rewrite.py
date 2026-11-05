@@ -9,7 +9,7 @@ from kirin.dialects import py, func, ilist
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade.jeff.forms import JEFF_TO_WIRE
-from bloqade.jeff.gates import canonical
+from bloqade.jeff.gates import Shape, canonical
 from bloqade.jeff.types import (
     WireType as JeffWireType,
     QuregType,
@@ -111,46 +111,58 @@ class Quantum(RewriteRule):
         if not gate_supported(shape):
             raise ValueError(f"Gate '{shape.name}' has no squin wire form.")
         current = {value: value for value in (*node.targets, *node.controls)}
-
-        def apply(source, operands, angles=(), adjoint=False):
-            wires = tuple(current[value] for value in operands)
-            made = put(ENTRIES[source].scalar(wires, angles, adjoint), node)
-            current.update(zip(operands, made.outputs, strict=True))
-
-        def turns(value):
-            scale = put(py.Constant(1 / (2 * math.pi)), node).result
-            return put(py.Mult(value, scale), node).result
-
-        def negative(value):
-            return put(py.USub(value), node).result
-
-        for _ in range(shape.power):
-            name = shape.name
+        if (form := wire_form(shape, node)) is not None:
+            source, angles, adjoint = form
             operands = (*shape.controls, *shape.targets)
-            if len(shape.controls) == 1:
-                apply(CONTROLLED[name], operands)
-            elif len(shape.controls) == 2:
-                apply(gates.CCZ, operands)
-            elif name == "u":
-                theta, phi, lam = (turns(value) for value in shape.params)
-                angles = (
-                    (negative(theta), negative(lam), negative(phi))
-                    if shape.adjoint
-                    else (theta, phi, lam)
-                )
-                apply(gates.U3, operands, angles)
-            elif name == "swap":
-                apply(gates.Swap, operands)
-            elif name in SINGLE:
-                apply(SINGLE[name], operands)
-            elif name in NON_HERMITIAN:
-                apply(NON_HERMITIAN[name], operands, adjoint=shape.adjoint)
-            elif name in ROTATION:
-                angle = turns(shape.params[0])
-                apply(
-                    ROTATION[name],
-                    operands,
-                    (negative(angle) if shape.adjoint else angle,),
-                )
+            for _ in range(shape.power):
+                wires = tuple(current[value] for value in operands)
+                made = put(ENTRIES[source].scalar(wires, angles, adjoint), node)
+                current.update(zip(operands, made.outputs, strict=True))
         replace(node, *(current[value] for value in (*node.targets, *node.controls)))
         return RewriteResult(has_done_something=True)
+
+
+def turns(radians: ir.SSAValue, before: ir.Statement) -> ir.SSAValue:
+    """Return the Jeff angle `radians` in turns, which squin gates take."""
+    scale = put(py.Constant(1 / (2 * math.pi)), before).result
+    return put(py.Mult(radians, scale), before).result
+
+
+def negative(value: ir.SSAValue, before: ir.Statement) -> ir.SSAValue:
+    """Return the negation of the angle `value`."""
+    return put(py.USub(value), before).result
+
+
+def wire_form(
+    shape: Shape, before: ir.Statement
+) -> tuple[type[ir.Statement], tuple[ir.SSAValue, ...], bool] | None:
+    """Return the squin statement, its angles and its adjoint flag for one gate power.
+
+    The result is None for the identity and for an uncontrolled global phase, which
+    act as no gate.
+    """
+    name = shape.name
+    if len(shape.controls) == 1:
+        return CONTROLLED[name], (), False
+    if len(shape.controls) == 2:
+        return gates.CCZ, (), False
+    if name == "u":
+        theta, phi, lam = (turns(value, before) for value in shape.params)
+        if shape.adjoint:
+            # The adjoint of U3(theta, phi, lam) is U3(-theta, -lam, -phi).
+            theta, phi, lam = (negative(v, before) for v in (theta, lam, phi))
+        return gates.U3, (theta, phi, lam), False
+    if name == "swap":
+        return gates.Swap, (), False
+    if name in SINGLE:
+        return SINGLE[name], (), False
+    if name in NON_HERMITIAN:
+        return NON_HERMITIAN[name], (), shape.adjoint
+    if name in ROTATION:
+        angle = turns(shape.params[0], before)
+        return (
+            ROTATION[name],
+            (negative(angle, before) if shape.adjoint else angle,),
+            False,
+        )
+    return None
