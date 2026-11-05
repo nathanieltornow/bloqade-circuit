@@ -8,7 +8,7 @@ from kirin.rewrite import Walk
 from kirin.dialects import ilist
 
 from bloqade.types import is_subtype
-from bloqade.squin.rewrite.wire.driver import Retype, reachable
+from bloqade.squin.rewrite.wire.tools import Retype, reachable
 from bloqade.squin.rewrite.wire.from_wire import FromWire
 from bloqade.squin.analysis.validation.wire import WireValidation
 

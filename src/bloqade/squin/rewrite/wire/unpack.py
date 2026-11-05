@@ -22,7 +22,7 @@ from bloqade.types import item_type
 from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
 from bloqade.squin.wire.types import register_length
-from bloqade.squin.rewrite.wire.driver import put
+from bloqade.squin.rewrite.wire.tools import put
 
 
 class ExpandBroadcast(RewriteRule):

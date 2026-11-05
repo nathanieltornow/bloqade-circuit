@@ -9,7 +9,7 @@ from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade.types import is_subtype, output_types
 from bloqade.jeff.dialects import stmts
-from bloqade.squin.rewrite.wire.driver import put, replace, set_signature
+from bloqade.squin.rewrite.wire.tools import put, replace, set_signature
 from bloqade.squin.rewrite.wire.signature import packed_type
 
 from .values import fitted, jeff_type
@@ -54,7 +54,7 @@ class Functions(RewriteRule):
         callee = self.methods[node.callee]
         outputs = output_types(callee.return_type)
         made = put(stmts.Call(callee, tuple(node.inputs), outputs), node)
-        for result, typ in zip(made.results, flat_kinds(node.result.type), strict=True):
+        for result, typ in zip(made.results, flat_types(node.result.type), strict=True):
             result.type = jeff_type(typ)
         replace(node, nested(node.result.type, iter(made.results), node))
 
@@ -70,7 +70,7 @@ def retype(node: func.Function) -> None:
     if isinstance(end, stmts.Return):
         outputs = tuple(value.type for value in end.values)
     else:
-        outputs = tuple(jeff_type(typ) for typ in flat_kinds(node.signature.output))
+        outputs = tuple(jeff_type(typ) for typ in flat_types(node.signature.output))
     for argument, typ in zip(node.body.blocks[0].args[1:], inputs, strict=True):
         argument.type = typ
     set_signature(node, inputs, packed_type(outputs))
@@ -103,7 +103,7 @@ def returned(node: func.Return) -> None:
     set_signature(function, function.signature.inputs, output)
 
 
-def flat_kinds(typ: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:
+def flat_types(typ: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:
     """Return the type of each Jeff output of a wire value of type `typ`.
 
     Jeff has no tuples, so a nested tuple gives its leaf types in order, and None
@@ -112,7 +112,7 @@ def flat_kinds(typ: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:
     members = output_types(typ)
     if members == (typ,):
         return members
-    return tuple(leaf for member in members for leaf in flat_kinds(member))
+    return tuple(leaf for member in members for leaf in flat_types(member))
 
 
 def flat_values(value: ir.SSAValue) -> tuple[ir.SSAValue, ...]:
@@ -133,7 +133,7 @@ def nested(
 ) -> ir.SSAValue:
     """Build a value of the wire type `typ` from the next flat Jeff call results.
 
-    This is the inverse of `flat_kinds`.
+    This is the inverse of `flat_types`.
     """
     members = output_types(typ)
     if members == (typ,):

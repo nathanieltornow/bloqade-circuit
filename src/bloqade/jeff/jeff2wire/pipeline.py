@@ -19,7 +19,7 @@ from bloqade.jeff.analysis.validation import (
     StructureValidation,
     JeffToSquinValidation,
 )
-from bloqade.squin.rewrite.wire.driver import (
+from bloqade.squin.rewrite.wire.tools import (
     Retype,
     CheckedFixpoint,
     reachable,

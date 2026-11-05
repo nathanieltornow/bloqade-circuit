@@ -13,7 +13,7 @@ from bloqade.squin.wire.types import (
     RegisterType,
     register_length,
 )
-from bloqade.squin.rewrite.wire.driver import put
+from bloqade.squin.rewrite.wire.tools import put
 
 
 def jeff_type(typ: types.TypeAttribute) -> types.TypeAttribute:

@@ -17,7 +17,7 @@ from bloqade.squin.wire.stmts import Operation
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.ownership import KEY as OWNED
 from bloqade.jeff.analysis.validation import LinearityValidation, StructureValidation
-from bloqade.squin.rewrite.wire.driver import reachable
+from bloqade.squin.rewrite.wire.tools import reachable
 from bloqade.squin.rewrite.wire.unpack import ExpandBroadcast
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.rewrite.wire.signature import InOutTypes
@@ -74,7 +74,7 @@ class WireToJeff:
         return copies[method]
 
 
-KEPT = (
+LEFT_FOR_CLEANUP = (
     py.Constant,
     py.tuple.New,
     py.indexing.GetItem,
@@ -101,7 +101,7 @@ class Unsupported(RewriteRule):
         if (
             node.parent_block is None
             or node.dialect in jeff_kernel.data
-            or isinstance(node, KEPT)
+            or isinstance(node, LEFT_FOR_CLEANUP)
         ):
             return RewriteResult()
         name = node.label if isinstance(node, Operation) else node.name

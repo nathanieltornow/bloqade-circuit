@@ -176,7 +176,7 @@ class EmitWire(EmitABC[WireFrame, Value]):
     void = None
     source: ir.Method
     converted: Mapping[ir.Method, ir.Method]
-    """Hold the wire method of each user callee, which the driver converts first."""
+    """Hold the wire method of each user callee, which `SquinToWire` converts first."""
     wire_dialects: tuple[ir.Dialect, ...] = ()
     """Hold the dialects of the wire statements that other dialects emit, such as Gemini."""
     result: ir.Method | None = field(default=None, init=False)

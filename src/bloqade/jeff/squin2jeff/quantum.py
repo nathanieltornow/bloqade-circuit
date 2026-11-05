@@ -16,7 +16,7 @@ from bloqade.jeff.types import IntArrayType, qureg, is_subtype, qureg_length
 from bloqade.squin.wire import stmts as wire
 from bloqade.jeff.dialects import stmts
 from bloqade.squin.wire.traits import Threads
-from bloqade.squin.rewrite.wire.driver import put, replace
+from bloqade.squin.rewrite.wire.tools import put, replace
 
 from .values import radians, bitwidth
 
@@ -106,7 +106,9 @@ def negated(node: qubit_stmts.IsZero) -> ir.SSAValue:
         case stmts.IntArrayConst(values=values):
             size = len(values)
         case _:
-            raise ir.ValidationError(node, f"{bits} is a bit array of unknown length")
+            raise ir.ValidationError(
+                node, f"The bit array {bits} needs a known length."
+            )
     items: list[ir.SSAValue] = []
     for position in range(size):
         at = put(stmts.ConstInt(value=position), node).result

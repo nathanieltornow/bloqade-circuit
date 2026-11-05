@@ -27,7 +27,7 @@ reconstructed = WireToSquin().emit(wired)
 It converts user callees first and supplies their validated wire methods to the caller's emitter.
 Each callee must pass the same conversion target and validation.
 
-`reachable` in `squin/rewrite/wire/driver.py` lists the user callees before their callers and rejects recursion.
+`reachable` in `squin/rewrite/wire/tools.py` lists the user callees before their callers and rejects recursion.
 Before emission, a `ValidationSuite` runs `StructureValidation` for source structure and types.
 The emitter rejects each source form that it cannot convert where it meets the form.
 It requires static calls, and regions only of functions, loops and branches, each with one block.
@@ -264,7 +264,7 @@ An operation that uses one qubit or register twice fails with a plain `WireConve
 Callee validation failures propagate directly to the caller.
 Each conversion error retains its operation, source location and failed condition.
 
-The conversion driver rejects recursive calls.
+`reachable` rejects recursive calls.
 A failed conversion leaves the source method and its callees unchanged.
 Repeated public conversions clear the cache of converted methods.
 

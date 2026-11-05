@@ -35,7 +35,7 @@ class Captures(RewriteRule):
 
 @dataclass
 class IsolateRegions(Pass):
-    """Make region captures explicit after wire emission has already supplied quantum outputs."""
+    """Make each value that a Jeff region reads from outside an input of the region."""
 
     def unsafe_run(self, mt: ir.Method) -> RewriteResult:
         """Isolate inner regions before their enclosing regions."""
@@ -43,7 +43,10 @@ class IsolateRegions(Pass):
 
 
 class IsolateRegion(RewriteRule):
-    """Add captured values as inputs without duplicating existing quantum results."""
+    """Give each classical value that a Jeff loop or switch reads from outside a block argument.
+
+    A loop must already carry each quantum value, because wire emission supplies it.
+    """
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Give each captured operand a block argument in every region."""

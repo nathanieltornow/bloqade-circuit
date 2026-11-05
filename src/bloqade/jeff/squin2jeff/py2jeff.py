@@ -14,7 +14,7 @@ from bloqade.constants import constant_int
 from bloqade.jeff.forms import SWAPPED, INT_BINARY, FLOAT_UNARY, FLOAT_BINARY
 from bloqade.jeff.types import FloatArrayType, is_bit, is_subtype
 from bloqade.jeff.dialects import stmts
-from bloqade.squin.rewrite.wire.driver import put, replace
+from bloqade.squin.rewrite.wire.tools import put, replace
 
 from .values import fitted, bitwidth, jeff_type
 
@@ -81,7 +81,9 @@ def constant_value(
             return put(stmts.ConstInt(value=int(item)), before).result
         case float():
             return put(stmts.ConstFloat(value=item), before).result
-    raise ir.ValidationError(before, f"a constant of type {type(item).__name__}")
+    raise ir.ValidationError(
+        before, f"Jeff has no constant of the type {type(item).__name__}."
+    )
 
 
 def is_float(value: ir.SSAValue) -> bool:
@@ -269,7 +271,7 @@ def item(node: py.indexing.GetItem) -> Values | None:
     if isinstance(container.owner, py.tuple.New):
         if (position := constant_int(node.index)) is None:
             raise ir.ValidationError(
-                node, f"{container} is not a tuple read at a constant"
+                node, "Jeff requires a tuple read at a constant index."
             )
         return (container.owner.args[position],)
     if isinstance(container.owner, (py.Constant, py_slice.Slice)):

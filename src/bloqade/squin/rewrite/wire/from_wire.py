@@ -42,7 +42,7 @@ from bloqade.squin.wire.ownership import (
     Convention,
     convention,
 )
-from bloqade.squin.rewrite.wire.driver import (
+from bloqade.squin.rewrite.wire.tools import (
     Retype,
     CheckedFixpoint,
     put,

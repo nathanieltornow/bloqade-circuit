@@ -9,8 +9,8 @@ from kirin.validation import ValidationSuite
 
 from bloqade.squin.emit.wire import EmitWire
 from bloqade.squin.wire.group import is_wire
+from bloqade.squin.rewrite.wire.tools import reachable
 from bloqade.squin.emit.wire.functions import is_library
-from bloqade.squin.rewrite.wire.driver import reachable
 from bloqade.squin.analysis.validation.wire import (
     WireValidation,
     StructureValidation,

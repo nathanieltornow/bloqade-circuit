@@ -8,7 +8,7 @@ from kirin.dialects.ilist import stmts as ilist_stmts
 from bloqade.types import is_subtype
 from bloqade.jeff.forms import loop_range
 from bloqade.jeff.dialects import stmts
-from bloqade.squin.rewrite.wire.driver import put, replace
+from bloqade.squin.rewrite.wire.tools import put, replace
 
 from .values import fitted, joined
 
@@ -38,7 +38,8 @@ def separate(node: ir.Statement, values: tuple[ir.SSAValue, ...]) -> None:
     """Reject a tuple among `values`, because Jeff has no tuples."""
     if any(is_subtype(value.type, types.Tuple) for value in values):
         raise ir.ValidationError(
-            node, f"a region of {node.name} requires separate scalar or array results"
+            node,
+            f"Each region of '{node.name}' requires separate scalar or array results.",
         )
 
 
@@ -61,7 +62,9 @@ def loop(node: scf.For) -> None:
                 put(stmts.ConstInt(value=step), node).result,
             )
         case _:
-            raise ir.ValidationError(node, f"{node.iterable} is not a range")
+            raise ir.ValidationError(
+                node, "Jeff requires a range as the loop iterable."
+            )
     end = node.body.blocks[0].last_stmt
     assert isinstance(end, scf.Yield)
     # The loop state joins the types of the initializer and the yield, such as a

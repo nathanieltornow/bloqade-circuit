@@ -13,7 +13,7 @@ from kirin.ir.exception import ValidationErrorGroup
 from bloqade import squin
 from bloqade.types import Qubit
 from bloqade.squin.wire import WireConversionError
-from bloqade.squin.rewrite.wire.driver import CheckedFixpoint
+from bloqade.squin.rewrite.wire.tools import CheckedFixpoint
 from bloqade.squin.passes.squin_to_wire import SquinToWire
 from bloqade.squin.passes.wire_to_squin import WireToSquin
 
