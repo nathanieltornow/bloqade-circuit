@@ -200,8 +200,7 @@ class UnpackRegister(RewriteRule):
 def plan(node: ir.Statement, size: int) -> list[Step] | None:
     """Return the statements that use the register of `node` or its slices, or None.
 
-    The function reads the block of `node` in order and tracks the view of each
-    register value. A position belongs to one view at a time, and it is full or
+    The function follows the one use of each register value and tracks its view. A position belongs to one view at a time, and it is full or
     borrowed. A `Borrow` needs a full position of its view, and a `Release` needs a
     borrowed one. A `TakeSlice` moves full positions to a new view, and a `PutSlice`
     moves them back. The list ends with the free of the root, which needs every
@@ -236,8 +235,79 @@ def plan(node: ir.Statement, size: int) -> list[Step] | None:
         span = range(start, start + count)
         return all(owner[p] == view.key and full[p] for p in span)
 
+    def next_ready() -> ir.Statement | None:
+        """Return the use of a tracked value whose tracked operands are all known.
+
+        A `PutSlice` waits until its slice register is known, too.
+        """
+        for value in views:
+            user = next(iter(value.uses)).stmt
+            if not isinstance(user, stmts.PutSlice) or user.slice_register in views:
+                return user
+        return None
+
     if not track(node.results[0], root):
         return None
+    # Each tracked value has one use. Following these uses visits each statement
+    # after the statements that define its operands.
+    while (stmt := next_ready()) is not None:
+        if isinstance(stmt, (stmts.Borrow, stmts.Release)):
+            view = views.pop(stmt.register)
+            at = position(view, stmt.index)
+            borrow = isinstance(stmt, stmts.Borrow)
+            # A `Borrow` empties a full position, and a `Release` fills it again.
+            if at is None or owner[at] != view.key or full[at] != borrow:
+                return None
+            full[at] = not borrow
+            steps.append(
+                BorrowStep(stmt, at)
+                if isinstance(stmt, stmts.Borrow)
+                else ReleaseStep(stmt, at)
+            )
+            if not track(stmt.register_out, view):
+                return None
+        elif isinstance(stmt, stmts.Length):
+            view = views.pop(stmt.register)
+            steps.append(LengthStep(stmt, view.size))
+            if not track(stmt.register_out, view):
+                return None
+        elif isinstance(stmt, stmts.TakeSlice):
+            view = views.pop(stmt.register)
+            start, count = constant_int(stmt.start), constant_int(stmt.length)
+            if start is None or count is None or start < 0 or start + count > view.size:
+                return None
+            part = View(next(keys), view.offset + start, count)
+            if not holds(view, part.offset, count):
+                return None
+            for p in range(part.offset, part.offset + count):
+                owner[p] = part.key
+            steps.append(MoveStep(stmt))
+            if not track(stmt.register_out, view) or not track(
+                stmt.slice_register, part
+            ):
+                return None
+        elif isinstance(stmt, stmts.PutSlice):
+            view = views.pop(stmt.register)
+            part = views.pop(stmt.slice_register)
+            start = constant_int(stmt.start)
+            if start is None or part.offset != view.offset + start:
+                return None
+            if not holds(part, part.offset, part.size):
+                return None
+            for p in range(part.offset, part.offset + part.size):
+                owner[p] = view.key
+            steps.append(MoveStep(stmt))
+            if not track(stmt.register_out, view):
+                return None
+        elif isinstance(stmt, (stmts.FreeRegister, stmts.DiscardRegister)):
+            view = views.pop(stmt.register)
+            if view != root or views or not holds(root, 0, size):
+                return None
+            steps.append(FreeStep(stmt))
+            return steps
+        else:
+            return None
+    return None
     stmt = node.next_stmt
     while stmt is not None:
         if not any(value in views for value in stmt.args):
