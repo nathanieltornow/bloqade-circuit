@@ -447,7 +447,10 @@ class FromWireSignature(RewriteRule):
             elif isinstance(made := returned.value.owner, py.tuple.New):
                 values = list(made.args)
             else:
-                values = []
+                raise WireConversionError(
+                    "An in-out function must build its results with a tuple.",
+                    returned,
+                )
             put(func.Return(pack(values[: len(kept)], returned)), returned)
             returned.delete()
         for arg in block.args[1:]:
@@ -483,28 +486,28 @@ class FromWire:
     def rewrite(
         self, method: ir.Method, kernels: Mapping[ir.Method, ir.Method]
     ) -> RewriteResult:
-        """Run the statement rules, then the region and signature rules, then DCE.
+        """Run the statement rules, then the rules of the calling convention.
 
-        An `Owns` function from Jeff import can carry qubits in its loops and
-        branches, so its regions keep their quantum state as qubit values.
+        An `InOut` function then drops its carried wires from loops, branches and
+        returns, and dead-code elimination removes the wire values. An `Owns`
+        function from Jeff import can carry qubits in its loops and branches, so its
+        values only take their reference squin types.
         """
         statements = Walk(
             Chain(FromWireStatements(self.wire_dialects), FromWireCalls(kernels))
         )
         result = CheckedFixpoint(statements).rewrite(method.code)
         assert isinstance(method.code, func.Function)
-        if isinstance(convention(method.code), Owns):
-            result = Walk(FromWireSignature()).rewrite(method.code).join(result)
-            result = Walk(Retype(squin_type)).rewrite(method.code).join(result)
-            method.code.attributes.pop(OWNED)
-            return result
-        regions = Walk(Chain(FromWireRegions(), FromWireSignature()))
-        result = CheckedFixpoint(regions).rewrite(method.code).join(result)
-        return (
-            CheckedFixpoint(Walk(DeadCodeElimination()))
-            .rewrite(method.code)
-            .join(result)
-        )
+        match convention(method.code):
+            case Owns():
+                result = Walk(Retype(squin_type)).rewrite(method.code).join(result)
+                method.code.attributes.pop(OWNED)
+            case InOut():
+                regions = Walk(Chain(FromWireRegions(), FromWireSignature()))
+                result = CheckedFixpoint(regions).rewrite(method.code).join(result)
+                cleanup = CheckedFixpoint(Walk(DeadCodeElimination()))
+                result = cleanup.rewrite(method.code).join(result)
+        return result
 
 
 def restores(node: stmts.PutSlice) -> bool:
