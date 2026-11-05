@@ -30,6 +30,7 @@ from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade.qubit import stmts as qubit_stmts, qalloc
 from bloqade.types import QubitType, is_subtype, output_types
+from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
 from bloqade.squin.wire.group import is_wire, reference_group
 from bloqade.squin.wire.types import RegisterType, is_linear
@@ -195,10 +196,31 @@ def from_borrow(node: stmts.Borrow | stmts.Take) -> tuple[ir.SSAValue, ...]:
 
 def from_put(node: stmts.Put) -> tuple[ir.SSAValue, ...]:
     """Read the filled register as the list with the qubit at its index."""
+    start = normalized_index(node.register, node.index, node)
     one = put(py.Constant(1), node).result
-    stop = put(py.Add(node.index, one), node).result
+    stop = put(py.Add(start, one), node).result
     middle = put(ilist.New((node.wire,), elem_type=QubitType), node).result
-    return (splice(node.register, node.index, stop, middle, node),)
+    return (splice(node.register, start, stop, middle, node),)
+
+
+def normalized_index(
+    register: ir.SSAValue, index: ir.SSAValue, node: ir.Statement
+) -> ir.SSAValue:
+    """Convert a negative index to its position from the start of the register."""
+    constant = constant_int(index)
+    if constant is not None and constant >= 0:
+        return index
+    length = put(py_len.Len(register), node).result
+    if constant is not None:
+        return put(py.Add(length, index), node).result
+    zero = put(py.Constant(0), node).result
+    negative = put(py.cmp.Lt(index, zero), node).result
+    adjusted = py.Add(length, index)
+    then = ir.Block([adjusted, scf.Yield(adjusted.result)], argtypes=(types.Bool,))
+    otherwise = ir.Block([scf.Yield(index)], argtypes=(types.Bool,))
+    return put(
+        scf.IfElse(negative, ir.Region(then), ir.Region(otherwise)), node
+    ).results[0]
 
 
 def from_pack(node: stmts.PackRegister) -> tuple[ir.SSAValue, ...]:
@@ -226,9 +248,10 @@ def from_split(node: stmts.SplitRegister) -> tuple[ir.SSAValue, ...]:
 
 def from_take_slice(node: stmts.TakeSlice) -> tuple[ir.SSAValue, ...]:
     """Read the moved range as a slice of the register list."""
-    stop = put(py.Add(node.start, node.length), node).result
+    start = normalized_index(node.register, node.start, node)
+    stop = put(py.Add(start, node.length), node).result
     one = put(py.Constant(1), node).result
-    part = put(py_slice.Slice(node.start, stop, one), node).result
+    part = put(py_slice.Slice(start, stop, one), node).result
     return node.register, put(py.GetItem(node.register, part), node).result
 
 
@@ -240,9 +263,10 @@ def from_put_slice(node: stmts.PutSlice) -> tuple[ir.SSAValue, ...]:
     """
     if restores(node):
         return (node.register,)
+    start = normalized_index(node.register, node.start, node)
     length = put(py_len.Len(node.slice_register), node).result
-    stop = put(py.Add(node.start, length), node).result
-    return (splice(node.register, node.start, stop, node.slice_register, node),)
+    stop = put(py.Add(start, length), node).result
+    return (splice(node.register, start, stop, node.slice_register, node),)
 
 
 def from_release(node: stmts.Release) -> tuple[ir.SSAValue, ...]:

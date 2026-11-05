@@ -170,7 +170,7 @@ class JoinRegister(ir.Statement):
 class TakeSlice(ir.Statement):
     """Move a contiguous range of `register` into a new register.
 
-    The elements of the range stay empty until a `PutSlice` fills them.
+    The elements stay empty until `Put` or `PutSlice` fills them.
     """
 
     name = "take_slice"

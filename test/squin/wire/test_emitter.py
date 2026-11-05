@@ -1,9 +1,12 @@
 """Check direct wire emission through Kirin's region interpreter."""
 
+from types import ModuleType
+from typing import Any
 from collections import Counter
 
 import pytest
-from kirin.dialects import py, scf, func
+from kirin import types
+from kirin.dialects import py, scf, func, ilist
 from test_roundtrip import nested, simulate
 
 from bloqade import squin
@@ -150,3 +153,54 @@ def test_a_return_inside_a_loop_body_is_rejected():
     end.replace_by(func.Return(end.values[0]))
     with pytest.raises(WireConversionError, match="function-level return"):
         EmitWire(method.dialects, method, {}).emit_method()
+
+
+@squin.kernel
+def flip_last(qs: ilist.IList[Qubit, Any]):
+    squin.x(qs[len(qs) - 1])
+
+
+@squin.kernel
+def repeated_wrapper(n: int):
+    first = squin.qalloc(3)
+    flip_last(first)
+    second = squin.qalloc(n)
+    flip_last(second)
+    third = squin.qalloc(4)
+    flip_last(third)
+    return squin.broadcast.measure(second), squin.broadcast.measure(third)
+
+
+@pytest.mark.parametrize("size", [2, 3, 5])
+def test_library_calls_use_the_length_of_their_own_argument(monkeypatch, size):
+    monkeypatch.setattr(
+        flip_last, "mod", ModuleType("bloqade.squin.stdlib.test_lengths")
+    )
+    restored = WireToSquin().emit(SquinToWire().emit(repeated_wrapper))
+    expected = [[0] * (size - 1) + [1], [0, 0, 0, 1]]
+    assert simulate(restored, size) == simulate(repeated_wrapper, size) == expected
+
+
+@squin.kernel
+def mixed_loop(n: int):
+    value = 0
+    for _ in range(n):
+        value = value + 0.5
+    return value
+
+
+@squin.kernel
+def call_mixed_loop(n: int):
+    return mixed_loop(n)
+
+
+@pytest.mark.parametrize("source", [mixed_loop, call_mixed_loop])
+@pytest.mark.parametrize("count", [0, 2])
+def test_return_types_include_the_zero_iteration_loop_result(source, count):
+    wired = SquinToWire().emit(source)
+    assert types.Int.is_subseteq(wired.return_type)
+    assert types.Float.is_subseteq(wired.return_type)
+    restored = WireToSquin().emit(wired)
+    assert simulate(restored, count) == simulate(source, count) == count * 0.5
+    if count == 0:
+        assert type(simulate(restored, count)) is int

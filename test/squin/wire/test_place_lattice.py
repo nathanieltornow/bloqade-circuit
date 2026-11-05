@@ -21,7 +21,7 @@ def places() -> tuple[Place, ...]:
     """Return a set of places that covers every form of the lattice."""
     a, b = Standalone("a"), Standalone("b")
     top, bottom = Place.top(), Place.bottom()
-    hole = Borrowed(Slice(IndexExpr(0), 1, IndexExpr(1)))
+    hole = Borrowed(Slice(IndexExpr(0), 1, IndexExpr(1)), a)
     moved = Moved(Slice(IndexExpr(1), 1, IndexExpr(1)))
     registers = tuple(
         Register(root, length, frozenset(holes))

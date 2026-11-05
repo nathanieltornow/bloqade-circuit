@@ -98,6 +98,8 @@ class Lengths(interp.MethodTable):
             size = value.length.constant
         if size is not None:
             emit.lengths[stmt.result] = IndexExpr(size)
+        else:
+            emit.lengths.pop(stmt.result, None)
         return (emit.length_value(frame, value),)
 
 

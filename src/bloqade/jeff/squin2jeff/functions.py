@@ -48,7 +48,7 @@ class Functions(RewriteRule):
         A tuple result becomes nested `py.tuple.New` statements of the call results
         in the shape of the wire result, and later rewrites read their fields. The
         arguments already hold Jeff values. Each call result takes the Jeff type of
-        its wire result, which `InOutTypes` gives the static length of an in-out
+        its wire result, which type inference gives the static length of an in-out
         register argument.
         """
         callee = self.methods[node.callee]

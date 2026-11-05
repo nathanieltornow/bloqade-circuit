@@ -834,3 +834,64 @@ def test_squin_from_jeff_with_a_subroutine_goes_to_jeff_again():
     expected = _plain(simulate(calls_a_subroutine))
     assert _same(_plain(simulate(once)), expected)
     assert _same(_plain(simulate(twice)), expected)
+
+
+@squin.kernel
+def flip_register_with_count(qs: ilist.IList[Qubit, Any], count: int) -> tuple[int]:
+    squin.x(qs[0])
+    return (count,)
+
+
+@squin.kernel
+def nested_register_call(qs: ilist.IList[Qubit, Any], count: int) -> tuple[int]:
+    return flip_register_with_count(qs, count)
+
+
+@squin.kernel
+def measure_after_register_call(flag: bool, count: int):
+    qs = squin.qalloc(3)
+    result = nested_register_call(qs, count)
+    for _ in range(count):
+        squin.x(qs[1])
+    if flag:
+        squin.x(qs[2])
+    return squin.broadcast.measure(qs), result[0]
+
+
+@pytest.mark.parametrize("flag", [False, True])
+@pytest.mark.parametrize("count", [0, 1, 2])
+def test_register_lengths_survive_calls_gates_loops_and_branches(flag, count):
+    restored = returned(measure_after_register_call)
+    expected = [[1, count % 2, int(flag)], count]
+    assert _plain(simulate(restored, flag, count)) == expected
+    assert _plain(simulate(measure_after_register_call, flag, count)) == expected
+
+
+@squin.kernel
+def negative_allocation_length():
+    qs = squin.qalloc(-2)
+    return len(qs)
+
+
+@squin.kernel
+def runtime_allocation_length(size: int):
+    qs = squin.qalloc(size)
+    return len(qs)
+
+
+@pytest.mark.parametrize("size", [-2, 0, 3])
+def test_allocation_sizes_survive_the_jeff_file_roundtrip(size):
+    restored = returned(runtime_allocation_length)
+    assert (
+        simulate(restored, size)
+        == simulate(runtime_allocation_length, size)
+        == max(0, size)
+    )
+
+
+def test_a_negative_constant_allocation_survives_the_jeff_file_roundtrip():
+    assert (
+        simulate(returned(negative_allocation_length))
+        == simulate(negative_allocation_length)
+        == 0
+    )

@@ -8,15 +8,48 @@ input, and Kirin joins the types of loop and branch state.
 from typing import TypeAlias
 
 from kirin import types, interp
+from kirin.passes import TypeInfer as TypeInferPass
+from kirin.dialects import func
 from kirin.analysis.forward import ForwardFrame
 from kirin.analysis.typeinfer import TypeInference
+from kirin.dialects.func.typeinfer import TypeInfer as FunctionTypes
 
 from . import stmts
 from .types import WireType, register_type, register_length
 from ._dialect import dialect
+from .ownership import inout_result_type
 
 Frame: TypeAlias = ForwardFrame[types.TypeAttribute]
 """Name the frame of Kirin's type inference."""
+
+
+@func.dialect.register(key="typeinfer.squin_wire")
+class InOutCalls(interp.MethodTable):
+    """Infer call results with the register lengths that in-out functions preserve."""
+
+    @interp.impl(func.Invoke)
+    def invoke(
+        self, infer: TypeInference, frame: Frame, stmt: func.Invoke
+    ) -> tuple[types.TypeAttribute]:
+        """Keep ordinary result types and copy quantum argument types into the return suffix."""
+        outputs = FunctionTypes().invoke(infer, frame, stmt)
+        assert isinstance(outputs, tuple) and len(outputs) == 1
+        result = outputs[0]
+        code = stmt.callee.code
+        if isinstance(code, func.Function):
+            result = inout_result_type(code, result, frame.get_values(stmt.inputs))
+        return (result,)
+
+
+class InferWireTypes(TypeInferPass):
+    """Run Kirin type inference with the in-out convention of wire functions."""
+
+    def __post_init__(self) -> None:
+        """Select the wire call rule before Kirin's general function rules."""
+        super().__post_init__()
+        self.infer.registry = self.dialects.registry.interpreter(
+            keys=("typeinfer.squin_wire", *self.infer.keys)
+        )
 
 
 @dialect.register(key="typeinfer")
@@ -80,6 +113,8 @@ class TypeInfer(interp.MethodTable):
         total = register_length(frame.get(stmt.register))
         at = infer.maybe_const(stmt.index, int)
         rest = None if total is None or at is None else total - at
+        if (at is not None and at < 0) or (rest is not None and rest < 0):
+            return types.Bottom, types.Bottom
         return register_type(at), register_type(rest)
 
     @interp.impl(stmts.JoinRegister)

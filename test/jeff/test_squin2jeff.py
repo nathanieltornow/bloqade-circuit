@@ -173,7 +173,18 @@ def test_bell_allocates_gates_measures_and_frees():
 def test_a_register_is_extracted_and_inserted_at_each_slot():
     mt = converted(register)
     (allocation,) = statements(mt, stmts.RegAlloc)
-    assert allocation.size is mt.callable_region.blocks[0].args[1]
+    size = mt.callable_region.blocks[0].args[1]
+    clamp = allocation.size.owner
+    assert isinstance(clamp, stmts.Switch)
+    condition = clamp.selector.owner
+    assert isinstance(condition, stmts.IntLtS) and condition.lhs is size
+    zero = condition.rhs
+    assert isinstance(zero.owner, stmts.ConstInt) and zero.owner.value == 0
+    for region, expected in ((clamp.branches[0], size), (clamp.default, zero)):
+        block = region.blocks[0]
+        yielded = block.last_stmt
+        assert isinstance(yielded, stmts.Yield)
+        assert yielded.values == (block.args[clamp.inputs.index(expected)],)
     extracts = statements(mt, stmts.Extract)
     inserts = statements(mt, stmts.Insert)
     assert len(extracts) == 3 and len(inserts) == 3

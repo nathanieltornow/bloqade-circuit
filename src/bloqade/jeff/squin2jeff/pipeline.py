@@ -16,11 +16,11 @@ from bloqade.squin.wire.group import kernel as wire_kernel, reference_kernel
 from bloqade.squin.wire.stmts import Operation
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.ownership import KEY as OWNED
+from bloqade.squin.wire.typeinfer import InferWireTypes
 from bloqade.jeff.analysis.validation import LinearityValidation, StructureValidation
 from bloqade.squin.rewrite.wire.tools import reachable
 from bloqade.squin.rewrite.wire.unpack import ExpandBroadcast
 from bloqade.squin.passes.squin_to_wire import SquinToWire
-from bloqade.squin.rewrite.wire.signature import InOutTypes
 from bloqade.squin.analysis.validation.wire import WireValidation
 
 from .isolate import IsolateRegions
@@ -57,7 +57,7 @@ class WireToJeff:
         for copy in copies.values():
             copy.code.attributes.pop(OWNED, None)
             try:
-                Walk(InOutTypes()).rewrite(copy.code)
+                InferWireTypes(copy.dialects)(copy)
                 Walk(ExpandBroadcast()).rewrite(copy.code)
                 cleanup.rewrite(copy.code)
                 Walk(rules, region_first=True).rewrite(copy.code)

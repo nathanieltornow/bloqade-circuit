@@ -4,7 +4,7 @@ from typing import cast
 from dataclasses import replace
 
 from kirin import ir, types, interp
-from kirin.dialects import py, func
+from kirin.dialects import py, scf, func
 
 from bloqade import qubit
 from bloqade.types import is_subtype, output_types
@@ -97,9 +97,13 @@ class Functions(interp.MethodTable):
         frame.free_local_allocations()
         emit_return(frame, results)
 
-        signature = func.Signature(
-            input_types, packed_type(tuple(value.type for value in results))
+        # Kirin constrains inference with the declared output type. Classical
+        # results need an unrestricted type until inference checks every path.
+        output_types = (
+            *(types.Any for _ in ordinary),
+            *(input_types[i] for i in layout.inout_positions),
         )
+        signature = func.Signature(input_types, packed_type(output_types))
         self_arg.type = types.MethodType[list(input_types), signature.output]
         method = wire_method(
             emit.source, stmt, frame.output, signature, emit.wire_dialects
@@ -230,11 +234,22 @@ def allocate_register(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Re
     emitter cannot run. This function emits one `AllocRegister` in its place.
     """
     size = emit.classical_value(frame, frame.get(stmt.inputs[0]))
-    root = frame.push(stmts.AllocRegister(size)).results[0]
     length = emit.index(stmt.inputs[0])
     # A negative constant size gives an empty register, like `range(n)`.
     if (count := length.constant) is not None:
         length = IndexExpr(max(0, count))
+        if count < 0:
+            size = frame.push(py.Constant(0)).result
+    else:
+        zero = frame.push(py.Constant(0)).result
+        negative = frame.push(py.cmp.Lt(size, zero)).result
+        then = ir.Block([scf.Yield(zero)], argtypes=(types.Bool,))
+        otherwise = ir.Block([scf.Yield(size)], argtypes=(types.Bool,))
+        size = frame.push(
+            scf.IfElse(negative, ir.Region(then), ir.Region(otherwise))
+        ).results[0]
+        length = None
+    root = frame.push(stmts.AllocRegister(size)).results[0]
     register = Register(root, length)
     frame.own(register)
     return register

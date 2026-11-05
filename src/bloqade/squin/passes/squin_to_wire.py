@@ -3,12 +3,12 @@
 from dataclasses import field, dataclass
 
 from kirin import ir
-from kirin.passes import TypeInfer
 from kirin.rewrite import Walk, Fixpoint, DeadCodeElimination
 from kirin.validation import ValidationSuite
 
 from bloqade.squin.emit.wire import EmitWire
 from bloqade.squin.wire.group import is_wire
+from bloqade.squin.wire.typeinfer import InferWireTypes
 from bloqade.squin.rewrite.wire.tools import reachable
 from bloqade.squin.emit.wire.functions import is_library
 from bloqade.squin.analysis.validation.wire import (
@@ -56,6 +56,6 @@ class SquinToWire:
             source.dialects, source, self.converted, self.wire_dialects
         ).emit_method()
         Fixpoint(Walk(DeadCodeElimination())).rewrite(method.code)
-        TypeInfer(method.dialects)(method)
+        InferWireTypes(method.dialects)(method)
         WireValidation().check(method)
         return method

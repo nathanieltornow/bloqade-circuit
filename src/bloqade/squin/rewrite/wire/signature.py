@@ -10,20 +10,16 @@ import math
 from dataclasses import dataclass
 from collections.abc import Sequence
 
-from kirin import ir, types
-from kirin.dialects import py, func, ilist
-from kirin.rewrite.abc import RewriteRule, RewriteResult
+from kirin import types
+from kirin.dialects import func, ilist
 
 from bloqade.types import QubitType, is_subtype, output_types
-from bloqade.constants import constant_int
 from bloqade.squin.wire.types import (
     WireType,
     RegisterType,
-    is_linear,
     register_type,
     literal_length,
 )
-from bloqade.squin.wire.ownership import InOut, convention
 
 
 def packed_type(outputs: Sequence[types.TypeAttribute]) -> types.TypeAttribute:
@@ -114,49 +110,3 @@ def parameter_type(typ: types.TypeAttribute) -> types.TypeAttribute:
     if linear == RegisterType and shape and all(size is not None for size in shape):
         return register_type(math.prod(size for size in shape if size is not None))
     return linear
-
-
-@dataclass
-class InOutTypes(RewriteRule):
-    """Give each in-out result of a call the type of its argument.
-
-    An `InOut` callee returns each quantum argument as the same wire or register,
-    so the result keeps a static register length, such as `Register[3]`. Kirin's
-    type inference reads the declared callee output, which can lack the length.
-    This rule must run after the last type inference.
-    """
-
-    def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
-        """Refine the result types of `node` if it calls an `InOut` function."""
-        if not isinstance(node, func.Invoke):
-            return RewriteResult()
-        callee = node.callee.code
-        assert isinstance(callee, func.Function)
-        calling = convention(callee)
-        if not isinstance(calling, InOut) or not calling.count:
-            return RewriteResult()
-        arguments = [value for value in node.inputs if is_linear(value.type)]
-        # A callee without ordinary results and with one quantum parameter returns
-        # that wire or register alone. Any other callee returns a tuple.
-        if is_linear(node.result.type):
-            outputs: tuple[types.TypeAttribute, ...] = (node.result.type,)
-        else:
-            outputs = output_types(node.result.type)
-        refined = (
-            *outputs[: len(outputs) - calling.count],
-            *(argument.type for argument in arguments),
-        )
-        if refined == outputs:
-            return RewriteResult()
-        if len(refined) == 1:
-            node.result.type = refined[0]
-            return RewriteResult(has_done_something=True)
-        node.result.type = types.Generic(tuple, *refined)
-        for use in node.result.uses:
-            item = use.stmt
-            if (
-                isinstance(item, py.GetItem)
-                and (at := constant_int(item.index)) is not None
-            ):
-                item.result.type = refined[at]
-        return RewriteResult(has_done_something=True)

@@ -18,6 +18,7 @@ from bloqade.types import is_subtype
 from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
 from bloqade.squin.wire.types import linear_paths, nests_linear, contains_linear
+from bloqade.squin.wire.ownership import inout_result_type
 
 from .calls import WireCheck, yield_top
 
@@ -159,7 +160,12 @@ class Functions(interp.MethodTable):
         for argument, parameter in zip(stmt.inputs, parameters):
             check.require_same_paths(stmt, argument.type, parameter.type)
         expected = stmt.callee.return_type
-        if contains_linear(expected) and stmt.result.type != expected:
+        refined = expected
+        if isinstance(stmt.callee.code, func.Function):
+            refined = inout_result_type(
+                stmt.callee.code, expected, tuple(value.type for value in stmt.inputs)
+            )
+        if contains_linear(expected) and stmt.result.type not in (expected, refined):
             check.error(
                 stmt, "A call result must preserve its declared quantum field types."
             )

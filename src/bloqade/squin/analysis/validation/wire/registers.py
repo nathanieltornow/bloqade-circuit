@@ -70,9 +70,10 @@ Root: TypeAlias = Union[ir.SSAValue, Part, Fresh]
 
 @dataclass(frozen=True)
 class Borrowed:
-    """Name the elements `span` that a `Borrow` took out of a register."""
+    """Keep the borrowed span and its original place across changes to other elements."""
 
     span: Slice
+    origin: Place
 
 
 @dataclass(frozen=True)
@@ -307,12 +308,54 @@ def one(index: IndexExpr) -> Slice:
     return Slice(index, 1, IndexExpr(1))
 
 
+def fill_moved(holes: frozenset[Hole], span: Slice) -> frozenset[Hole] | None:
+    """Subtract a filled span from taken ranges, or return None if coverage is uncertain.
+
+    Constant offsets from the filled span let adjacent holes cover one insertion.
+    A partial insertion leaves the unfilled parts as separate holes.
+    """
+    size = None if span.length is None else span.length.constant
+    if size is None or size < 0:
+        return None
+    if size == 0:
+        return holes
+    ranges: list[tuple[int, int, Moved]] = []
+    for hole in holes:
+        if not isinstance(hole, Moved) or hole.span.length is None:
+            continue
+        offset = (hole.span.start - span.start).constant
+        length = hole.span.length.constant
+        if (
+            offset is not None
+            and length is not None
+            and offset < size
+            and offset + length > 0
+        ):
+            ranges.append((offset, offset + length, hole))
+    remaining = set(holes)
+    covered = 0
+    for start, stop, hole in sorted(ranges, key=lambda item: item[0]):
+        if start > covered:
+            return None
+        covered = max(covered, stop)
+        remaining.remove(hole)
+        if start < 0:
+            remaining.add(Moved(Slice(hole.span.start, 1, IndexExpr(-start))))
+        if stop > size:
+            remaining.add(
+                Moved(Slice(span.start + IndexExpr(size), 1, IndexExpr(stop - size)))
+            )
+    return frozenset(remaining) if covered >= size else None
+
+
 @dataclass
 class RegisterAnalysis(CachedCalls[Place]):
     """Record a validation error for each wire that leaves its place."""
 
     keys = (KEY,)
     lattice = Place
+    max_loop_iterations: int = 32
+    """Limit loop analysis visits and reject a loop if its facts still change."""
     active_functions: list[ir.Statement] = field(default_factory=list, init=False)
     """Hold the functions that the analysis interprets now, innermost last."""
     indices: Indices = field(init=False)
@@ -378,6 +421,20 @@ class RegisterAnalysis(CachedCalls[Place]):
         """
         if not isinstance(register, Register):
             return register
+        span = hole.span
+        size = None if span.length is None else span.length.constant
+        start = span.start.constant
+        rest = (
+            None
+            if register.length is None or span.length is None
+            else (register.length - span.start - span.length).constant
+        )
+        if (
+            (size is not None and size < 0)
+            or (register.length is not None and start is not None and start < 0)
+            or (rest is not None and rest < 0)
+        ):
+            self.error(stmt, "The transfer range must lie within the register bounds.")
         if any(overlaps(hole, other) for other in register.holes):
             self.error(
                 stmt,
@@ -388,15 +445,17 @@ class RegisterAnalysis(CachedCalls[Place]):
     def close_hole(
         self, stmt: ir.Statement, register: Place, hole: Hole, message: str
     ) -> Place:
-        """Return `register` without the hole `hole`, or record `message` if it lacks it.
-
-        Any other place than a register stays as it is.
-        """
+        """Fill a matching borrow or a covered taken range, and report a missing hole."""
         if not isinstance(register, Register):
             return register
-        if hole not in register.holes:
-            self.error(stmt, message)
-        return replace(register, holes=register.holes - {hole})
+        if hole in register.holes:
+            return replace(register, holes=register.holes - {hole})
+        if isinstance(hole, Moved):
+            remaining = fill_moved(register.holes, hole.span)
+            if remaining is not None:
+                return replace(register, holes=remaining)
+        self.error(stmt, message)
+        return register
 
     @property
     def checks_positions(self) -> bool:
@@ -515,9 +574,14 @@ class Registers(interp.MethodTable):
         if not isinstance(register, Register):
             return register, register
         at = position(register, check.index(stmt.index))
-        kind = Moved if isinstance(stmt, stmts.Take) else Borrowed
-        opened = check.open_hole(stmt, register, kind(one(at)))
-        return opened, element(register, at)
+        origin = element(register, at)
+        hole = (
+            Moved(one(at))
+            if isinstance(stmt, stmts.Take)
+            else Borrowed(one(at), origin)
+        )
+        opened = check.open_hole(stmt, register, hole)
+        return opened, origin
 
     @interp.impl(stmts.Release)
     def release(
@@ -528,14 +592,22 @@ class Registers(interp.MethodTable):
         if not isinstance(register, Register):
             return (register,)
         at = position(register, check.index(stmt.index))
+        hole = next(
+            (
+                hole
+                for hole in register.holes
+                if isinstance(hole, Borrowed) and hole.span == one(at)
+            ),
+            Borrowed(one(at), Unknown()),
+        )
         check.expect(
             stmt,
             frame.get(stmt.wire),
-            element(register, at),
+            hole.origin,
             "A release must put back the qubit of its register element.",
         )
         message = "'release' requires a borrowed element at its index."
-        return (check.close_hole(stmt, register, Borrowed(one(at)), message),)
+        return (check.close_hole(stmt, register, hole, message),)
 
     @interp.impl(stmts.Put)
     def put(
@@ -579,6 +651,12 @@ class Registers(interp.MethodTable):
         at = check.index(stmt.index)
         length = register.length if isinstance(register, Register) else None
         rest = None if length is None else length - at
+        if (at.constant is not None and at.constant < 0) or (
+            rest is not None and rest.constant is not None and rest.constant < 0
+        ):
+            check.error(
+                stmt, "The split index must lie between zero and the register length."
+            )
         return Register(stmt.results[0], at), Register(stmt.results[1], rest)
 
     @interp.impl(stmts.JoinRegister)
@@ -739,7 +817,7 @@ class Functions(interp.MethodTable):
 
 @scf.dialect.register(key=KEY)
 class ControlFlow(interp.MethodTable):
-    """Run each loop body and each branch once, and keep qubits in position."""
+    """Check loop invariants and branch results, and keep qubits in position."""
 
     @interp.impl(scf.Yield)
     def yield_(
@@ -753,30 +831,48 @@ class ControlFlow(interp.MethodTable):
     def loop(
         self, check: RegisterAnalysis, frame: ForwardFrame[Place], stmt: scf.For
     ) -> tuple[Place, ...]:
-        """Require each yield position to continue the qubit of its loop input."""
+        """Check the body until the joined input and output places stop changing.
+
+        Each visit uses a fresh frame so that earlier lengths cannot constrain later
+        iterations. A register with changing roots gets the loop argument as its root.
+        """
         check.expect_complete(frame, stmt, stmt.args)
-        initial = frame.get_values(stmt.initializers)
-        with check.new_frame(stmt, has_parent_access=True) as body:
-            yielded = check.frame_call_region(
-                body, stmt, stmt.body, Unknown(), *initial
-            )
-        assert isinstance(yielded, tuple)
+        candidate = frame.get_values(stmt.initializers)
+        arguments = stmt.body.blocks[0].args[1:]
         end = stmt.body.blocks[0].last_stmt
         assert isinstance(end, scf.Yield)
-        for i, (argument, actual, expected) in enumerate(
-            zip(stmt.body.blocks[0].args[1:], yielded, initial)
-        ):
-            if check.checks_positions and is_linear(argument.type):
-                check.expect(
-                    end,
-                    actual,
-                    expected,
-                    f"Yield position {i} must continue loop input position {i}.",
+        for _ in range(check.max_loop_iterations):
+            inputs = tuple(
+                named(place, arg) for place, arg in zip(candidate, arguments)
+            )
+            with check.new_frame(stmt, has_parent_access=True) as body:
+                yielded = check.frame_call_region(
+                    body, stmt, stmt.body, Unknown(), *inputs
                 )
-        return tuple(
-            named(before.join(after), result)
-            for before, after, result in zip(initial, yielded, stmt.results)
+            assert isinstance(yielded, tuple)
+            for i, (argument, actual, expected) in enumerate(
+                zip(arguments, yielded, inputs)
+            ):
+                if check.checks_positions and is_linear(argument.type):
+                    check.expect(
+                        end,
+                        actual,
+                        expected,
+                        f"Yield position {i} must continue loop input position {i}.",
+                    )
+            joined = tuple(
+                before.join(after) for before, after in zip(candidate, yielded)
+            )
+            if joined == candidate:
+                return tuple(
+                    named(place, result) for place, result in zip(joined, stmt.results)
+                )
+            candidate = joined
+        check.error(
+            stmt,
+            f"Register loop analysis did not converge within {check.max_loop_iterations} iterations.",
         )
+        return tuple(Unknown() for _ in stmt.results)
 
     @interp.impl(scf.IfElse)
     def branch(
