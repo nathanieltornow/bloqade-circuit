@@ -246,8 +246,8 @@ class MatchesKind(ir.StmtTrait):
     """Check that a gate or a noise channel has the operand counts of its kind.
 
     If `broadcast` is True, the statement can act on any positive number of groups,
-    each with the qubit count of the kind. Kirin's generated `check` of each statement runs
-    this trait.
+    each with the qubit count of the kind. Kirin's generated `check` of each
+    statement runs this trait.
     """
 
     broadcast: bool = False
@@ -256,16 +256,23 @@ class MatchesKind(ir.StmtTrait):
         """Raise a validation error if `node` has other operand counts than its kind."""
         assert isinstance(node, (Gate, Noise, RegisterGate, RegisterNoise))
         kind = node.kind
-        wires, params = len(node.linear), len(node.params)
-        if self.broadcast and wires > 0 and wires % kind.wires == 0:
-            wires = kind.wires
-        if (wires, params) != (kind.wires, kind.params):
+        linear, params = len(node.linear), len(node.params)
+        if self.broadcast and linear > 0 and linear % kind.qubit_count == 0:
+            linear = kind.qubit_count
+        if (linear, params) != (kind.qubit_count, kind.param_count):
+            noun = "register" if isinstance(node, RegisterOperation) else "wire"
             per = " per group" if self.broadcast else ""
             raise ir.ValidationError(
                 node,
-                f"'{kind.label}' needs {kind.wires} qubits{per} and {kind.params}"
-                f" parameters, but it has {len(node.linear)} and {params}.",
+                f"'{kind.label}' needs {counted(kind.qubit_count, noun)}{per} and"
+                f" {counted(kind.param_count, 'parameter')}, but it has"
+                f" {len(node.linear)} and {params}.",
             )
+
+
+def counted(count: int, noun: str) -> str:
+    """Return `count` with `noun` in the right number, such as `1 wire` or `2 wires`."""
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
 @statement(dialect=dialect, init=False)
@@ -310,7 +317,7 @@ class Gate(Operation):
     @property
     def groups(self) -> tuple[tuple[ir.SSAValue, ...], ...]:
         """Return the groups of one wire per qubit of the kind."""
-        return chunks(self.linear, self.kind.wires)
+        return chunks(self.linear, self.kind.qubit_count)
 
 
 @statement(dialect=dialect, init=False)
@@ -352,7 +359,7 @@ class Noise(Operation):
     @property
     def groups(self) -> tuple[tuple[ir.SSAValue, ...], ...]:
         """Return the groups of one wire per qubit of the kind."""
-        return chunks(self.linear, self.kind.wires)
+        return chunks(self.linear, self.kind.qubit_count)
 
 
 @statement(dialect=dialect)

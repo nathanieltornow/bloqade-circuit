@@ -34,6 +34,7 @@ from bloqade.squin.wire import (
     RegisterOperation,
 )
 from bloqade.squin.noise import stmts as noise_stmts
+from bloqade.squin.wire.kinds import Kind
 from bloqade.native.dialects.gate import stmts as native_stmts
 
 
@@ -116,15 +117,15 @@ class BaseEntry:
 
 
 @dataclass(frozen=True)
-class GateEntry(BaseEntry):
-    """Map a squin gate to the wire gate of the kind `kind`."""
+class KindEntry(BaseEntry):
+    """Map a squin gate or noise channel to the wire statement of the kind `kind`."""
 
-    kind: GateKind
+    kind: Kind
 
     @property
     def counts(self) -> tuple[int, int]:
-        """Return the number of qubits and parameters of the gate."""
-        return self.kind.wires, self.kind.params
+        """Return the number of qubits and parameters of the kind."""
+        return self.kind.qubit_count, self.kind.param_count
 
     @property
     def broadcast(self) -> bool:
@@ -135,6 +136,13 @@ class GateEntry(BaseEntry):
     def truncates(self) -> bool:
         """Check whether the register form of the kind stops at the shortest register."""
         return self.kind.truncates
+
+
+@dataclass(frozen=True)
+class GateEntry(KindEntry):
+    """Map a squin gate to the wire gate of the kind `kind`."""
+
+    kind: GateKind
 
     def scalar(
         self,
@@ -156,25 +164,10 @@ class GateEntry(BaseEntry):
 
 
 @dataclass(frozen=True)
-class NoiseEntry(BaseEntry):
+class NoiseEntry(KindEntry):
     """Map a squin noise channel to the wire channel of the kind `kind`."""
 
     kind: NoiseKind
-
-    @property
-    def counts(self) -> tuple[int, int]:
-        """Return the number of qubits and parameters of the channel."""
-        return self.kind.wires, self.kind.params
-
-    @property
-    def broadcast(self) -> bool:
-        """Return True, because `Gate` and `Noise` act on several groups at once."""
-        return True
-
-    @property
-    def truncates(self) -> bool:
-        """Check whether the register form of the kind stops at the shortest register."""
-        return self.kind.truncates
 
     def scalar(
         self,
@@ -341,4 +334,6 @@ def entry_of(stmt: Operation) -> Entry:
         return NOISE_ENTRIES[stmt.kind]
     if isinstance(stmt, (Measure, RegisterMeasure)):
         return MEASURE
-    return RESET
+    if isinstance(stmt, (Reset, RegisterReset)):
+        return RESET
+    raise ValueError(f"The wire operation '{stmt.name}' has no squin entry.")

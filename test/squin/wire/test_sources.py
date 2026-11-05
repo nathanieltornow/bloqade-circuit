@@ -138,5 +138,5 @@ def test_a_gate_takes_several_groups_of_its_kind():
     assert gate.groups == (wires[:2], wires[2:])
     with pytest.raises(ir.ValidationError, match="per group"):
         Gate(GateKind.CX, wires[:3]).verify()
-    with pytest.raises(ir.ValidationError, match="needs 1 qubits"):
+    with pytest.raises(ir.ValidationError, match="needs 1 register and"):
         RegisterGate(GateKind.X, (ir.TestValue(RegisterType),) * 2).verify()
