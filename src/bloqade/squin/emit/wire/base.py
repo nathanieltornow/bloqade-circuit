@@ -13,7 +13,7 @@ from kirin.dialects.py.len import Len
 
 from bloqade.types import holds_qubits
 from bloqade.squin.wire import stmts
-from bloqade.analysis.indices import Sym, Iter, Indices, IndexExpr
+from bloqade.analysis.indices import Sym, Iter, Slice, Indices, IndexExpr
 from bloqade.squin.wire.types import WireType
 from bloqade.squin.wire.errors import WireConversionError
 from bloqade.squin.wire.traits import Threads
@@ -124,7 +124,7 @@ class WireFrame(EmitFrame[Value]):
 
     def integer(
         self,
-        op: type[py.Add] | type[py.Mult] | type[py.FloorDiv],
+        op: type[py.Add] | type[py.Sub] | type[py.Mult] | type[py.FloorDiv],
         left: ir.SSAValue,
         right: ir.SSAValue,
     ) -> ir.SSAValue:
@@ -244,7 +244,9 @@ class EmitWire(EmitABC[WireFrame, Value]):
             case View(root, span, ()) if span.step == 1:
                 start = frame.emit_index(span.start)
                 size = self.length_value(frame, location)
-                node = frame.push(stmts.TakeSlice(value, start, size))
+                # A tail slice of runtime length reads the register with `Length`,
+                # which continues the register.
+                node = frame.push(stmts.TakeSlice(frame.latest[root], start, size))
                 frame.latest[root] = node.register_out
                 return node.slice_register
             case View():
@@ -345,13 +347,24 @@ class EmitWire(EmitABC[WireFrame, Value]):
 
         A constant or slice length becomes an index expression. Any other register
         length emits `Length`, because a symbolic length such as `n` in `qalloc(n)` can
-        be negative.
+        be negative. A tail slice such as `qs[2:]` of a register of runtime length
+        has the length of the register minus its start, or 0.
         """
         if isinstance(value, tuple):
             return frame.emit_index(IndexExpr(len(value)))
         match value:
             case View(length=length) if length is not None:
                 return frame.emit_index(length)
+            case View(root, Slice(start, 1, None), ()):
+                qubits = self.register_length(frame, root)
+                rest = frame.integer(py.Sub, qubits, frame.emit_index(start))
+                # Python gives an empty tail past the end, and `(x + |x|) // 2` is
+                # `max(0, x)`, which the dialects of wire methods can express.
+                size = frame.push(py.builtin.Abs(rest)).result
+                size.type = types.Int
+                total = frame.integer(py.Add, rest, size)
+                two = frame.push(py.Constant(2)).result
+                return frame.integer(py.FloorDiv, total, two)
             case View() | Element() | Qubit():
                 raise WireConversionError(
                     "The register view requires a known length.", frame.statement

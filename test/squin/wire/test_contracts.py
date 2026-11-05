@@ -198,6 +198,17 @@ def overlapping_slices():
 
 
 @squin.kernel
+def flip_first(q: Qubit, qs: ilist.IList[Qubit, Any]):
+    squin.x(q)
+
+
+@squin.kernel
+def element_and_its_register():
+    qs = squin.qalloc(2)
+    flip_first(qs[0], qs)
+
+
+@squin.kernel
 def one_qubit_twice():
     qs = squin.qalloc(1)
     return (qs[0], qs[0])
@@ -212,13 +223,14 @@ def nested_qubits():
 @pytest.mark.parametrize(
     "kernel, reason",
     [
-        (register_and_its_element, "cannot use one qubit or register twice"),
-        (overlapping_slices, "requires whole registers or individual qubits"),
+        (register_and_its_element, "whole register together with"),
+        (element_and_its_register, "whole register together with"),
+        (overlapping_slices, "already out of its register"),
         (one_qubit_twice, "cannot return qubits"),
         (nested_qubits, "cannot return qubits"),
     ],
     ids=lambda x: x if isinstance(x, str) else x.sym_name,
 )
 def test_a_call_or_return_that_aliases_qubits_has_no_wire_form(kernel, reason):
-    with pytest.raises(WireConversionError, match=reason):
+    with pytest.raises((WireConversionError, ValidationErrorGroup), match=reason):
         SquinToWire().emit(kernel)

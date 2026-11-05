@@ -385,8 +385,6 @@ DETERMINISTIC = [
 
 # pyqrack has no rule for `is_zero` on the squin source, so this one skips it.
 DIRECT_REFUSALS = {
-    sliced_call: "whole registers or individual qubits",
-    sliding: "whole registers or individual qubits",
     flipped_fresh: "cannot return qubits",
     counted: "cannot return qubits",
     list_to_a_call: "cannot return qubits",
@@ -707,12 +705,7 @@ CASES = [
     pytest.param(slice_of_a_slice, (), None, id="qs[1:5][1:3]"),
     pytest.param(ladder, (), None, id="cx(qs[i], qs[i + 1])"),
     pytest.param(row_of_a_literal_list, (), None, id="qss[1][0]"),
-    pytest.param(
-        sliced_call,
-        (),
-        "whole registers or individual qubits",
-        id="qs[1:3] to a call of 2 qubits",
-    ),
+    pytest.param(sliced_call, (), None, id="qs[1:3] to a call of 2 qubits"),
     pytest.param(fan_out, (), None, id="cx(qs[0], qs[i])"),
     pytest.param(squared_index, (), None, id="qs[i * i + 1]"),
     pytest.param(wrapped_index, (), None, id="qs[(i + 1) % 3]"),
@@ -720,16 +713,11 @@ CASES = [
     pytest.param(measured_branch, (), None, id="a branch on a measured bit"),
     pytest.param(sliced_in_a_loop, (), None, id="qs[0:3][i]"),
     pytest.param(growing_slice, (), None, id="qs[0:i]"),
-    pytest.param(
-        slice_to_any_length,
-        (),
-        "whole registers or individual qubits",
-        id="qs[1:3] to a call of any length",
-    ),
+    pytest.param(slice_to_any_length, (), None, id="qs[1:3] to a call of any length"),
     pytest.param(
         strided_to_a_call,
         (),
-        "whole registers or individual qubits",
+        "step-1 slices of known length",
         id="qs[::2] to a call",
     ),
     pytest.param(
@@ -775,7 +763,7 @@ CASES = [
     pytest.param(
         literal_list_to_a_call,
         (),
-        "whole registers or individual qubits",
+        "step-1 slices of known length",
         id="a literal list of registers to a call",
     ),
 ]

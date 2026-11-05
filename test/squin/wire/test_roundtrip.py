@@ -305,3 +305,44 @@ def test_direct_emission_rejects_forms_that_require_source_transformation(
         SquinToWire().emit(kernel)
     assert caught.value.source is not None
     assert kernel.code.print_str() == before
+
+
+@squin.kernel
+def broadcast_flip(qs: ilist.IList[Qubit, Any]):
+    squin.broadcast.x(qs)
+
+
+@squin.kernel
+def slice_to_a_call() -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(4)
+    broadcast_flip(qs[1:3])
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def runtime_tail(n: int) -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(n)
+    squin.broadcast.x(qs[2:])
+    return squin.broadcast.measure(qs)
+
+
+@squin.kernel
+def runtime_tail_length(n: int) -> int:
+    qs = squin.qalloc(n)
+    return len(qs[2:])
+
+
+@pytest.mark.parametrize(
+    "kernel, args",
+    [
+        (slice_to_a_call, ()),
+        (runtime_tail, (1,)),
+        (runtime_tail, (2,)),
+        (runtime_tail, (4,)),
+        (runtime_tail_length, (1,)),
+        (runtime_tail_length, (5,)),
+    ],
+)
+def test_slices_of_known_and_runtime_length_keep_their_results(kernel, args):
+    restored = WireToSquin().emit(SquinToWire().emit(kernel))
+    assert simulate(restored, *args) == simulate(kernel, *args)

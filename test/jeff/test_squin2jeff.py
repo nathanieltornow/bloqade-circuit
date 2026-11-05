@@ -573,8 +573,8 @@ def test_refusals(kernel, reason):
         (nested, "requires function, loop or branch regions"),
         (passes_tuple, "separate arguments for tuple fields"),
         (over_list, "classical operation cannot consume a quantum reference"),
-        (strided_to_a_call, "whole registers or individual qubits"),
-        (register_and_its_slot, "cannot use one qubit or register twice"),
+        (strided_to_a_call, "step-1 slices of known length"),
+        (register_and_its_slot, "whole register together with"),
     ],
 )
 def test_direct_emission_rejects_unsupported_reference_forms(kernel, reason):
