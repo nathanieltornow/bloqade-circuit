@@ -149,58 +149,21 @@ def applied(
 
 
 def broadcast(node: wire.RegisterOperation) -> tuple[ir.SSAValue, ...]:
-    """Insert the Jeff form of the register operation `node` and return its results.
+    """Insert the Jeff loop of the register operation `node` and return its results.
 
-    Jeff gates act on single qubits. If the registers have a static length, the
-    rewrite emits the scalar operation once per position. Otherwise it emits a Jeff
-    loop that fills arrays of runtime length.
-
-    The rule reads the lengths from the Jeff types. These types keep the length of
-    a register through an in-out call, which the wire types lose. So the wire rule
-    `ExpandBroadcast` cannot do this expansion before the Jeff rules run.
+    Jeff gates act on single qubits, so the loop applies the scalar operation at
+    each register position. `WireToJeff` runs `ExpandBroadcast` first, so the
+    registers of `node` have a runtime length.
     """
     if not supported(node):
         raise ir.ValidationError(node, f"Jeff has no form for '{node.label}'.")
-    registers = list(node.linear)
-    lengths = [qureg_length(register.type) for register in registers]
-    if node.truncates:
-        size = None if None in lengths else min(n for n in lengths if n is not None)
-    else:
-        size = next((n for n in lengths if n is not None), None)
+    lengths = {qureg_length(register.type) for register in node.linear} - {None}
+    if not node.truncates and len(lengths) > 1:
+        raise ir.ValidationError(
+            node, f"'{node.label}' requires registers of equal length."
+        )
     widths = [bitwidth(item_type(result.type)) for result in node.classical]
-    if size is None:
-        return looped(node, registers, widths)
-    return unrolled(node, registers, widths, size)
-
-
-def unrolled(
-    node: wire.RegisterOperation,
-    registers: list[ir.SSAValue],
-    widths: list[int],
-    size: int,
-) -> tuple[ir.SSAValue, ...]:
-    """Emit the scalar operation at each of the `size` positions of the registers."""
-    collected: list[list[ir.SSAValue]] = [[] for _ in widths]
-    for position in range(size):
-        at = put(stmts.ConstInt(value=position), node).result
-        qubits: list[ir.SSAValue] = []
-        for k, register in enumerate(registers):
-            made = put(stmts.Extract(register, at), node)
-            made.result_reg.type = register.type
-            registers[k] = made.result_reg
-            qubits.append(made.wire)
-        outputs = applied(node, qubits, node)
-        for k, register in enumerate(registers):
-            inserted = put(stmts.Insert(register, at, outputs[k]), node)
-            inserted.result.type = register.type
-            registers[k] = inserted.result
-        for k, items in enumerate(collected):
-            items.append(outputs[len(registers) + k])
-    arrays = [
-        put(stmts.IntArrayCreate(tuple(items), bitwidth=width), node).result
-        for items, width in zip(collected, widths, strict=True)
-    ]
-    return (*registers, *arrays)
+    return looped(node, list(node.linear), widths)
 
 
 def looped(
