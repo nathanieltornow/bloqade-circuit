@@ -11,7 +11,7 @@ from kirin.rewrite.abc import RewriteRule, RewriteResult
 from bloqade.qubit import stmts as qubit_stmts
 from bloqade.types import item_type
 from bloqade.constants import constant_int
-from bloqade.jeff.forms import GATES
+from bloqade.jeff.forms import GATES, WIRE_TO_JEFF
 from bloqade.jeff.types import IntArrayType, qureg, is_subtype, qureg_length
 from bloqade.squin.wire import stmts as wire
 from bloqade.jeff.dialects import stmts
@@ -20,31 +20,14 @@ from bloqade.squin.rewrite.wire.driver import put, replace
 
 from .values import radians, bitwidth
 
-DIRECT: dict[type[ir.Statement], type[ir.Statement]] = {
-    wire.Alloc: stmts.Alloc,
-    wire.Free: stmts.Free,
-    wire.FreeRegister: stmts.RegFree,
-    wire.Borrow: stmts.Extract,
-    wire.Release: stmts.Insert,
-    wire.Length: stmts.RegLength,
-    wire.Take: stmts.Extract,
-    wire.Put: stmts.Insert,
-    wire.TakeSlice: stmts.ExtractSlice,
-    wire.PutSlice: stmts.InsertSlice,
-    wire.SplitRegister: stmts.RegSplit,
-    wire.JoinRegister: stmts.RegJoin,
-    wire.DiscardRegister: stmts.RegFree,
-}
-"""Map each wire statement to the Jeff statement with the same operands and results."""
-
 
 class Quantum(RewriteRule):
     """Replace each wire statement and measurement predicate with Jeff."""
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Rewrite `node` if it has a Jeff form, and leave any other statement."""
-        if type(node) in DIRECT:
-            made = put(DIRECT[type(node)](*node.args), node)
+        if type(node) in WIRE_TO_JEFF:
+            made = put(WIRE_TO_JEFF[type(node)](*node.args), node)
             if (threads := node.get_trait(Threads)) is not None:
                 for k, (operand, _) in enumerate(threads.threads(node)):
                     made.results[k].type = operand.type

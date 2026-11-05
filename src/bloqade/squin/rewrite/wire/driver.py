@@ -41,6 +41,22 @@ def pack(values: Sequence[ir.SSAValue], before: ir.Statement) -> ir.SSAValue:
     return put(py.tuple.New(tuple(values)), before).result
 
 
+def unpack(
+    value: ir.SSAValue, outputs: Sequence[types.TypeAttribute], before: ir.Statement
+) -> tuple[ir.SSAValue, ...]:
+    """Return field `k` of the tuple `value` with the type `outputs[k]` for each `k`.
+
+    The reads go before `before`. This is the inverse of `pack` for 2 or more values.
+    """
+    fields: list[ir.SSAValue] = []
+    for k, typ in enumerate(outputs):
+        index = put(py.Constant(k), before).result
+        item = put(py.GetItem(value, index), before)
+        item.result.type = typ
+        fields.append(item.result)
+    return tuple(fields)
+
+
 def set_signature(
     function: func.Function,
     inputs: tuple[types.TypeAttribute, ...],

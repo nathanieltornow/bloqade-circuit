@@ -1,4 +1,4 @@
-"""This module holds the jeff name or statement of each squin statement."""
+"""Map each squin and wire statement to its Jeff name or statement."""
 
 from dataclasses import dataclass
 from collections.abc import Callable
@@ -9,6 +9,7 @@ from kirin.dialects.math import stmts as math_stmts
 from kirin.dialects.ilist import stmts as ilist_stmts
 
 from bloqade.qubit import stmts as qubit_stmts, qalloc
+from bloqade.squin.wire import stmts as wire
 from bloqade.qubit.stdlib import (
     _new,
     simple as simple_qubit,
@@ -203,3 +204,48 @@ def is_library(kernel: ir.Method) -> bool:
     A library kernel is a gate kernel, a qubit kernel or `qalloc`.
     """
     return kernel in GATE_KERNELS or kernel in QUBIT_KERNELS or kernel is qalloc
+
+
+WIRE_TO_JEFF: dict[type[ir.Statement], type[ir.Statement]] = {
+    wire.Alloc: stmts.Alloc,
+    wire.Free: stmts.Free,
+    wire.FreeRegister: stmts.RegFree,
+    wire.Borrow: stmts.Extract,
+    wire.Release: stmts.Insert,
+    wire.Length: stmts.RegLength,
+    wire.Take: stmts.Extract,
+    wire.Put: stmts.Insert,
+    wire.TakeSlice: stmts.ExtractSlice,
+    wire.PutSlice: stmts.InsertSlice,
+    wire.SplitRegister: stmts.RegSplit,
+    wire.JoinRegister: stmts.RegJoin,
+    wire.DiscardRegister: stmts.RegFree,
+}
+"""Map each wire statement to the Jeff statement with the same operands and results.
+
+Jeff has one extraction for a borrow and a take, and one insertion for a release
+and a put.
+"""
+
+JEFF_TO_WIRE: dict[type[ir.Statement], Callable[..., ir.Statement]] = {
+    stmts.Alloc: wire.Alloc,
+    stmts.Free: wire.Free,
+    stmts.FreeZero: wire.Free,
+    stmts.RegAlloc: wire.AllocRegister,
+    stmts.RegFree: wire.DiscardRegister,
+    stmts.RegFreeZero: wire.DiscardRegister,
+    stmts.Extract: wire.Take,
+    stmts.Insert: wire.Put,
+    stmts.ExtractSlice: wire.TakeSlice,
+    stmts.InsertSlice: wire.PutSlice,
+    stmts.RegSplit: wire.SplitRegister,
+    stmts.RegJoin: wire.JoinRegister,
+    stmts.RegLength: wire.Length,
+    stmts.Reset: wire.Reset,
+}
+"""Map each Jeff statement to the wire statement with the same operands and results.
+
+A Jeff extraction becomes a take and an insertion a put, because a Jeff program
+can insert a wire at another index than the one that it came from. A Jeff register
+free can find elements out of the register, so it becomes `DiscardRegister`.
+"""

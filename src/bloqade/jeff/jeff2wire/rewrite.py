@@ -2,12 +2,13 @@
 
 import math
 from dataclasses import dataclass
-from collections.abc import Mapping, Callable
+from collections.abc import Mapping
 
 from kirin import ir, types
 from kirin.dialects import py, func, ilist
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
+from bloqade.jeff.forms import JEFF_TO_WIRE
 from bloqade.jeff.gates import canonical
 from bloqade.jeff.types import (
     WireType as JeffWireType,
@@ -21,7 +22,7 @@ from bloqade.squin.gate import stmts as gates
 from bloqade.squin.wire import stmts as wire
 from bloqade.jeff.dialects import stmts
 from bloqade.squin.wire.types import WireType, register_type
-from bloqade.squin.rewrite.wire.driver import put, pack, replace
+from bloqade.squin.rewrite.wire.driver import put, pack, unpack, replace
 from bloqade.squin.rewrite.wire.sources import ENTRIES
 from bloqade.squin.rewrite.wire.signature import packed_type
 from bloqade.jeff.analysis.validation.to_squin.gates import (
@@ -48,34 +49,15 @@ def wire_type(typ: types.TypeAttribute) -> types.TypeAttribute:
     return typ
 
 
-DIRECT: dict[type[ir.Statement], Callable[..., ir.Statement]] = {
-    stmts.Alloc: wire.Alloc,
-    stmts.Free: wire.Free,
-    stmts.FreeZero: wire.Free,
-    stmts.RegAlloc: wire.AllocRegister,
-    stmts.RegFree: wire.DiscardRegister,
-    stmts.RegFreeZero: wire.DiscardRegister,
-    stmts.Extract: wire.Take,
-    stmts.Insert: wire.Put,
-    stmts.ExtractSlice: wire.TakeSlice,
-    stmts.InsertSlice: wire.PutSlice,
-    stmts.RegSplit: wire.SplitRegister,
-    stmts.RegJoin: wire.JoinRegister,
-    stmts.RegLength: wire.Length,
-    stmts.Reset: wire.Reset,
-}
-"""Map each Jeff statement to the wire statement with the same operands and results."""
-
-
 @dataclass
 class Quantum(RewriteRule):
-    """Preserve explicit quantum ownership while replacing operations locally."""
+    """Replace each Jeff quantum statement, call and return with its wire form."""
 
     methods: Mapping[ir.Method, ir.Method]
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Replace a quantum operation, call or function return."""
-        if build := DIRECT.get(type(node)):
+        if build := JEFF_TO_WIRE.get(type(node)):
             made = put(build(*node.args), node)
             replace(node, *made.results)
         elif isinstance(node, stmts.RegCreate):
@@ -117,13 +99,7 @@ class Quantum(RewriteRule):
         if len(outputs) == 1:
             replace(node, made.result)
             return
-        values = []
-        for i, typ in enumerate(outputs):
-            index = put(py.Constant(i), node).result
-            item = put(py.GetItem(made.result, index), node)
-            item.result.type = typ
-            values.append(item.result)
-        replace(node, *values)
+        replace(node, *unpack(made.result, outputs, node))
 
     def returned(self, node: stmts.Return) -> None:
         """Replace a Jeff return with a return of None, one value or a tuple."""
