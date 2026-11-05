@@ -10,6 +10,7 @@ parameters and registers in loops.
 """
 
 from kirin import ir
+from kirin.dialects import py
 from kirin.rewrite.abc import RewriteRule, RewriteResult
 
 from bloqade.constants import constant_int
@@ -81,17 +82,12 @@ class HoistBorrow(RewriteRule):
             return RewriteResult()
         if not distinct_index(release.index, node.index):
             return RewriteResult()
-        # The emitter puts each index constant just before its `Borrow`. The
-        # constant has no operands, so the rule moves it above the `Release`.
-        index = node.index.owner
-        between = release.next_stmt
-        while between is not None and between is not node:
-            if between is index:
-                between.detach()
-                between.insert_before(release)
-                break
-            between = between.next_stmt
-        borrow = stmts.Borrow(release.register, node.index)
+        # The index is a constant, so a copy of it above the `Release` reads the
+        # same element.
+        index = py.Constant(constant_int(node.index))
+        index.insert_before(release)
+        index.result.type = node.index.type
+        borrow = stmts.Borrow(release.register, index.result)
         borrow.insert_before(release)
         borrow.register_out.type = release.register.type
         moved = stmts.Release(borrow.register_out, release.index, release.wire)
