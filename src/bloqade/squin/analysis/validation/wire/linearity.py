@@ -15,17 +15,22 @@ from kirin.analysis.forward import ForwardFrame
 
 from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
-from bloqade.squin.wire.types import (
-    linear_paths,
-)
+from bloqade.squin.wire.types import linear_paths
 from bloqade.squin.wire.traits import Threads, ReferenceForm
-from bloqade.squin.analysis.validation.wire.calls import CachedCalls
 
-KEY = "squin.wire.linearity"
+from .calls import WireCheck, yield_top
+
+KEY: str = "squin.wire.linearity"
 """Name the registry key of the method tables of `LinearityCheck`."""
 
-QUANTUM_CONSUMERS = (py.tuple.New, func.Invoke, func.Return, scf.For, scf.Yield)
-"""The statements outside the wire dialect that can take a quantum operand."""
+QUANTUM_CONSUMERS: tuple[type[ir.Statement], ...] = (
+    py.tuple.New,
+    func.Invoke,
+    func.Return,
+    scf.For,
+    scf.Yield,
+)
+"""Name the statements outside the wire dialect that can take a quantum operand."""
 
 
 def _anchor(stmt: ir.Statement, region: ir.Region) -> ir.Statement | None:
@@ -82,19 +87,10 @@ def _region_of(value: ir.SSAValue) -> ir.Region | None:
 
 
 @dataclass
-class LinearityCheck(CachedCalls[EmptyLattice]):
+class LinearityCheck(WireCheck):
     """Record a validation error for each linear value that breaks the use rule."""
 
     keys = (KEY, "absint")
-    lattice = EmptyLattice
-
-    def method_self(self, method: ir.Method) -> EmptyLattice:
-        """Return the top element for the method object."""
-        return EmptyLattice.top()
-
-    def error(self, node: ir.IRNode, message: str) -> None:
-        """Record an ownership error at the operation that defines the value."""
-        self.add_validation_error(node, ir.ValidationError(node, message))
 
     def check_uses(self, values: Iterable[ir.SSAValue], node: ir.IRNode) -> None:
         """Check one consuming use per quantum tuple field along each execution path."""
@@ -113,7 +109,8 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
                     suffix = "" if not path else f" at tuple field {path}"
                     self.error(
                         node,
-                        f"the linear value '{value.name or repr(value)}'{suffix} {reason}",
+                        f"The linear value '{value.name or repr(value)}'{suffix}"
+                        f" {reason}.",
                     )
 
     def field_users(
@@ -178,12 +175,6 @@ class LinearityCheck(CachedCalls[EmptyLattice]):
             self.check_uses(trait.get_callable_region(node).blocks[0].args[1:], node)
         return super().frame_call(frame, node, *args, **kwargs)
 
-    def eval_fallback(
-        self, frame: ForwardFrame[EmptyLattice], node: ir.Statement
-    ) -> tuple[EmptyLattice, ...]:
-        """Check the results of a statement without a rule."""
-        return tuple(EmptyLattice.top() for _ in node.results)
-
 
 @func.dialect.register(key=KEY)
 class Functions(interp.MethodTable):
@@ -196,14 +187,8 @@ class Functions(interp.MethodTable):
         frame: ForwardFrame[EmptyLattice],
         stmt: func.Invoke,
     ) -> tuple[EmptyLattice, ...]:
-        """Check the uses inside the callee with Kirin's call machinery."""
-        parameters = stmt.callee.callable_region.blocks[0].args[1:]
-        check.call(
-            stmt.callee.code,
-            EmptyLattice.top(),
-            *(EmptyLattice.top() for _ in parameters),
-        )
-        return (EmptyLattice.top(),)
+        """Check the uses inside the callee."""
+        return check.run_callee(stmt)
 
 
 @scf.dialect.register(key=KEY)
@@ -219,22 +204,14 @@ class ControlFlow(interp.MethodTable):
         stmt: ir.Statement,
     ) -> tuple[EmptyLattice, ...]:
         """Check the uses of each block argument, then run each body once."""
-        for region in stmt.regions:
-            if not region.blocks:
-                continue
-            block = region.blocks[0]
-            check.check_uses(block.args, stmt)
-            args = [EmptyLattice.top() for _ in block.args]
-            with check.new_frame(stmt, has_parent_access=True) as inner:
-                check.frame_call_region(inner, stmt, region, *args)
-        return tuple(EmptyLattice.top() for _ in stmt.results)
+        return check.run_regions(stmt, lambda block: check.check_uses(block.args, stmt))
 
     @interp.impl(scf.Yield)
     def yield_(
         self, check: LinearityCheck, frame: ForwardFrame[EmptyLattice], stmt: scf.Yield
     ) -> interp.YieldValue[EmptyLattice]:
         """Return the top element for each yielded value."""
-        return interp.YieldValue(tuple(EmptyLattice.top() for _ in stmt.values))
+        return yield_top(stmt)
 
 
 class LinearityValidation(ValidationPass[ForwardFrame[EmptyLattice]]):

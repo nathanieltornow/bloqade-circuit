@@ -17,28 +17,19 @@ from kirin.analysis.forward import ForwardFrame
 from bloqade.types import is_subtype
 from bloqade.constants import constant_int
 from bloqade.squin.wire import stmts
-from bloqade.squin.wire.types import is_linear, linear_paths, contains_linear
+from bloqade.squin.wire.types import linear_paths, nests_linear, contains_linear
 
-from .calls import CachedCalls
+from .calls import WireCheck, yield_top
 
-KEY = "squin.wire.boundaries"
+KEY: str = "squin.wire.boundaries"
 """Name the registry key of the method tables of `BoundaryCheck`."""
 
 
 @dataclass
-class BoundaryCheck(CachedCalls[EmptyLattice]):
+class BoundaryCheck(WireCheck):
     """Record a validation error for each type that hides a quantum field."""
 
     keys = (KEY, "absint")
-    lattice = EmptyLattice
-
-    def method_self(self, method: ir.Method) -> EmptyLattice:
-        """Return the top element for the method object."""
-        return EmptyLattice.top()
-
-    def error(self, node: ir.IRNode, message: str) -> None:
-        """Record the validation error `message` at `node`."""
-        self.add_validation_error(node, ir.ValidationError(node, message))
 
     def require_paths(self, node: ir.Statement, typ: types.TypeAttribute) -> None:
         """Require each quantum field of `typ` to sit at a fixed tuple path."""
@@ -62,10 +53,7 @@ class BoundaryCheck(CachedCalls[EmptyLattice]):
 
     def require_flat(self, node: ir.Statement, values: Iterable[ir.SSAValue]) -> None:
         """Require control-flow state to carry each quantum value separately."""
-        if any(
-            contains_linear(value.type) and not is_linear(value.type)
-            for value in values
-        ):
+        if any(nests_linear(value.type) for value in values):
             self.error(node, "Control flow requires separate wire and register values.")
 
     def frame_eval(
@@ -93,7 +81,7 @@ class BoundaryCheck(CachedCalls[EmptyLattice]):
         if trait is not None:
             for value in trait.get_callable_region(node).blocks[0].args[1:]:
                 self.require_paths(node, value.type)
-                if contains_linear(value.type) and not is_linear(value.type):
+                if nests_linear(value.type):
                     self.error(
                         node,
                         "Quantum function parameters must be separate wires or registers.",
@@ -103,21 +91,13 @@ class BoundaryCheck(CachedCalls[EmptyLattice]):
             if (
                 isinstance(output, types.Generic)
                 and is_subtype(output, types.Tuple)
-                and any(
-                    contains_linear(typ) and not is_linear(typ) for typ in output.vars
-                )
+                and any(nests_linear(typ) for typ in output.vars)
             ):
                 self.error(
                     node,
                     "Quantum function outputs require a flat tuple of wires and registers.",
                 )
         return super().frame_call(frame, node, *args, **kwargs)
-
-    def eval_fallback(
-        self, frame: ForwardFrame[EmptyLattice], node: ir.Statement
-    ) -> tuple[EmptyLattice, ...]:
-        """Return the top element for each result of a statement without a rule."""
-        return tuple(EmptyLattice.top() for _ in node.results)
 
 
 @py.tuple.dialect.register(key=KEY)
@@ -183,12 +163,7 @@ class Functions(interp.MethodTable):
             check.error(
                 stmt, "A call result must preserve its declared quantum field types."
             )
-        check.call(
-            stmt.callee.code,
-            EmptyLattice.top(),
-            *(EmptyLattice.top() for _ in parameters),
-        )
-        return (EmptyLattice.top(),)
+        return check.run_callee(stmt)
 
     @interp.impl(func.Return)
     def return_(
@@ -221,15 +196,12 @@ class ControlFlow(interp.MethodTable):
             check.require_flat(stmt, stmt.initializers)
             for value, argument in zip(stmt.initializers, stmt.body.blocks[0].args[1:]):
                 check.require_same_paths(stmt, value.type, argument.type)
-        for region in stmt.regions:
-            if not region.blocks:
-                continue
-            for argument in region.blocks[0].args:
+
+        def enter(block: ir.Block) -> None:
+            for argument in block.args:
                 check.require_paths(stmt, argument.type)
-            args = [EmptyLattice.top() for _ in region.blocks[0].args]
-            with check.new_frame(stmt, has_parent_access=True) as inner:
-                check.frame_call_region(inner, stmt, region, *args)
-        return tuple(EmptyLattice.top() for _ in stmt.results)
+
+        return check.run_regions(stmt, enter)
 
     @interp.impl(scf.Yield)
     def yield_(
@@ -240,7 +212,7 @@ class ControlFlow(interp.MethodTable):
         if stmt.parent_stmt is not None:
             for value, result in zip(stmt.values, stmt.parent_stmt.results):
                 check.require_same_paths(stmt, value.type, result.type)
-        return interp.YieldValue(tuple(EmptyLattice.top() for _ in stmt.values))
+        return yield_top(stmt)
 
 
 class BoundaryValidation(ValidationPass[ForwardFrame[EmptyLattice]]):

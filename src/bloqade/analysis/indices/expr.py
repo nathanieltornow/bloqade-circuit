@@ -19,7 +19,7 @@ from bloqade.constants import constant_int
 
 @dataclass(frozen=True)
 class Iter:
-    """The iteration variable of the `scf.For` loop `stmt`.
+    """Name the iteration variable of the `scf.For` loop `stmt`.
 
     `values` holds the constant range of the loop, or None if the range is not constant.
     """
@@ -51,7 +51,7 @@ def _values(sym: Sym) -> range | None:
 
 @dataclass(frozen=True, repr=False)
 class IndexExpr:
-    """The index `offset + sum(a * s for s, a in terms)`.
+    """Name the index `offset + sum(a * s for s, a in terms)`.
 
     `terms` holds each symbol at most once with a nonzero coefficient, so equal indices
     have equal fields. `IndexExpr.make` drops zero coefficients.
@@ -112,8 +112,8 @@ class IndexExpr:
     def substitute(self, mapping: Mapping[Sym, IndexExpr]) -> IndexExpr:
         """Replace each symbol that `mapping` holds with its index.
 
-        A call uses this to replace a parameter of the callee with the index of the
-        argument that the caller passes.
+        The register check uses this to replace each `Length` result with the known
+        length of its register.
         """
         out = IndexExpr(self.offset)
         for s, a in self.terms:
@@ -142,7 +142,7 @@ def lift(value: IndexExpr | int) -> IndexExpr:
 
 @dataclass(frozen=True, repr=False)
 class Slice:
-    """The items `start + j*step` of a register, for `j` from 0 to `length - 1`.
+    """Name the items `start + j*step` of a register, for `j` from 0 to `length - 1`.
 
     If the slice runs to the end of a register of unknown length, `length` is None.
     """

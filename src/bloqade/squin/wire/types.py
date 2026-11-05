@@ -71,6 +71,11 @@ def contains_linear(typ: types.TypeAttribute) -> bool:
     return False
 
 
+def nests_linear(typ: types.TypeAttribute) -> bool:
+    """Check whether the type holds a wire or a register inside a container."""
+    return contains_linear(typ) and not is_linear(typ)
+
+
 def linear_paths(typ: types.TypeAttribute) -> tuple[tuple[int, ...], ...]:
     """Return the tuple paths of every wire and register in a supported type.
 

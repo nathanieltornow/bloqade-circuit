@@ -23,12 +23,13 @@ from bloqade.squin.wire.group import (
     reference_kernel,
 )
 
-CLASSICAL_DIALECTS = reference_kernel.data - {
+CLASSICAL_DIALECTS: frozenset[ir.Dialect] = reference_kernel.data - {
     qubit.dialect,
     gate.dialect,
     noise.dialect,
     native_gate.dialect,
 }
+"""Name the dialects of the reference kernel that hold only classical statements."""
 
 
 @dataclass

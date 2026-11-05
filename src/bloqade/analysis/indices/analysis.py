@@ -14,7 +14,7 @@ from bloqade.constants import constant_int
 from .expr import IndexExpr
 from .lattice import Index, KnownIndex, UnknownIndex
 
-KEY = "bloqade.indices"
+KEY: str = "bloqade.indices"
 """Name the registry key of the method tables of `IndexAnalysis`."""
 
 

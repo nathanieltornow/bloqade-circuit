@@ -38,7 +38,7 @@ from bloqade.squin.wire.ownership import Owns, convention
 
 from .calls import CachedCalls
 
-KEY = "squin.wire.registers"
+KEY: str = "squin.wire.registers"
 """Name the registry key of the method tables of `RegisterAnalysis`."""
 
 

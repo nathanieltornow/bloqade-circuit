@@ -44,7 +44,7 @@ class Index(BoundedLattice["Index"]):
         return UnknownIndex()
 
     def meet(self, other: Index) -> Index:
-        """Return the fact that both facts imply."""
+        """Return the fact that implies both facts, or `UnreachableIndex` if none does."""
         if self.is_subseteq(other):
             return self
         if other.is_subseteq(self):
