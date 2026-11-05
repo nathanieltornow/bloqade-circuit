@@ -53,21 +53,22 @@ An SSA value names one compiler value with one definition.
 | --- | --- |
 | `entries` | Map each source value to an emitted classical value, quantum location or container of values. |
 | `latest` | Map each allocation root to its latest wire or register value. |
-| `local_roots` | Record allocations that this region must free unless the function returns them. |
+| `local_roots` | Record the allocations that this region must free at its end. |
 | `output` | Hold the emitted block and its arguments. |
 | `site` | Name the user call that runs a library wrapper. It is None in user code. |
 
-A `Location` is one of six forms, and each form has a `root`.
+A `Location` is one of 4 forms, and each form has a `root`.
 The root is the emitted allocation result, a call result or a function parameter.
 
 | Form | Meaning | Example |
 | --- | --- | --- |
 | `Qubit(root)` | A standalone qubit. | `q` |
 | `Element(root, index)` | One qubit of a register. | `qs[i]` |
-| `Register(root, length)` | A whole flat register. | `qs` |
-| `View(root, span)` | A slice of the qubits of a register. | `qs[1:3]`, `grid[1]` of 2 dimensions |
-| `Grid(root, length, row_shape)` | A whole nested register. | `grid` |
-| `Rows(root, span, row_shape)` | A row whose items are rows. | `cube[1]` of 3 dimensions |
+| `Register(root, length, row_shape)` | A whole register. | `qs`, `grid` |
+| `View(root, span, row_shape)` | Some items of a register. | `qs[1:3]`, `grid[1]`, `cube[1]` |
+
+The items of a `Register` or a `View` are qubits if its `row_shape` is empty.
+Otherwise its items are rows of the dimensions `row_shape`, such as the rows of `grid`.
 
 `select` and `select_slice` in `values.py` derive the location of an item or a slice.
 A nested register has one flat root register that holds its rows in order.
@@ -104,17 +105,17 @@ The operation tables live in `squin.emit.wire`:
 | File | Responsibility |
 | --- | --- |
 | `base.py` | Define the emitter, the frame and the operations on latest wires, and copy classical operations. |
-| `functions.py` | Emit function boundaries, library wrappers and calls. |
-| `references.py` | Resolve qubit references in allocations, aliases, lists, tuples, additions, lengths and indexing. |
+| `functions.py` | Emit function boundaries, library wrappers and calls, and allocate the register of each `qalloc`. |
+| `references.py` | Resolve qubit references in aliases, lists, tuples, additions, lengths and indexing. |
 | `control.py` | Convert loop and branch regions through Kirin's region interpreter. |
-| `gates.py` | Emit scalar operations on qubits and register operations on whole registers or slices. |
+| `gates.py` | Emit standalone qubit allocations, scalar operations on qubits and register operations on whole registers or slices. |
 | `values.py` | Define the location forms and select elements, slices and rows. |
 
 ## Gates and allocation lifetimes
 
 Each quantum operation consumes its input wire and produces the next version of that qubit.
 `Threads` declares which output continues each input.
-`Swap` exchanges quantum states while each output continues its corresponding input qubit.
+`Gate(kind=swap)` exchanges quantum states while each output continues its corresponding input wire.
 Measurement produces a classical result and continues the measured qubit.
 
 The wire dialect has 4 scalar operations: `Gate`, `Noise`, `Measure` and `Reset`.
@@ -128,7 +129,8 @@ Each kind in `kinds.py` holds its number of qubits and parameters, such as 1 qub
 The `MatchesKind` trait checks these counts when Kirin verifies the IR.
 A kind with `truncates` set, such as `GateKind.NATIVE_CZ`, has a register form that stops at the shortest register.
 The `Threads` trait is the one record of which result continues which wire.
-The wire dialect imports nothing from squin.
+The wire statements, kinds, types and traits import nothing from squin.
+Only `group.py`, which builds the dialect groups, imports the squin dialect group.
 
 Each scalar operation has a register form: `RegisterGate`, `RegisterNoise`, `RegisterMeasure` and `RegisterReset`.
 A register form takes one register for each qubit list and applies the scalar form at each position.
@@ -199,9 +201,9 @@ Each structured region must contain one block with its expected terminator.
 
 ## Calls and returns
 
-Every quantum parameter borrows its input allocation.
+Every quantum parameter is an in-out parameter.
 The function returns the latest value of each in-out parameter in declaration order.
-Ordinary results precede this borrowed-parameter suffix.
+Ordinary results precede this in-out suffix.
 A function cannot return qubits, so every ordinary result is classical.
 A function can allocate qubits and free them before it returns.
 A caller allocates the qubits that a callee needs and passes them in.
@@ -218,9 +220,9 @@ answer, q1 = call f_wire(q0, n)
 It gives the in-out parameter positions, the ordinary result count and the tuple packing of the source return.
 The caller reads the type of each wire result from the callee's inferred signature.
 
-The caller consumes its latest inputs and restores them from the borrowed-parameter suffix.
+The caller consumes its latest inputs and restores them from the in-out suffix.
 Calls on register elements use `Borrow` and `Release` around the call.
-The helper below borrows `q`, and its loop carries the wire of `q`:
+The helper below takes `q` as an in-out parameter, and its loop carries the wire of `q`:
 
 ```python
 @squin.kernel
@@ -240,7 +242,7 @@ def main():
 func kick(q: Wire, k: int) -> tuple[int, Wire]:
     q_end = For(range(0, k), initial=q):
         q_iter = iteration_argument
-        q_next = X(q_iter)
+        q_next = Gate(kind=x, wires=(q_iter,))
         Yield(q_next)
     Return(tuple(k + 1, q_end))
 
@@ -255,10 +257,11 @@ func main() -> int:
     Return(total)
 ```
 
-Quantum call operands must name separate scalar qubits or whole registers.
-Calls with register slices or quantum containers fail.
+Quantum call operands must name separate scalar qubits, whole registers or step-1 slices of known length.
+A slice argument becomes a `TakeSlice` before the call and a `PutSlice` after it.
+Calls with strided slices or quantum containers fail.
 A register argument must provably have the shape that its parameter type declares.
-A qubit parameter takes one qubit, and a register parameter takes a whole register.
+A call cannot take a whole register together with a qubit or a slice of that register.
 The emitter reports unsupported argument layouts, argument shapes and returned qubits as `WireConversionError`.
 An operation that uses one qubit or register twice fails with a plain `WireConversionError`.
 Callee validation failures propagate directly to the caller.
@@ -284,16 +287,16 @@ A branch may use an outer wire, once on each path, because `scf.IfElse` carries 
 A loop body must take every wire as a block argument, because the body runs more than once.
 A register must hold no borrowed element when a statement frees, yields, returns or passes it.
 `Take` and `TakeSlice` move elements out, and `DiscardRegister` accepts moved elements but no borrowed ones.
-Borrow validation tracks outstanding register indices in its `Slots` lattice.
-It rejects a borrow or a move only if it provably meets an outstanding slot.
-Its `Moved` entries name elements that `Take` or `TakeSlice` moved out of a register.
 
-Position validation uses Kirin's `Forward` analysis with operation method tables.
-Its `Origin` lattice stores exact allocation identities and tuple fields in Kirin frames.
-An unknown origin records insufficient information to prove continuity.
-The analysis follows operation continuations and checks loop yields, branch results and borrowed return suffixes.
-It checks each callee and gives every call's fresh outputs distinct identities.
-Only functions imported from Jeff return fresh qubits, because source functions cannot return qubits.
+`RegisterAnalysis` in `registers.py` gives each wire and register value a `Place`.
+A place names the allocation that the value comes from, which is its root.
+A register place also holds its length and its holes.
+A hole is `Borrowed` or `Moved`, with the span of the elements that it lacks.
+The analysis rejects a borrow or a move only if it provably meets an outstanding hole.
+It counts a negative constant index from the end of a register of known length.
+It checks that a release puts back the wire of its element, and that loop yields, branch results and in-out return suffixes continue the right qubits.
+An `Owns` function skips the position checks, because it returns its qubits in any order.
+The analysis gives the fresh outputs of each call distinct roots.
 `CachedCalls` reuses the result of a call with the same callee and abstract arguments.
 Each analysis records its errors at callee nodes, so a reused result loses no error.
 
@@ -306,7 +309,10 @@ Function results can use a flat tuple of ordinary outputs followed by in-out par
 
 `UnpackRegisters` in `squin/passes/wire_unpack.py` turns constant-size registers into separate wires.
 Its rules live in `squin/rewrite/wire/unpack.py`, and they read static lengths from the types.
-`ExpandBroadcast` replaces a register operation of static length with one `Borrow`, scalar operation and `Release` per position.
+`ExpandBroadcast` replaces a register operation of static length with scalar operations.
+A register gate or noise channel becomes one statement on the groups of all positions.
+A register measurement or reset becomes one statement per position.
+Each element gets a `Borrow` before the scalar operations and a `Release` after them.
 `JoinBorrow` in `squin/rewrite/wire/join.py` removes a `Release` whose next statement on the register borrows the same element again.
 `HoistBorrow` moves a `Borrow` above a `Release` of another constant element, so that more such pairs meet.
 `UnpackRegister` then replaces a local register with one `Alloc` per qubit.
@@ -363,8 +369,9 @@ jeff_from_source = SquinToJeff().emit(source)
 
 `SquinToJeff` runs `SquinToWire`, then `WireToJeff`.
 `WireToJeff` requires complete wire conversion and validates every reachable wire method.
-It copies each wire method and rewrites the copy with 4 stateless Kirin rewrite rules.
+It copies each wire method and rewrites the copy with 5 stateless Kirin rewrite rules.
 `Functions`, `ControlFlow`, `Quantum` and `Classical` each replace one statement with its Jeff form.
+`Unsupported` runs last and rejects each live statement that has no Jeff form.
 The walk visits a statement before its regions and each block in order.
 So every operand already holds its Jeff value and type when a rule reads it.
 A wire tuple becomes a `py.tuple.New` of Jeff values, and calls, returns and constant reads take its fields.
@@ -381,7 +388,9 @@ A wire register type carries its static length when it is known, such as `Regist
 Kirin type inference computes these lengths with the rules in `squin/wire/typeinfer.py`.
 A statement that continues a register keeps the type of its input, and loops and branches join the types of their state.
 A Jeff register type keeps that length, such as `qureg(3)`.
-A register operation of static length becomes one scalar operation per position.
+Before the Jeff rules, `InOutTypes` gives each in-out result of a call the type of its argument.
+So a register keeps its static length through the call.
+Then `ExpandBroadcast` expands each register operation of static length, as on the unpacking route.
 A register operation of runtime length becomes a Jeff loop that fills arrays of runtime length.
 The Jeff importer rejects those arrays, so such a program has no way back from Jeff to squin.
 The Jeff rewrite rejects noise channels, qubit-loss tests and gates without a registered Jeff form.
@@ -402,10 +411,12 @@ Jeff import validates the source and converts private copies of the reachable fu
 Local rewrite rules translate classical operations, structured regions and quantum operations.
 The converter rejects recursive call graphs.
 
-Jeff import marks each imported function as `Owns`, unless the function keeps each qubit in its position.
-Their `squin.wire.owned` marker requires explicit quantum outputs and permits changes in result positions.
-The wire validators still enforce linear uses and correct register ownership.
-Source squin conversion retains its borrowed-parameter convention.
+Jeff import first marks each imported function as `Owns` with the `squin.wire.owned` attribute.
+An `Owns` function takes its qubits and returns every quantum result in its own order.
+Suppose a function returns its classical values first and then each quantum parameter in its position, and its loops and branches keep each qubit in place.
+Then the importer clears the mark, and the function is `InOut`.
+Its squin kernel returns no qubits, so the kernel can go to Jeff again.
+The wire validators enforce linear uses and complete registers for both conventions.
 
 `Take` and `Put` move a qubit out of a register and fill an empty register element.
 `TakeSlice` and `PutSlice` move contiguous register ranges.
@@ -439,7 +450,7 @@ Complete conversion can reject a valid source program when it cannot resolve its
 Public quantum parameters require distinct input qubits.
 Recursion and arbitrary control-flow graphs exceed the current conversion contract.
 Closures, list maps and direct iteration over qubit registers also exceed that contract.
-Indexed loops, broadcasts and calls with whole-register or scalar-qubit arguments can convert directly.
+Indexed loops, broadcasts and calls with whole-register, slice or scalar-qubit arguments can convert directly.
 The conversion tests have no expected-failure markers.
 The pipeline emits wire operations and removes unused classical expressions.
 It omits common-subexpression elimination and qubit reuse.
