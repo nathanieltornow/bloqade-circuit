@@ -145,7 +145,7 @@ class LinearityCheck(WireCheck):
     def tuple_field(self, user: py.GetItem, value: ir.SSAValue) -> int | None:
         """Return the field of the tuple `value` that `user` reads, or None.
 
-        `BoundaryCheck` reports an index that is not a constant inside the tuple
+        `BoundaryCheck` reports a runtime index and an index outside the tuple
         bounds.
         """
         index = constant_int(user.index)

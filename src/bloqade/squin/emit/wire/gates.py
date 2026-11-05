@@ -1,4 +1,4 @@
-"""Emit scalar wire operations on qubits and register operations on whole registers or slices."""
+"""Emit qubit allocations, scalar wire operations on qubits and register operations on registers or slices."""
 
 from itertools import combinations
 
