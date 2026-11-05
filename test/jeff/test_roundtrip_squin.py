@@ -777,3 +777,36 @@ def test_a_kernel_survives_the_trip_or_jeff_names_the_refusal(kernel, args, refu
         return
     before = _plain(simulate(kernel, *args))
     assert _same(_plain(simulate(returned(kernel), *args)), before)
+
+
+@squin.kernel
+def counted_from_false(n: int) -> int:
+    total = False
+    for _ in range(n):
+        total = total + 1
+    return total
+
+
+@squin.kernel
+def measured_or_five(flag: bool) -> int:
+    q = squin.qubit.new()
+    squin.x(q)
+    value = squin.measure(q)
+    if flag:
+        value = 5
+    return value
+
+
+@pytest.mark.parametrize(
+    "kernel, args",
+    [
+        (counted_from_false, (0,)),
+        (counted_from_false, (3,)),
+        (measured_or_five, (True,)),
+        (measured_or_five, (False,)),
+    ],
+)
+def test_state_that_widens_from_a_bit_to_an_int_survives_the_trip(kernel, args):
+    assert _same(
+        _plain(simulate(returned(kernel), *args)), _plain(simulate(kernel, *args))
+    )

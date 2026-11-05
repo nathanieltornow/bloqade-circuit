@@ -21,6 +21,14 @@ def jeff_type(typ: types.TypeAttribute) -> types.TypeAttribute:
 
     A register keeps its static length, so `Register[3]` becomes `qureg(3)`.
     """
+    if isinstance(typ, types.Union):
+        # A union of a bit and an integer, such as a measurement result that a loop
+        # adds 1 to, is an integer.
+        members = [jeff_type(member) for member in typ.types]
+        joined = members[0]
+        for member in members[1:]:
+            joined = joined.join(member)
+        return joined
     if isinstance(typ, types.Literal):
         match typ.data:
             case bool():
@@ -42,11 +50,23 @@ def jeff_type(typ: types.TypeAttribute) -> types.TypeAttribute:
         return types.Bool
     if is_subtype(typ, RegisterType):
         return qureg(register_length(typ))
+
     if is_subtype(typ, ilist.IListType[types.Float, types.Any]):
         return FloatArrayType
     if is_subtype(typ, ilist.IListType):
         return IntArrayType
     return typ
+
+
+def joined(*values: ir.SSAValue) -> types.TypeAttribute:
+    """Return the Jeff type of a value that can be any of `values`.
+
+    A bit joined with an integer is an integer.
+    """
+    typ = values[0].type
+    for value in values[1:]:
+        typ = typ.join(value.type)
+    return jeff_type(typ)
 
 
 def bitwidth(elements: types.TypeAttribute) -> int:

@@ -67,9 +67,17 @@ class Functions(RewriteRule):
 
 
 def retype(node: func.Function) -> None:
-    """Give the function `node` the Jeff types of its parameters and outputs."""
+    """Give the function `node` the Jeff types of its parameters and outputs.
+
+    If the walk has rewritten the return already, the outputs take the types of
+    the values of the Jeff return.
+    """
     inputs = tuple(jeff_type(typ) for typ in node.signature.inputs)
-    outputs = tuple(jeff_type(typ) for typ in flat_kinds(node.signature.output))
+    end = node.body.blocks[0].last_stmt
+    if isinstance(end, stmts.Return):
+        outputs = tuple(value.type for value in end.values)
+    else:
+        outputs = tuple(jeff_type(typ) for typ in flat_kinds(node.signature.output))
     for argument, typ in zip(node.body.blocks[0].args[1:], inputs, strict=True):
         argument.type = typ
     set_signature(node, inputs, packed_type(outputs))
@@ -90,9 +98,16 @@ def returned(node: func.Return) -> None:
         raise ir.ValidationError(
             node, "Jeff returns require flat scalar or array values."
         )
-    outputs = (fitted(v, k, node) for v, k in zip(values, expected, strict=True))
+    # Squin can declare a bit where the value is an integer, such as a measurement
+    # result that a loop adds 1 to. The output then takes the joined type.
+    outputs = tuple(
+        fitted(value, jeff_type(typ.join(value.type)), node)
+        for value, typ in zip(values, expected, strict=True)
+    )
     put(stmts.Return(*outputs), node)
     node.delete()
+    output = packed_type(tuple(value.type for value in outputs))
+    set_signature(function, function.signature.inputs, output)
 
 
 def flat_kinds(typ: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:

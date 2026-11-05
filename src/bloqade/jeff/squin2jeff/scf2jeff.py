@@ -10,7 +10,7 @@ from bloqade.jeff.forms import loop_range
 from bloqade.jeff.dialects import stmts
 from bloqade.squin.rewrite.wire.driver import put, replace
 
-from .values import fitted, jeff_type
+from .values import fitted, joined
 
 
 class ControlFlow(RewriteRule):
@@ -62,13 +62,23 @@ def loop(node: scf.For) -> None:
             )
         case _:
             raise ir.ValidationError(node, f"{node.iterable} is not a range")
+    end = node.body.blocks[0].last_stmt
+    assert isinstance(end, scf.Yield)
+    # The loop state joins the types of the initializer and the yield, such as a
+    # bit and an integer.
+    state = tuple(
+        fitted(value, joined(value, result, carried), node)
+        for value, result, carried in zip(
+            node.initializers, node.results, end.values, strict=True
+        )
+    )
     region = node.body
     region.detach()
     block = region.blocks[0]
     block.args[0].type = types.Int
-    for argument, value in zip(block.args[1:], node.initializers, strict=True):
+    for argument, value in zip(block.args[1:], state, strict=True):
         argument.type = value.type
-    made = put(stmts.For(*bounds, tuple(node.initializers), region), node)
+    made = put(stmts.For(*bounds, state, region), node)
     replace(node, *made.results)
 
 
@@ -81,7 +91,14 @@ def switch(node: scf.IfElse) -> None:
     each body when it is built, so this rewrite also replaces each body yield.
     """
     separate(node, tuple(node.results))
-    outputs = tuple(jeff_type(result.type) for result in node.results)
+    ends = [body.blocks[0].last_stmt for body in (node.then_body, node.else_body)]
+    assert all(isinstance(end, scf.Yield) for end in ends)
+    # Each result joins the types that both branches yield, such as a bit and an
+    # integer.
+    outputs = tuple(
+        joined(result, *(end.args[k] for end in ends if end is not None))
+        for k, result in enumerate(node.results)
+    )
     regions: list[ir.Region] = []
     for body in (node.else_body, node.then_body):
         block = body.blocks[0]
