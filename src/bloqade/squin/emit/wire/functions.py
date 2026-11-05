@@ -36,7 +36,7 @@ from .values import (
 )
 
 LIBRARIES = ("bloqade.squin.stdlib", "bloqade.qubit.stdlib", "bloqade.native.stdlib")
-"""The modules whose kernels wrap source quantum operations for users."""
+"""Hold the modules whose kernels wrap source quantum operations for users."""
 
 
 def is_library(method: ir.Method) -> bool:

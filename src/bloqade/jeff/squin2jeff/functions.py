@@ -24,7 +24,7 @@ class Functions(RewriteRule):
     """
 
     methods: Mapping[ir.Method, ir.Method]
-    """The Jeff copy of each wire method that a call can name.
+    """Hold the Jeff copy of each wire method that a call can name.
 
     The pipeline rewrites each callee before its callers, so a call reads the Jeff
     signature of its callee.

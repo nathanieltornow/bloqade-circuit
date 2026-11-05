@@ -98,7 +98,7 @@ class View:
 
     key: int
     offset: int
-    """The position of the first element of the range in the root register."""
+    """Hold the position of the first element of the range in the root register."""
     size: int
 
 

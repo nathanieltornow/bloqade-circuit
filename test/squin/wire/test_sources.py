@@ -49,7 +49,8 @@ def test_native_gates_keep_their_own_kinds():
 
 
 def test_a_gate_continues_each_wire_in_order():
-    control, target, angle = (ir.TestValue(WireType) for _ in range(3))
+    control, target = (ir.TestValue(WireType) for _ in range(2))
+    angle = ir.TestValue(types.Float)
     gate = Gate(GateKind.CX, (control, target))
     assert gate.linear == (control, target)
     assert gate.outputs == tuple(gate.results)

@@ -5,6 +5,7 @@ This module defines the basic types used in Bloqade eDSLs.
 
 from abc import ABC
 from typing import Any
+from collections.abc import Callable
 
 from kirin import types
 from kirin.dialects.ilist import IList, IListType
@@ -51,23 +52,28 @@ def item_type(typ: types.TypeAttribute) -> types.TypeAttribute:
     return types.Any
 
 
-def holds_qubits(typ: types.TypeAttribute) -> bool:
-    """Return True if the type `typ` holds qubits, such as `IList[Qubit, 3]`."""
-    if isinstance(typ, types.BottomType):
-        return False
-    if is_subtype(typ, QubitType):
+def contains(
+    typ: types.TypeAttribute, leaf: Callable[[types.TypeAttribute], bool]
+) -> bool:
+    """Check whether `leaf` holds for `typ` or for a type inside it at any depth."""
+    if leaf(typ):
         return True
     if isinstance(typ, types.Union):
-        return any(holds_qubits(member) for member in typ.types)
+        return any(contains(member, leaf) for member in typ.types)
     if isinstance(typ, types.TypeVar):
-        return holds_qubits(typ.bound)
+        return contains(typ.bound, leaf)
     if isinstance(typ, types.Generic):
-        # The second variable of an `IList` is its length, which holds no qubit.
+        # The second variable of an `IList` is its length, which holds no value.
         members = typ.vars[:1] if is_subtype(typ, IListType) else typ.vars
-        return any(holds_qubits(member) for member in members) or (
-            typ.vararg is not None and holds_qubits(typ.vararg.typ)
+        return any(contains(member, leaf) for member in members) or (
+            typ.vararg is not None and contains(typ.vararg.typ, leaf)
         )
     return False
+
+
+def holds_qubits(typ: types.TypeAttribute) -> bool:
+    """Return True if the type `typ` holds qubits, such as `IList[Qubit, 3]`."""
+    return contains(typ, lambda member: is_subtype(member, QubitType))
 
 
 def output_types(output: types.TypeAttribute) -> tuple[types.TypeAttribute, ...]:

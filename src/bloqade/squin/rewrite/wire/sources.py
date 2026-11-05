@@ -43,7 +43,7 @@ class BaseEntry:
     """Name the fields of one squin statement on qubits, in operand order."""
 
     source: type[ir.Statement]
-    """The squin statement."""
+    """Hold the squin statement."""
 
     @cached_property
     def arguments(self) -> dict[str, types.TypeAttribute]:

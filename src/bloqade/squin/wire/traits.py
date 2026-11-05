@@ -1,4 +1,4 @@
-"""This module holds the traits of the squin wire dialect.
+"""Define the traits of the squin wire dialect.
 
 `Threads` tells which result of a statement continues which linear operand. A
 rewrite rule or an analysis reads it to follow one qubit from statement to

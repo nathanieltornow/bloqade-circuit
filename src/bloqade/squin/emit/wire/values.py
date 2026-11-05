@@ -40,9 +40,9 @@ class Register:
 
     root: ir.SSAValue
     length: IndexExpr | None = None
-    """The number of items, or None if it is unknown."""
+    """Hold the number of items, or None if it is unknown."""
     row_shape: tuple[int | None, ...] = ()
-    """The dimensions of one item row, outermost first, or `()` for qubit items."""
+    """Hold the dimensions of one item row, outermost first, or `()` for qubit items."""
 
 
 @dataclass(frozen=True)
@@ -51,9 +51,9 @@ class View:
 
     root: ir.SSAValue
     span: Slice
-    """The flat index where each item starts."""
+    """Hold the flat index where each item starts."""
     row_shape: tuple[int | None, ...] = ()
-    """The dimensions of one item row, outermost first, or `()` for qubit items."""
+    """Hold the dimensions of one item row, outermost first, or `()` for qubit items."""
 
     @property
     def length(self) -> IndexExpr | None:

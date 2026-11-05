@@ -21,7 +21,7 @@ from bloqade.squin.stdlib.simple import gate as simple_gate
 from bloqade.squin.stdlib.broadcast import gate as broadcast_gate
 
 EMIT_KEY = "emit.squin2jeff"
-"""The registry key of the rules that emit jeff statements for squin statements."""
+"""Hold the registry key of the rules that emit jeff statements for squin statements."""
 
 
 @dataclass(frozen=True)
@@ -30,9 +30,9 @@ class GateForm:
 
     name: str
     angles: int = 0
-    """The number of leading angle operands, in radians for a library kernel."""
+    """Hold the number of leading angle operands, in radians for a library kernel."""
     controls: int = 0
-    """The number of control operands, which come before the target operands."""
+    """Hold the number of control operands, which come before the target operands."""
     adjoint: bool = False
 
 
@@ -61,14 +61,14 @@ _FORMS = {
     "ccz": GateForm("z", controls=2),
     "swap": GateForm("swap"),
 }
-"""The jeff gate of each squin library gate kernel, by the name of the kernel."""
+"""Hold the jeff gate of each squin library gate kernel, by the name of the kernel."""
 
 GATE_KERNELS: dict[ir.Method, GateForm] = {
     getattr(module, name): form
     for module in (simple_gate, broadcast_gate)
     for name, form in _FORMS.items()
 }
-"""The jeff gate of each squin library gate kernel, on one qubit or on a list."""
+"""Hold the jeff gate of each squin library gate kernel, on one qubit or on a list."""
 
 GATES: dict[GateKind, GateForm] = {
     GateKind.X: _FORMS["x"],
@@ -93,7 +93,7 @@ GATES: dict[GateKind, GateForm] = {
     GateKind.NATIVE_RZ: _FORMS["rz"],
     GateKind.NATIVE_CZ: _FORMS["cz"],
 }
-"""The jeff gate of each wire gate kind, whose angles are in turns.
+"""Hold the jeff gate of each wire gate kind, whose angles are in turns.
 
 Each entry is the same gate in both forms. A gate without an equal Jeff gate, such
 as the native `R`, has no entry.
@@ -110,7 +110,7 @@ QUBIT_KERNELS: dict[ir.Method, type[ir.Statement]] = {
     simple_qubit.is_one: qubit_stmts.IsOne,
     broadcast_qubit.is_one: qubit_stmts.IsOne,
 }
-"""The qubit statement that each squin library qubit kernel wraps."""
+"""Hold the qubit statement that each squin library qubit kernel wraps."""
 
 
 Binary = Callable[[ir.SSAValue, ir.SSAValue], ir.Statement]
@@ -130,7 +130,7 @@ INT_BINARY: dict[type[ir.Statement], Binary] = {
     py.cmp.Lt: stmts.IntLtS,
     py.cmp.LtE: stmts.IntLteS,
 }
-"""The jeff statement of each squin statement on two integers.
+"""Hold the jeff statement of each squin statement on two integers.
 
 A `!=` is the negation of the equality. Floor division and modulo have their
 own rule, since jeff rounds toward zero.
@@ -149,7 +149,7 @@ FLOAT_BINARY: dict[type[ir.Statement], Binary] = {
     py.cmp.Lt: stmts.FloatLt,
     py.cmp.LtE: stmts.FloatLte,
 }
-"""The jeff statement of each squin statement on two floats.
+"""Hold the jeff statement of each squin statement on two floats.
 
 A `!=` is the negation of the equality.
 """
@@ -158,7 +158,7 @@ SWAPPED: dict[type[ir.Statement], type[ir.Statement]] = {
     py.cmp.Gt: py.cmp.Lt,
     py.cmp.GtE: py.cmp.LtE,
 }
-"""The comparison that computes each reversed comparison with swapped operands."""
+"""Hold the comparison that computes each reversed comparison with swapped operands."""
 
 FLOAT_UNARY: dict[type[ir.Statement], Unary] = {
     math_stmts.sqrt: stmts.FloatSqrt,
@@ -180,7 +180,7 @@ FLOAT_UNARY: dict[type[ir.Statement], Unary] = {
     math_stmts.isnan: stmts.FloatIsNan,
     math_stmts.isinf: stmts.FloatIsInf,
 }
-"""The jeff statement of each squin statement on one float."""
+"""Hold the jeff statement of each squin statement on one float."""
 
 
 def loop_range(iterable: ir.SSAValue) -> ilist_stmts.Range | range | None:

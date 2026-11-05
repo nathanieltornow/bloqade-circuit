@@ -1,14 +1,18 @@
-"""This module holds the statements of the squin wire dialect.
+"""Define the statements of the squin wire dialect.
 
 `Alloc` and `Free` start and end the life of one qubit. `AllocRegister` and
-`FreeRegister` do the same for a list of qubits. `Borrow` and `Release` take one
-qubit out of a register and put it back. `Take` and `Put` move a qubit out of a
-register and fill an empty element, and `TakeSlice` and `PutSlice` do the same for a
-range. `Length` reads the size of a register.
+`FreeRegister` do the same for a list of qubits. `Borrow` and `Release` lend one
+qubit of a register to a wire and put it back. `Take` and `Put` move a qubit out of
+a register for good and fill an empty element, and `TakeSlice` and `PutSlice` do the
+same for a range. `Length` reads the size of a register.
+
+A complete register holds a qubit in each element. A borrowed element must come
+back before the register leaves through a free, a yield, a return or a call. A taken
+element can stay empty until `DiscardRegister` frees the register.
 
 A statement whose result continues one of its wires or registers has a `Threads`
-trait. `PackRegister`, `SplitRegister`, `JoinRegister` and the frees end their inputs
-and start new values, so they have none.
+trait. `PackRegister`, `SplitRegister` and `JoinRegister` consume their inputs and
+make new registers, and the frees end their inputs, so these statements have none.
 
 `Gate`, `Noise`, `Measure` and `Reset` act on single wires. Their register forms
 act at every position of whole registers. A gate or a noise channel names its
@@ -64,9 +68,10 @@ class FreeRegister(ir.Statement):
 
 @statement(dialect=dialect)
 class Borrow(ir.Statement):
-    """Take the qubit at `index` out of `register` as a wire.
+    """Lend the qubit at `index` of `register` to a wire.
 
-    The slot stays empty until a `Release` at the same index fills it again.
+    The element stays empty until a `Release` at the same index puts the qubit back.
+    The register must get the qubit back before it leaves its region.
     """
 
     name = "borrow"
@@ -102,7 +107,11 @@ class Length(ir.Statement):
 
 @statement(dialect=dialect)
 class Take(ir.Statement):
-    """Move one qubit out of a register and leave its element empty."""
+    """Move the qubit at `index` out of `register` for good, as a wire.
+
+    The element stays empty until a `Put` fills it, or `DiscardRegister` frees the
+    register.
+    """
 
     name = "take"
     traits = frozenset({Threads("register")})
@@ -114,7 +123,10 @@ class Take(ir.Statement):
 
 @statement(dialect=dialect)
 class Put(ir.Statement):
-    """Fill an empty register element with an owned qubit."""
+    """Fill the empty element at `index` of `register` with the qubit of `wire`.
+
+    The qubit can come from anywhere, such as a `Take` of another register.
+    """
 
     name = "put"
     traits = frozenset({Threads("register")})
@@ -135,7 +147,7 @@ class PackRegister(ir.Statement):
 
 @statement(dialect=dialect)
 class SplitRegister(ir.Statement):
-    """Divide a complete register at an index into two owned registers."""
+    """Divide a complete register at `index` into 2 new registers."""
 
     name = "split_register"
     register: ir.SSAValue = info.argument(RegisterType)
@@ -156,7 +168,10 @@ class JoinRegister(ir.Statement):
 
 @statement(dialect=dialect)
 class TakeSlice(ir.Statement):
-    """Move a contiguous range into an owned register and leave its source elements empty."""
+    """Move a contiguous range of `register` into a new register.
+
+    The elements of the range stay empty until a `PutSlice` fills them.
+    """
 
     name = "take_slice"
     traits = frozenset({Threads("register")})
@@ -169,7 +184,7 @@ class TakeSlice(ir.Statement):
 
 @statement(dialect=dialect)
 class PutSlice(ir.Statement):
-    """Fill an empty contiguous range with the qubits of an owned register."""
+    """Fill an empty contiguous range of `register` with the qubits of a register."""
 
     name = "put_slice"
     traits = frozenset({Threads("register")})
@@ -181,7 +196,7 @@ class PutSlice(ir.Statement):
 
 @statement(dialect=dialect)
 class DiscardRegister(ir.Statement):
-    """Consume a register and free its remaining qubits, including registers with moved-out elements."""
+    """Free the remaining qubits of `register`, whose taken elements can be empty."""
 
     name = "discard_register"
     register: ir.SSAValue = info.argument(RegisterType)

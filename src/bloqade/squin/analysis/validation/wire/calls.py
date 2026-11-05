@@ -26,7 +26,7 @@ class CachedCalls(Forward[LatticeType], ABC):
     calls: dict[tuple[Any, ...], tuple[ForwardFrame[LatticeType], LatticeType]] = field(
         default_factory=dict, init=False
     )
-    """The frame and the result of each finished call, keyed by callee and arguments."""
+    """Hold the frame and the result of each finished call, keyed by callee and arguments."""
 
     def initialize(self) -> Self:
         """Forget the results of the previous analysis run."""

@@ -41,7 +41,7 @@ class TargetViolations(RewriteRule):
     """
 
     errors: list[ir.ValidationError] = field(default_factory=list)
-    """One error for each violating statement or block."""
+    """Hold one error for each violating statement or block."""
 
     def rewrite_Block(self, node: ir.Block) -> RewriteResult:
         """Record a block argument that holds a qubit reference."""

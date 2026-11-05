@@ -45,17 +45,17 @@ class WireFrame(EmitFrame[Value]):
     """
 
     output: ir.Block = field(default_factory=ir.Block)
-    """The wire block that this frame emits."""
+    """Hold the wire block that this frame emits."""
     latest: dict[ir.SSAValue, ir.SSAValue] = field(default_factory=dict)
-    """The latest wire or register value of each allocation root.
+    """Hold the latest wire or register value of each allocation root.
 
     An operation that consumes a qubit replaces the entry of its root. A root has
     no entry while an operation holds its whole value.
     """
     local_roots: list[Qubit | Register] = field(default_factory=list)
-    """The allocations that this region made and must free at its end."""
+    """Hold the allocations that this region made and must free at its end."""
     site: func.Invoke | None = None
-    """The user call that runs the library wrapper of this frame, or None in user code.
+    """Hold the user call that runs the library wrapper of this frame, or None in user code.
 
     Each operation that a library wrapper emits takes its source location from this
     call, so that diagnostics point at user code.
@@ -176,15 +176,15 @@ class EmitWire(EmitABC[WireFrame, Value]):
     void = None
     source: ir.Method
     converted: Mapping[ir.Method, ir.Method]
-    """The wire method of each user callee, which the driver converts first."""
+    """Hold the wire method of each user callee, which the driver converts first."""
     wire_dialects: tuple[ir.Dialect, ...] = ()
-    """The dialects of the wire statements that other dialects emit, such as Gemini."""
+    """Hold the dialects of the wire statements that other dialects emit, such as Gemini."""
     result: ir.Method | None = field(default=None, init=False)
-    """The emitted wire method, which the function handler sets at its end."""
+    """Hold the emitted wire method, which the function handler sets at its end."""
     indices: Indices = field(init=False)
-    """The index expression of each source integer, whose symbols are source values."""
+    """Hold the index expression of each source integer, whose symbols are source values."""
     lengths: dict[Sym, IndexExpr] = field(init=False)
-    """The constant length that each source `len` result reads."""
+    """Hold the constant length that each source `len` result reads."""
 
     def initialize_frame(
         self, node: ir.Statement, *, has_parent_access: bool = False

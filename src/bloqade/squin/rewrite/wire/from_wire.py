@@ -88,7 +88,7 @@ class FromWireStatements(RewriteRule):
     """Replace each wire statement outside a loop or branch with reference squin."""
 
     wire_dialects: tuple[ir.Dialect, ...] = ()
-    """The dialects of the wire statements that other dialects add."""
+    """Hold the dialects of the wire statements that other dialects add."""
 
     def rewrite_Statement(self, node: ir.Statement) -> RewriteResult:
         """Rewrite `node` if it belongs to the wire dialect or a wire extension."""
@@ -465,7 +465,7 @@ class FromWire:
     """Convert wire squin methods into squin kernels, one copy per method."""
 
     wire_dialects: tuple[ir.Dialect, ...] = ()
-    """The dialects of the wire statements that other dialects add.
+    """Hold the dialects of the wire statements that other dialects add.
 
     The squin kernels leave these dialects out of their dialect groups.
     """

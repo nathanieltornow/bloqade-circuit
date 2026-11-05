@@ -5,6 +5,8 @@ for `AllocRegister(3)`. A statement that continues a register keeps the type of 
 input, and Kirin joins the types of loop and branch state.
 """
 
+from typing import TypeAlias
+
 from kirin import types, interp
 from kirin.analysis.forward import ForwardFrame
 from kirin.analysis.typeinfer import TypeInference
@@ -13,7 +15,8 @@ from . import stmts
 from .types import WireType, register_type, register_length
 from ._dialect import dialect
 
-Frame = ForwardFrame[types.TypeAttribute]
+Frame: TypeAlias = ForwardFrame[types.TypeAttribute]
+"""Name the frame of Kirin's type inference."""
 
 
 @dialect.register(key="typeinfer")
@@ -21,12 +24,16 @@ class TypeInfer(interp.MethodTable):
     """Give each register result the static length that its operands imply."""
 
     @interp.impl(stmts.AllocRegister)
-    def alloc(self, infer: TypeInference, frame: Frame, stmt: stmts.AllocRegister):
+    def alloc(
+        self, infer: TypeInference, frame: Frame, stmt: stmts.AllocRegister
+    ) -> tuple[types.TypeAttribute, ...]:
         """Type the register of a constant size with that size."""
         return (register_type(infer.maybe_const(stmt.size, int)),)
 
     @interp.impl(stmts.PackRegister)
-    def pack(self, infer: TypeInference, frame: Frame, stmt: stmts.PackRegister):
+    def pack(
+        self, infer: TypeInference, frame: Frame, stmt: stmts.PackRegister
+    ) -> tuple[types.TypeAttribute, ...]:
         """Type the register with the number of packed wires."""
         return (register_type(len(stmt.wires)),)
 
@@ -34,7 +41,7 @@ class TypeInfer(interp.MethodTable):
     @interp.impl(stmts.Take)
     def borrow(
         self, infer: TypeInference, frame: Frame, stmt: stmts.Borrow | stmts.Take
-    ):
+    ) -> tuple[types.TypeAttribute, ...]:
         """Keep the register type and return a wire."""
         return frame.get(stmt.register), WireType
 
@@ -46,23 +53,29 @@ class TypeInfer(interp.MethodTable):
         infer: TypeInference,
         frame: Frame,
         stmt: stmts.Release | stmts.Put | stmts.PutSlice,
-    ):
+    ) -> tuple[types.TypeAttribute, ...]:
         """Keep the register type."""
         return (frame.get(stmt.register),)
 
     @interp.impl(stmts.Length)
-    def length(self, infer: TypeInference, frame: Frame, stmt: stmts.Length):
+    def length(
+        self, infer: TypeInference, frame: Frame, stmt: stmts.Length
+    ) -> tuple[types.TypeAttribute, ...]:
         """Keep the register type and return an integer."""
         return frame.get(stmt.register), types.Int
 
     @interp.impl(stmts.TakeSlice)
-    def take_slice(self, infer: TypeInference, frame: Frame, stmt: stmts.TakeSlice):
+    def take_slice(
+        self, infer: TypeInference, frame: Frame, stmt: stmts.TakeSlice
+    ) -> tuple[types.TypeAttribute, ...]:
         """Keep the register type and type the slice with a constant length."""
         size = register_type(infer.maybe_const(stmt.length, int))
         return frame.get(stmt.register), size
 
     @interp.impl(stmts.SplitRegister)
-    def split(self, infer: TypeInference, frame: Frame, stmt: stmts.SplitRegister):
+    def split(
+        self, infer: TypeInference, frame: Frame, stmt: stmts.SplitRegister
+    ) -> tuple[types.TypeAttribute, ...]:
         """Type both parts when the length and the split index are known."""
         total = register_length(frame.get(stmt.register))
         at = infer.maybe_const(stmt.index, int)
@@ -70,7 +83,9 @@ class TypeInfer(interp.MethodTable):
         return register_type(at), register_type(rest)
 
     @interp.impl(stmts.JoinRegister)
-    def join(self, infer: TypeInference, frame: Frame, stmt: stmts.JoinRegister):
+    def join(
+        self, infer: TypeInference, frame: Frame, stmt: stmts.JoinRegister
+    ) -> tuple[types.TypeAttribute, ...]:
         """Type the joined register with the sum of both known lengths."""
         a = register_length(frame.get(stmt.first))
         b = register_length(frame.get(stmt.second))
@@ -82,7 +97,7 @@ class TypeInfer(interp.MethodTable):
     @interp.impl(stmts.RegisterReset)
     def register_operation(
         self, infer: TypeInference, frame: Frame, stmt: stmts.RegisterOperation
-    ):
+    ) -> tuple[types.TypeAttribute, ...]:
         """Keep each register operand type and each classical result type."""
         registers = tuple(frame.get(register) for register in stmt.linear)
         return registers + tuple(result.type for result in stmt.classical)

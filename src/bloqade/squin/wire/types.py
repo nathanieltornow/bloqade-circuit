@@ -1,24 +1,24 @@
-"""This module defines the linear types of the squin wire dialect.
+"""Define the linear types of the squin wire dialect.
 
 A `Wire` stands for one qubit at one point in the program. A statement consumes
 its input wires and returns new wires, so each wire has exactly one use.
 
-A `Register` stands for a list of qubits. `Borrow` takes one qubit out of a
-register as a wire, and `Release` puts the wire back. A register type can carry a
-static number of qubits, such as `Register[3]`.
+A `Register` stands for a list of qubits. `Borrow` lends one qubit of a register to
+a wire, and `Release` puts the wire back. A register type can carry a static number
+of qubits, such as `Register[3]`.
 """
 
 from kirin import types
 
-from bloqade.types import is_subtype
+from bloqade.types import contains, is_subtype
 
 
 class Wire:
-    """A marker class that names the linear type of one qubit."""
+    """Name the linear type of one qubit."""
 
 
 class Register:
-    """A marker class that names the linear type of a list of qubits."""
+    """Name the linear type of a list of qubits."""
 
 
 WireType = types.PyClass(Wire)
@@ -51,24 +51,12 @@ def register_length(typ: types.TypeAttribute) -> int | None:
 
 def is_linear(typ: types.TypeAttribute) -> bool:
     """Return True if a value of the type `typ` must have exactly one use."""
-    if isinstance(typ, types.BottomType):
-        return False
     return is_subtype(typ, WireType) or is_subtype(typ, RegisterType)
 
 
 def contains_linear(typ: types.TypeAttribute) -> bool:
     """Return whether the type contains a wire or register at any depth."""
-    if is_linear(typ):
-        return True
-    if isinstance(typ, types.Union):
-        return any(contains_linear(member) for member in typ.types)
-    if isinstance(typ, types.TypeVar):
-        return contains_linear(typ.bound)
-    if isinstance(typ, types.Generic):
-        return any(contains_linear(member) for member in typ.vars) or (
-            typ.vararg is not None and contains_linear(typ.vararg.typ)
-        )
-    return False
+    return contains(typ, is_linear)
 
 
 def nests_linear(typ: types.TypeAttribute) -> bool:

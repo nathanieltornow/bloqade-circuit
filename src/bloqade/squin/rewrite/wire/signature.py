@@ -40,11 +40,11 @@ class Layout:
     """Describe the wire results that the signature of a source function implies."""
 
     inout_positions: tuple[int, ...]
-    """The argument positions of the quantum parameters."""
+    """Hold the argument positions of the quantum parameters."""
     ordinary_count: int
-    """The number of ordinary source results."""
+    """Hold the number of ordinary source results."""
     packed: bool
-    """Whether the source function returns 2 or more ordinary results as one tuple.
+    """State whether the source function returns 2 or more ordinary results as one tuple.
 
     A source tuple of one item stays one ordinary result of tuple type, so the wire
     function returns that tuple whole and keeps its shape.
@@ -73,13 +73,12 @@ class Layout:
 
 
 def quantum_type(typ: types.TypeAttribute) -> types.TypeAttribute | None:
-    """Return the linear type of a scalar qubit or a nested qubit register."""
-    if isinstance(typ, types.BottomType):
-        return None
-    if is_subtype(typ, QubitType) or is_subtype(typ, WireType):
+    """Return the wire type of the squin type `typ`, or None for a classical type.
+
+    A qubit becomes a wire, and a list of qubits at any depth becomes a register.
+    """
+    if is_subtype(typ, QubitType):
         return WireType
-    if is_subtype(typ, RegisterType):
-        return RegisterType
     if isinstance(typ, types.Generic) and is_subtype(typ, ilist.IListType):
         if quantum_type(typ.vars[0]) is not None:
             return RegisterType

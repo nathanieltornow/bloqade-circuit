@@ -8,7 +8,7 @@ from kirin.source import SourceInfo
 from kirin.dialects import scf, func, ilist
 from kirin.ir.exception import ValidationErrorGroup
 
-from bloqade import squin, native
+from bloqade import squin
 from bloqade.types import Qubit, holds_qubits, output_types
 from bloqade.squin.wire.types import WireType, RegisterType
 from bloqade.squin.wire.errors import WireConversionError
@@ -86,10 +86,8 @@ def test_emitted_signature_rejects_reordered_borrowed_results():
 
 
 @squin.kernel
-def dynamic_call():
-    qs = squin.qalloc(1)
-    # The native package has no `r`, so the call target is a runtime value.
-    native.r(0.25, 0.5, qs)  # type: ignore[attr-defined]
+def dynamic_call(gate, qs: ilist.IList[Qubit, Any]):
+    gate(qs)
 
 
 def test_a_call_through_a_function_value_names_the_static_call_rule():

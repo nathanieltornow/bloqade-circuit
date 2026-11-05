@@ -39,7 +39,7 @@ class WireToSquin:
     """Convert a wire squin method and every wire callee back to squin kernels."""
 
     wire_dialects: tuple[ir.Dialect, ...] = ()
-    """The dialects of the wire statements that other dialects add, such as Gemini.
+    """Hold the dialects of the wire statements that other dialects add, such as Gemini.
 
     Each of their statements needs a `ReferenceForm` trait.
     """

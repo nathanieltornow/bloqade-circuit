@@ -314,11 +314,11 @@ class RegisterAnalysis(CachedCalls[Place]):
     keys = (KEY,)
     lattice = Place
     active_functions: list[ir.Statement] = field(default_factory=list, init=False)
-    """The functions that the analysis interprets now, innermost last."""
+    """Hold the functions that the analysis interprets now, innermost last."""
     indices: Indices = field(init=False)
-    """The index expression of each integer value, computed once per function."""
+    """Hold the index expression of each integer value, computed once per function."""
     lengths: dict[Sym, IndexExpr] = field(default_factory=dict, init=False)
-    """The known register length that each `Length` result reads.
+    """Hold the known register length that each `Length` result reads.
 
     The `Length` rule fills this table. Forward analysis visits a definition before
     each of its uses, so every index expression can use the table.

@@ -81,7 +81,7 @@ KEPT = (
     ilist_stmts.Range,
     py_slice.Slice,
 )
-"""The statements that the rules can leave for dead-code elimination to remove.
+"""Hold the statements that the rules can leave for dead-code elimination to remove.
 
 A range, a slice and the constant None have no Jeff value, and a tuple has fields
 that later rules read.

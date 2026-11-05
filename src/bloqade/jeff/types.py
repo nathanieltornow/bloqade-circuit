@@ -102,7 +102,7 @@ FAMILIES = (
     IntArrayType,
     FloatArrayType,
 )
-"""The function `family` tests the jeff value families in the order of this tuple."""
+"""Hold the function `family` tests the jeff value families in the order of this tuple."""
 
 
 def same_family(actual: types.TypeAttribute, expected: types.TypeAttribute) -> bool:

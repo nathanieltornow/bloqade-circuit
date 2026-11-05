@@ -123,7 +123,7 @@ UNRESOLVED_ITEM = (
     "A quantum container requires a tuple read at a constant index"
     " or a resolved register element."
 )
-"""The error message for an index that names no known item of a container."""
+"""Hold the error message for an index that names no known item of a container."""
 
 
 def slice_item(emit: EmitWire, container: Value, stmt: py.GetItem) -> Value:

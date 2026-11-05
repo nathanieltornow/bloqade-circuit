@@ -22,13 +22,13 @@ class SquinToWire:
     """Emit source methods once and require complete, validated wire results."""
 
     wire_dialects: tuple[ir.Dialect, ...] = ()
-    """The dialects of the wire statements that other dialects emit, such as Gemini.
+    """Hold the dialects of the wire statements that other dialects emit, such as Gemini.
 
     A dialect outside squin adds its statements to wire programs with a method table
     under `emit.squin_wire`. Its wire statements need their dialect here.
     """
     converted: dict[ir.Method, ir.Method] = field(default_factory=dict, init=False)
-    """The validated wire method of each converted source method."""
+    """Hold the validated wire method of each converted source method."""
 
     def emit(self, method: ir.Method) -> ir.Method:
         """Build verified wire IR while preserving the source and its callees.
