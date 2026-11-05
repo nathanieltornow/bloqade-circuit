@@ -231,7 +231,7 @@ def allocate_register(emit: EmitWire, frame: WireFrame, stmt: func.Invoke) -> Re
     root = frame.push(stmts.AllocRegister(size)).results[0]
     frame.latest[root] = root
     frame.local_roots.append(root)
-    length = emit.indices.of(stmt.inputs[0])
+    length = emit.index(stmt.inputs[0])
     # A negative constant size gives an empty register, like `range(n)`.
     if (count := length.constant) is not None:
         length = IndexExpr(max(0, count))

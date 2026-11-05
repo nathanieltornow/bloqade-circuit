@@ -11,8 +11,10 @@ from bloqade.squin.wire.errors import WireConversionError
 
 from .base import EmitWire, WireFrame
 from .values import (
+    View,
     Value,
     Location,
+    Register,
     select,
     known_items,
     select_slice,
@@ -85,8 +87,18 @@ class Lengths(interp.MethodTable):
     def length(
         self, emit: EmitWire, frame: WireFrame, stmt: py_len.Len
     ) -> tuple[Value]:
-        """Read the source sequence's known or runtime length."""
-        return (emit.length_value(frame, frame.get(stmt.value)),)
+        """Read the source sequence's known or runtime length.
+
+        A constant length also goes into `EmitWire.lengths`, so that a later index
+        such as `qs[2:len(qs)]` reads it as a constant.
+        """
+        value = frame.get(stmt.value)
+        size = len(value) if isinstance(value, tuple) else None
+        if isinstance(value, (Register, View)) and value.length is not None:
+            size = value.length.constant
+        if size is not None:
+            emit.lengths[stmt.result] = IndexExpr(size)
+        return (emit.length_value(frame, value),)
 
 
 @py.indexing.dialect.register(key="emit.squin_wire")
@@ -140,7 +152,7 @@ def element_item(
     A runtime index must already be a valid wire index, between 0 and the length minus
     1. Only a negative constant index counts from the end.
     """
-    position = emit.indices.of(stmt.index)
+    position = emit.index(stmt.index)
     if isinstance(container, Location):
         return select(container, position, stmt)
     if isinstance(container, tuple):
@@ -159,8 +171,8 @@ def slice_bounds(
     """Read the bounds of the source slice `value` as index expressions."""
     node = value.owner
     if isinstance(node, py_slice.Slice):
-        start = None if is_none(node.start) else emit.indices.of(node.start)
-        stop = None if is_none(node.stop) else emit.indices.of(node.stop)
+        start = None if is_none(node.start) else emit.index(node.start)
+        stop = None if is_none(node.stop) else emit.index(node.stop)
         step = 1 if is_none(node.step) else constant_int(node.step)
     elif isinstance(node, py.Constant) and isinstance(
         sliced := node.value.unwrap(), slice

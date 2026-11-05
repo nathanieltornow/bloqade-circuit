@@ -810,3 +810,24 @@ def test_state_that_widens_from_a_bit_to_an_int_survives_the_trip(kernel, args):
     assert _same(
         _plain(simulate(returned(kernel), *args)), _plain(simulate(kernel, *args))
     )
+
+
+@squin.kernel
+def flip_times(q: Qubit, n: int):
+    for _ in range(n):
+        squin.x(q)
+
+
+@squin.kernel
+def calls_a_subroutine() -> ilist.IList[MeasurementResult, Any]:
+    qs = squin.qalloc(2)
+    flip_times(qs[1], 3)
+    return squin.broadcast.measure(qs)
+
+
+def test_squin_from_jeff_with_a_subroutine_goes_to_jeff_again():
+    once = returned(calls_a_subroutine)
+    twice = JeffToSquin().emit(SquinToJeff().emit(once))
+    expected = _plain(simulate(calls_a_subroutine))
+    assert _same(_plain(simulate(once)), expected)
+    assert _same(_plain(simulate(twice)), expected)

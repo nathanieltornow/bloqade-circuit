@@ -178,6 +178,8 @@ class EmitWire(EmitABC[WireFrame, Value]):
     """The emitted wire method, which the function handler sets at its end."""
     indices: Indices = field(init=False)
     """The index expression of each source integer, whose symbols are source values."""
+    lengths: dict[Sym, IndexExpr] = field(init=False)
+    """The constant length that each source `len` result reads."""
 
     def initialize_frame(
         self, node: ir.Statement, *, has_parent_access: bool = False
@@ -191,6 +193,14 @@ class EmitWire(EmitABC[WireFrame, Value]):
         self.callable_to_emit = WorkList()
         self.result = None
         self.indices = Indices(self.dialects)
+        self.lengths = {}
+
+    def index(self, value: ir.SSAValue) -> IndexExpr:
+        """Return the index expression of the source integer `value`.
+
+        Each `len` result of a constant length reads as that constant.
+        """
+        return self.indices.of(value).substitute(self.lengths)
 
     def emit_method(self) -> ir.Method:
         """Emit one source method using the wire methods of its callees.

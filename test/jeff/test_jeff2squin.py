@@ -207,9 +207,13 @@ def _returned(mt: ir.Method) -> int:
     return 1
 
 
-def test_every_output_is_returned_through_a_gate_and_a_loop():
-    """A function returning (bit, q0, q1) returns all three values. One wire
-    passes through a gate and the other through a loop."""
+@pytest.mark.parametrize("swapped, count", [(False, 1), (True, 3)])
+def test_a_function_that_keeps_its_wires_in_place_returns_only_its_bit(
+    swapped, count
+):
+    """A function returns (bit, q0, q1). One wire passes through a gate and the
+    other through a loop. If both wires stay in place, the squin kernel returns
+    only the bit. If the function exchanges them, it returns all three values."""
     block, (q0, q1) = entry(jeff.WireType, jeff.WireType)
     gated = add(block, stmts.Gate((q0,), (), (), gate_name="h")).results[0]
     measured = add(block, stmts.MeasureNd(gated))
@@ -224,12 +228,13 @@ def test_every_output_is_returned_through_a_gate_and_a_loop():
         (q1,),
         lambda b, i, s: (add(b, stmts.Gate((s,), (), (), gate_name="x")).results[0],),
     )
+    wires = (measured.result_wire, loop.results[0])
     mt = method(
         block,
-        (measured.bit, measured.result_wire, loop.results[0]),
+        (measured.bit, *(wires[::-1] if swapped else wires)),
         types.Generic(tuple, types.Bool, jeff.WireType, jeff.WireType),
     )
-    assert _returned(mt) == 3
+    assert _returned(mt) == count
 
 
 def test_a_wire_through_a_switch_is_returned_and_the_caller_reads_it():

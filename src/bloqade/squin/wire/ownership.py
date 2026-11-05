@@ -43,3 +43,8 @@ def convention(function: func.Function) -> Convention:
 def mark_owned(method: ir.Method) -> None:
     """Mark `method` as a function that consumes its quantum parameters."""
     method.code.attributes[KEY] = ir.PyAttr(True)
+
+
+def clear_owned(method: ir.Method) -> None:
+    """Remove the mark of `mark_owned`, so that `method` is an `InOut` function."""
+    method.code.attributes.pop(KEY, None)
