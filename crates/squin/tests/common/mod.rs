@@ -3,6 +3,9 @@
 use kirin::prelude::*;
 use squin::Squin;
 
+#[cfg(feature = "ppvm")]
+pub mod ppvm;
+
 /// Parse a kernel with the parameters `parameters` and the statements `body`.
 ///
 /// `parameters` is a list such as `"%c: Bool, %a: Float"`. The kernel has one
@@ -24,6 +27,19 @@ pub fn kernel(parameters: &str, body: &str) -> Pipeline<StageInfo<Squin>> {
         panic!("the kernel must parse: {error:?}\n{program}");
     }
     pipeline
+}
+
+/// Return the ppvm text `text` without the `//` comments behind its instructions.
+///
+/// Tests that check a sequence of instructions read this form, so a comment
+/// on a line does not split the sequence.
+#[allow(dead_code)]
+pub fn instructions(text: &str) -> String {
+    let lines = text.lines().map(|line| match line.find("//") {
+        Some(start) => line[..start].trim_end(),
+        None => line,
+    });
+    lines.collect::<Vec<_>>().join("\n") + "\n"
 }
 
 /// Tell why a program text does not give a verified program.

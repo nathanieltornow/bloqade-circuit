@@ -6,11 +6,13 @@
 //! the dataflow graphs of `circuit` regions, and blocks hold the control flow.
 //!
 //! `ir` defines and queries programs, and it imports no other module.
-//! `verify`, `rewrite` and `analysis` import only `ir`. Each module owns the statement traits that it
+//! `verify`, `rewrite` and `analysis` import only `ir`. `emit` reads the facts
+//! of `analysis` and writes ppvm programs. Each module owns the statement traits that it
 //! asks and their implementations.
 #![forbid(unsafe_code)]
 
 pub mod analysis;
+pub mod emit;
 pub mod ir;
 pub mod rewrite;
 pub mod verify;

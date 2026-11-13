@@ -21,5 +21,6 @@ kirin-rewrite = { git = "https://github.com/nathanieltornow/kirin.git", rev = "9
 kirin-scf = { git = "https://github.com/nathanieltornow/kirin.git", rev = "93629607358289f168d4c10405ce32a11c07d04a" }
 kirin-wildcard = { git = "https://github.com/nathanieltornow/kirin.git", rev = "93629607358289f168d4c10405ce32a11c07d04a" }
 petgraph = "0.7"
+ppvm-vihaco = { git = "https://github.com/QuEraComputing/ppvm.git", rev = "20008a4354a45d42f1835857416c94db5c9896d5" }
 smallvec = "1.13"
 thiserror = "2"
