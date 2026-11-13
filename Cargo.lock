@@ -232,7 +232,7 @@ dependencies = [
 [[package]]
 name = "kirin"
 version = "0.1.0"
-source = "git+https://github.com/QuEraComputing/kirin.git?rev=a8e48ec1c394bc9a6e04464c7459b5f75864bfe3#a8e48ec1c394bc9a6e04464c7459b5f75864bfe3"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
 dependencies = [
  "chumsky",
  "kirin-chumsky",
@@ -242,9 +242,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "kirin-arith"
+version = "0.1.0"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
+dependencies = [
+ "kirin",
+ "kirin-interpreter",
+ "thiserror",
+]
+
+[[package]]
+name = "kirin-bitwise"
+version = "0.1.0"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
+dependencies = [
+ "kirin",
+ "kirin-interpreter",
+ "thiserror",
+]
+
+[[package]]
 name = "kirin-chumsky"
 version = "0.1.0"
-source = "git+https://github.com/QuEraComputing/kirin.git?rev=a8e48ec1c394bc9a6e04464c7459b5f75864bfe3#a8e48ec1c394bc9a6e04464c7459b5f75864bfe3"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
 dependencies = [
  "chumsky",
  "kirin-derive-chumsky",
@@ -257,9 +277,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "kirin-cmp"
+version = "0.1.0"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
+dependencies = [
+ "kirin",
+ "kirin-interpreter",
+]
+
+[[package]]
+name = "kirin-constant"
+version = "0.1.0"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
+dependencies = [
+ "kirin",
+ "kirin-interpreter",
+]
+
+[[package]]
 name = "kirin-derive-chumsky"
 version = "0.1.0"
-source = "git+https://github.com/QuEraComputing/kirin.git?rev=a8e48ec1c394bc9a6e04464c7459b5f75864bfe3#a8e48ec1c394bc9a6e04464c7459b5f75864bfe3"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
 dependencies = [
  "chumsky",
  "darling 0.23.0",
@@ -272,9 +310,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kirin-derive-interpreter"
+version = "0.1.0"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
+dependencies = [
+ "kirin-derive-toolkit",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "kirin-derive-ir"
 version = "0.1.0"
-source = "git+https://github.com/QuEraComputing/kirin.git?rev=a8e48ec1c394bc9a6e04464c7459b5f75864bfe3#a8e48ec1c394bc9a6e04464c7459b5f75864bfe3"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
 dependencies = [
  "kirin-derive-toolkit",
  "proc-macro2",
@@ -285,7 +334,7 @@ dependencies = [
 [[package]]
 name = "kirin-derive-prettyless"
 version = "0.1.0"
-source = "git+https://github.com/QuEraComputing/kirin.git?rev=a8e48ec1c394bc9a6e04464c7459b5f75864bfe3#a8e48ec1c394bc9a6e04464c7459b5f75864bfe3"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
 dependencies = [
  "kirin-derive-toolkit",
  "proc-macro2",
@@ -296,7 +345,7 @@ dependencies = [
 [[package]]
 name = "kirin-derive-toolkit"
 version = "0.1.0"
-source = "git+https://github.com/QuEraComputing/kirin.git?rev=a8e48ec1c394bc9a6e04464c7459b5f75864bfe3#a8e48ec1c394bc9a6e04464c7459b5f75864bfe3"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
 dependencies = [
  "darling 0.23.0",
  "indexmap",
@@ -307,9 +356,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "kirin-function"
+version = "0.1.0"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
+dependencies = [
+ "kirin",
+ "kirin-interpreter",
+ "smallvec",
+]
+
+[[package]]
+name = "kirin-interpreter"
+version = "0.1.0"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
+dependencies = [
+ "kirin-derive-interpreter",
+ "kirin-ir",
+ "petgraph",
+ "rustc-hash",
+ "smallvec",
+ "thiserror",
+]
+
+[[package]]
 name = "kirin-ir"
 version = "0.1.0"
-source = "git+https://github.com/QuEraComputing/kirin.git?rev=a8e48ec1c394bc9a6e04464c7459b5f75864bfe3#a8e48ec1c394bc9a6e04464c7459b5f75864bfe3"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
 dependencies = [
  "bon",
  "indexmap",
@@ -322,7 +394,7 @@ dependencies = [
 [[package]]
 name = "kirin-lexer"
 version = "0.1.0"
-source = "git+https://github.com/QuEraComputing/kirin.git?rev=a8e48ec1c394bc9a6e04464c7459b5f75864bfe3#a8e48ec1c394bc9a6e04464c7459b5f75864bfe3"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
 dependencies = [
  "logos",
  "proc-macro2",
@@ -332,13 +404,24 @@ dependencies = [
 [[package]]
 name = "kirin-prettyless"
 version = "0.1.0"
-source = "git+https://github.com/QuEraComputing/kirin.git?rev=a8e48ec1c394bc9a6e04464c7459b5f75864bfe3#a8e48ec1c394bc9a6e04464c7459b5f75864bfe3"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
 dependencies = [
  "kirin-derive-prettyless",
  "kirin-ir",
  "petgraph",
  "prettyless",
  "serde",
+]
+
+[[package]]
+name = "kirin-scf"
+version = "0.1.0"
+source = "git+https://github.com/nathanieltornow/kirin.git?rev=93629607358289f168d4c10405ce32a11c07d04a#93629607358289f168d4c10405ce32a11c07d04a"
+dependencies = [
+ "bon",
+ "kirin",
+ "kirin-interpreter",
+ "smallvec",
 ]
 
 [[package]]
@@ -583,6 +666,16 @@ name = "squin"
 version = "0.1.0"
 dependencies = [
  "kirin",
+ "kirin-arith",
+ "kirin-bitwise",
+ "kirin-cmp",
+ "kirin-constant",
+ "kirin-function",
+ "kirin-interpreter",
+ "kirin-scf",
+ "petgraph",
+ "smallvec",
+ "thiserror",
 ]
 
 [[package]]
@@ -624,6 +717,26 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
+dependencies = [
+ "thiserror-impl",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]
